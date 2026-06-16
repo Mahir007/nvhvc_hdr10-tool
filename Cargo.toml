@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/nvhvc-core", "crates/nvhvc-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
+
+[workspace.dependencies]
+nvhvc-core = { path = "crates/nvhvc-core" }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+# Tuned for small, fast release binaries (the project goal is efficiency).
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

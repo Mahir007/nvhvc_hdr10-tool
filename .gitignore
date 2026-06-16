@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local test media / scratch artifacts
+/scratch/
+*.hevc
+*.h265
