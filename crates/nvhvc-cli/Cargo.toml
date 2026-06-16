@@ -1,0 +1,15 @@
+[package]
+name = "nvhvc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Command-line front-end for the nvhvc HDR10 HEVC stream patcher."
+
+[[bin]]
+name = "nvhvc"
+path = "src/main.rs"
+
+[dependencies]
+nvhvc-core.workspace = true
