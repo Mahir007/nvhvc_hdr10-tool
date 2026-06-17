@@ -13,9 +13,11 @@
 //! bitstream (including its timing information) and produced variable-frame-rate output.
 
 pub mod bitio;
+pub mod config;
 pub mod error;
 pub mod extract;
 pub mod hevc;
+pub mod naming;
 pub mod pipeline;
 pub mod probe;
 pub mod remux;
