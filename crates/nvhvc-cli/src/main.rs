@@ -75,7 +75,7 @@ fn main() -> std::process::ExitCode {
     match dispatch(&cli, &settings, &tools) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{RED}error:{RESET} {err}");
+            eprintln!("error: {err}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -118,10 +118,10 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
             };
             let report =
                 pipeline::run_with_progress(tools, source, encoded, output, &opts, &mut |stage| {
-                    println!("  {DIM}•{RESET} {}", stage.label())
+                    println!("  - {}", stage.label())
                 })?;
             println!();
-            println!("{GREEN}✓{RESET} wrote {}", report.output.display());
+            println!("wrote {}", report.output.display());
             println!("  SPS patched : {}", report.sps_patched);
             println!("  SEI inserted: {}", report.sei_inserted);
             print_metadata(&report.probed);
@@ -130,29 +130,19 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
     }
 }
 
-// ANSI colours (modern Windows terminals and Linux support these).
-const GREEN: &str = "\x1b[32m";
-const BLUE: &str = "\x1b[34m";
-const RED: &str = "\x1b[31m";
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
-
 fn print_tools(tools: &Toolset) {
     println!("External tools:");
     for (tool, resolution) in tools.all() {
-        let (color, detail) = match resolution {
-            Resolution::OnPath(p) => (GREEN, format!("found on PATH — {}", p.display())),
-            Resolution::Override(p) => (GREEN, format!("custom path — {}", p.display())),
-            Resolution::Fallback(p) => (BLUE, format!("found at install dir — {}", p.display())),
-            Resolution::NotFound => (RED, format!("not found — {}", tool.install_hint())),
+        let (status, detail) = match resolution {
+            Resolution::OnPath(p) => ("found (PATH)", p.display().to_string()),
+            Resolution::Override(p) => ("found (custom)", p.display().to_string()),
+            Resolution::Fallback(p) => ("found (install dir)", p.display().to_string()),
+            Resolution::NotFound => ("MISSING", tool.install_hint().to_string()),
         };
-        println!(
-            "  {color}●{RESET} {:<11} {DIM}{detail}{RESET}",
-            tool.label()
-        );
+        println!("  {:<11} {:<20} {detail}", tool.label(), status);
     }
     if let Some(path) = Settings::config_path() {
-        println!("\n{DIM}settings: {}{RESET}", path.display());
+        println!("\nsettings: {}", path.display());
     }
 }
 
