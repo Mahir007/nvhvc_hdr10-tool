@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/nvhvc-core", "crates/nvhvc-cli"]
+members = ["crates/nvhvc-core", "crates/nvhvc-cli", "crates/nvhvc-gtk"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-rust-version = "1.85"
+rust-version = "1.92"
 repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
 
 [workspace.dependencies]
