@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/nvhvc-core", "crates/nvhvc-cli"]
+members = ["crates/nvhvc-core", "crates/nvhvc-cli", "crates/nvhvc-gtk"]
 
 [workspace.package]
 version = "0.1.0"
