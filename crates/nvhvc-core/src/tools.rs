@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
 /// An external tool the pipeline can use.
@@ -33,6 +35,18 @@ impl Tool {
             Tool::Mkvmerge => "mkvmerge",
             Tool::Mkvextract => "mkvextract",
             Tool::Mp4box => "MP4Box",
+        }
+    }
+
+    /// A hint for the user on how to provide this tool when it is missing.
+    pub fn install_hint(self) -> &'static str {
+        match self {
+            Tool::Ffmpeg => "install ffmpeg or set a custom path in settings",
+            Tool::Ffprobe => "install ffmpeg (provides ffprobe) or set a custom path in settings",
+            Tool::Mkvmerge | Tool::Mkvextract => {
+                "install MKVToolNix or set a custom path in settings"
+            }
+            Tool::Mp4box => "install GPAC (MP4Box) or set a custom path in settings",
         }
     }
 
@@ -80,20 +94,49 @@ impl Tool {
     }
 }
 
-/// Resolves a single tool to an executable path, honouring an optional user override.
+/// How a tool was resolved — surfaced so a UI can show *where* each tool came from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Resolution {
+    /// Found via the user's explicit override.
+    Override(PathBuf),
+    /// Found on the system `PATH`.
+    OnPath(PathBuf),
+    /// Found at a well-known install location (not on `PATH`).
+    Fallback(PathBuf),
+    /// Not found anywhere.
+    #[default]
+    NotFound,
+}
+
+impl Resolution {
+    /// The resolved executable path, if any.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Resolution::Override(p) | Resolution::OnPath(p) | Resolution::Fallback(p) => Some(p),
+            Resolution::NotFound => None,
+        }
+    }
+
+    /// Whether the tool was found.
+    pub fn is_found(&self) -> bool {
+        self.path().is_some()
+    }
+}
+
+/// Resolves a tool, reporting *how* it was found: override → `PATH` → well-known install dirs.
 ///
 /// `override_path` may point directly at the executable or at a directory that contains it.
-pub fn resolve(tool: Tool, override_path: Option<&Path>) -> Option<PathBuf> {
+pub fn resolve_detailed(tool: Tool, override_path: Option<&Path>) -> Resolution {
     // 1. Explicit override (file or containing directory).
     if let Some(p) = override_path {
         if p.is_file() {
-            return Some(p.to_path_buf());
+            return Resolution::Override(p.to_path_buf());
         }
         if p.is_dir() {
             for name in tool.program_names() {
                 for candidate in [p.join(name), p.join(format!("{name}.exe"))] {
                     if candidate.is_file() {
-                        return Some(candidate);
+                        return Resolution::Override(candidate);
                     }
                 }
             }
@@ -103,16 +146,28 @@ pub fn resolve(tool: Tool, override_path: Option<&Path>) -> Option<PathBuf> {
     // 2. PATH.
     for name in tool.program_names() {
         if let Ok(found) = which::which(name) {
-            return Some(found);
+            return Resolution::OnPath(found);
         }
     }
 
     // 3. Well-known install locations.
-    tool.common_locations().into_iter().find(|c| c.is_file())
+    if let Some(found) = tool.common_locations().into_iter().find(|c| c.is_file()) {
+        return Resolution::Fallback(found);
+    }
+
+    Resolution::NotFound
+}
+
+/// Resolves a tool to a path (override → `PATH` → well-known dirs), discarding the source.
+pub fn resolve(tool: Tool, override_path: Option<&Path>) -> Option<PathBuf> {
+    resolve_detailed(tool, override_path)
+        .path()
+        .map(Path::to_path_buf)
 }
 
 /// Per-tool override paths, typically loaded from the user's settings.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Overrides {
     /// Override for `ffmpeg`.
     pub ffmpeg: Option<PathBuf>,
@@ -138,25 +193,20 @@ impl Overrides {
     }
 }
 
-/// A resolved set of tools: every tool's location (or `None` if unavailable).
+/// A resolved set of tools, each carrying *how* it was found.
 #[derive(Debug, Clone, Default)]
 pub struct Toolset {
-    /// `ffmpeg`.
-    pub ffmpeg: Option<PathBuf>,
-    /// `ffprobe`.
-    pub ffprobe: Option<PathBuf>,
-    /// `mkvmerge`.
-    pub mkvmerge: Option<PathBuf>,
-    /// `mkvextract`.
-    pub mkvextract: Option<PathBuf>,
-    /// `MP4Box`.
-    pub mp4box: Option<PathBuf>,
+    ffmpeg: Resolution,
+    ffprobe: Resolution,
+    mkvmerge: Resolution,
+    mkvextract: Resolution,
+    mp4box: Resolution,
 }
 
 impl Toolset {
-    /// Resolves every tool, applying the given overrides. Missing tools are simply `None`.
+    /// Resolves every tool, applying the given overrides.
     pub fn discover(overrides: &Overrides) -> Self {
-        let r = |t: Tool| resolve(t, overrides.for_tool(t));
+        let r = |t: Tool| resolve_detailed(t, overrides.for_tool(t));
         Self {
             ffmpeg: r(Tool::Ffmpeg),
             ffprobe: r(Tool::Ffprobe),
@@ -166,45 +216,39 @@ impl Toolset {
         }
     }
 
+    /// How `tool` was resolved.
+    pub fn resolution(&self, tool: Tool) -> &Resolution {
+        match tool {
+            Tool::Ffmpeg => &self.ffmpeg,
+            Tool::Ffprobe => &self.ffprobe,
+            Tool::Mkvmerge => &self.mkvmerge,
+            Tool::Mkvextract => &self.mkvextract,
+            Tool::Mp4box => &self.mp4box,
+        }
+    }
+
+    /// Every tool paired with how it was resolved, in display order (for listing in a UI).
+    pub fn all(&self) -> [(Tool, &Resolution); 5] {
+        [
+            (Tool::Ffmpeg, &self.ffmpeg),
+            (Tool::Ffprobe, &self.ffprobe),
+            (Tool::Mkvmerge, &self.mkvmerge),
+            (Tool::Mkvextract, &self.mkvextract),
+            (Tool::Mp4box, &self.mp4box),
+        ]
+    }
+
     /// Returns the resolved path for `tool`, or a [`Error::ToolNotFound`] with a fix hint.
     pub fn require(&self, tool: Tool) -> Result<&Path> {
-        let (slot, hint) = match tool {
-            Tool::Ffmpeg => (
-                &self.ffmpeg,
-                "install ffmpeg or set a custom path in settings",
-            ),
-            Tool::Ffprobe => (
-                &self.ffprobe,
-                "install ffmpeg (which provides ffprobe) or set a custom path in settings",
-            ),
-            Tool::Mkvmerge => (
-                &self.mkvmerge,
-                "install MKVToolNix or set a custom path in settings",
-            ),
-            Tool::Mkvextract => (
-                &self.mkvextract,
-                "install MKVToolNix or set a custom path in settings",
-            ),
-            Tool::Mp4box => (
-                &self.mp4box,
-                "install GPAC (MP4Box) or set a custom path in settings",
-            ),
-        };
-        slot.as_deref().ok_or(Error::ToolNotFound {
+        self.resolution(tool).path().ok_or(Error::ToolNotFound {
             tool: tool.label(),
-            hint,
+            hint: tool.install_hint(),
         })
     }
 
     /// Whether `tool` was found.
     pub fn has(&self, tool: Tool) -> bool {
-        match tool {
-            Tool::Ffmpeg => self.ffmpeg.is_some(),
-            Tool::Ffprobe => self.ffprobe.is_some(),
-            Tool::Mkvmerge => self.mkvmerge.is_some(),
-            Tool::Mkvextract => self.mkvextract.is_some(),
-            Tool::Mp4box => self.mp4box.is_some(),
-        }
+        self.resolution(tool).is_found()
     }
 }
 
