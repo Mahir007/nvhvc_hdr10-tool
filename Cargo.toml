@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/nvhvc-core", "crates/nvhvc-cli", "crates/nvhvc-gtk"]
+# nvhvc-winui (Windows WinUI3 GUI) is its own workspace: it pulls the experimental
+# windows-reactor git dependency, which we keep out of this workspace so non-Windows
+# (e.g. the Linux GTK) builds never resolve/clone it.
+exclude = ["crates/nvhvc-winui"]
 
 [workspace.package]
 version = "0.1.0"

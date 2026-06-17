@@ -1,0 +1,4 @@
+# windows-reactor is a git dependency on the very large microsoft/windows-rs repo. cargo's built-in
+# (libgit2) fetch is pathologically slow on it; the system git CLI clones it in a few minutes.
+[net]
+git-fetch-with-cli = true
