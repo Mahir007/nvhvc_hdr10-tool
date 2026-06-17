@@ -1,0 +1,20 @@
+# Standalone workspace (excluded from the repo's main workspace) so the experimental
+# windows-reactor git dependency on microsoft/windows-rs never affects other crates'
+# builds (notably the Linux GTK front-end).
+[workspace]
+
+[package]
+name = "nvhvc-winui"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.95"
+repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
+description = "WinUI3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Windows)."
+
+[dependencies]
+nvhvc-core = { path = "../nvhvc-core" }
+windows-reactor = { git = "https://github.com/microsoft/windows-rs" }
+
+[build-dependencies]
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs" }
