@@ -16,6 +16,7 @@ pub mod bitio;
 pub mod error;
 pub mod extract;
 pub mod hevc;
+pub mod naming;
 pub mod pipeline;
 pub mod probe;
 pub mod remux;
