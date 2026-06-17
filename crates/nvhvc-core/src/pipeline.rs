@@ -17,6 +17,37 @@ pub struct PipelineOptions {
     pub keep_intermediates: bool,
 }
 
+/// Stages emitted by the pipeline so a front-end can show progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Reading HDR10 metadata from the source.
+    Probing,
+    /// Extracting the raw HEVC from the encode.
+    Extracting,
+    /// Editing the bitstream (SPS VUI + SEI).
+    Patching,
+    /// Capturing the encode's per-frame timing.
+    CapturingTiming,
+    /// Muxing the patched video back into a container.
+    Remuxing,
+    /// Finished.
+    Done,
+}
+
+impl Stage {
+    /// A short human-readable label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Probing => "Probing source metadata",
+            Stage::Extracting => "Extracting HEVC stream",
+            Stage::Patching => "Patching bitstream",
+            Stage::CapturingTiming => "Capturing timing",
+            Stage::Remuxing => "Remuxing",
+            Stage::Done => "Done",
+        }
+    }
+}
+
 /// What a pipeline run produced.
 #[derive(Debug, Clone)]
 pub struct PipelineReport {
@@ -41,10 +72,23 @@ pub fn run(
     output: &Path,
     opts: &PipelineOptions,
 ) -> Result<PipelineReport> {
+    run_with_progress(tools, source, encoded, output, opts, &mut |_| {})
+}
+
+/// Like [`run`], but reports each [`Stage`] to `progress` as it begins.
+pub fn run_with_progress(
+    tools: &Toolset,
+    source: &Path,
+    encoded: &Path,
+    output: &Path,
+    opts: &PipelineOptions,
+    progress: &mut dyn FnMut(Stage),
+) -> Result<PipelineReport> {
     let ffprobe = tools.require(Tool::Ffprobe)?;
     let ffmpeg = tools.require(Tool::Ffmpeg)?;
 
     // 1. Probe the source for HDR10 metadata.
+    progress(Stage::Probing);
     let mut probed = probe_hdr10(ffprobe, source)?;
     if let Some(chroma) = opts.chroma_loc {
         probed.color.chroma_loc = Some(chroma);
@@ -56,9 +100,11 @@ pub fn run(
     let timecodes = work.join("timestamps.txt");
 
     // 2. Extract the raw HEVC from the encode.
+    progress(Stage::Extracting);
     extract::extract_hevc(ffmpeg, encoded, &extracted)?;
 
     // 3. Patch the bitstream.
+    progress(Stage::Patching);
     let input = std::fs::read(&extracted)?;
     let (patched_bytes, patch_report) = patch_stream(&input, &probed.to_metadata())?;
     std::fs::write(&patched, &patched_bytes)?;
@@ -72,8 +118,10 @@ pub fn run(
         Some("mkv") => {
             let mkvmerge = tools.require(Tool::Mkvmerge)?;
             let mkvextract = tools.require(Tool::Mkvextract)?;
+            progress(Stage::CapturingTiming);
             let track_id = timing::video_track_id(mkvmerge, encoded)?;
             timing::extract_timestamps_mkv(mkvextract, encoded, track_id, &timecodes)?;
+            progress(Stage::Remuxing);
             remux::remux_mkv(mkvmerge, &patched, encoded, &timecodes, output)?;
         }
         other => {
@@ -90,6 +138,7 @@ pub fn run(
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    progress(Stage::Done);
     Ok(PipelineReport {
         probed,
         sps_patched: patch_report.sps_patched,
