@@ -36,7 +36,7 @@ impl<'a> BitReader<'a> {
 
     /// Whether the cursor sits on a byte boundary.
     pub fn byte_aligned(&self) -> bool {
-        self.bit_pos % 8 == 0
+        self.bit_pos.is_multiple_of(8)
     }
 
     /// Moves the cursor to an absolute bit position.

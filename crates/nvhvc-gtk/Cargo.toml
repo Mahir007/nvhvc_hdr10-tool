@@ -1,0 +1,18 @@
+[package]
+name = "nvhvc-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "GTK4 + libadwaita GUI for the nvhvc HDR10 HEVC patcher (Linux)."
+
+[dependencies]
+nvhvc-core.workspace = true
+
+# GTK and libadwaita are Linux-only here; on other platforms this crate builds a tiny stub so the
+# workspace still compiles. The GUI itself targets Linux (GTK 4.10+, libadwaita 1.4+).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_4"] }
+async-channel = "2"
