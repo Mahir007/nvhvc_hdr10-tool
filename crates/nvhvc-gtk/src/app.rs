@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use nvhvc_core::config::Settings;
