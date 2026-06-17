@@ -14,7 +14,13 @@
 
 pub mod bitio;
 pub mod error;
+pub mod extract;
 pub mod hevc;
+pub mod pipeline;
+pub mod probe;
+pub mod remux;
+pub mod timing;
+pub mod tools;
 
 pub use error::{Error, Result};
 
