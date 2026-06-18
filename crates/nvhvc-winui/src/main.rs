@@ -1,7 +1,8 @@
 //! WinUI3 GUI (windows-reactor) for the nvhvc HDR10 HEVC patcher.
 //!
 //! Mirrors the CLI/GTK flow: pick a source, an encode and an output, then patch. The pipeline runs
-//! on a background thread via `use_mutation`, so the UI stays responsive.
+//! on a background thread via `use_mutation`, so the UI stays responsive. Paths can be typed,
+//! dragged-and-dropped onto a field, or chosen with the Browse buttons.
 
 use windows_reactor::*;
 
@@ -9,14 +10,10 @@ use nvhvc_core::pipeline::{self, PipelineOptions};
 use nvhvc_core::tools::{Overrides, Resolution, Toolset};
 
 fn app(cx: &mut RenderCx) -> Element {
-    let (source, set_source) = cx.use_state(String::new());
-    let (encoded, set_encoded) = cx.use_state(String::new());
-    let (output, set_output) = cx.use_state(String::new());
+    let (source, set_source) = cx.use_async_state(String::new());
+    let (encoded, set_encoded) = cx.use_async_state(String::new());
+    let (output, set_output) = cx.use_async_state(String::new());
     let (patch_state, patch_trigger) = cx.use_mutation::<String>();
-
-    let on_source = move |v: String| set_source.call(v);
-    let on_encoded = move |v: String| set_encoded.call(v);
-    let on_output = move |v: String| set_output.call(v);
 
     let on_patch = {
         let trigger = patch_trigger;
@@ -38,15 +35,10 @@ fn app(cx: &mut RenderCx) -> Element {
 
     vstack((
         text_block("nvhvc — HDR10 patcher").bold().font_size(24.0),
-        text_box(source)
-            .header("Source (HDR10 master)")
-            .on_text_changed(on_source),
-        text_box(encoded)
-            .header("Encode to patch")
-            .on_text_changed(on_encoded),
-        text_box(output)
-            .header("Output (.mkv)")
-            .on_text_changed(on_output),
+        text_block("Drag a file onto a field, type a path, or use Browse…").font_size(12.0),
+        file_field("Source (HDR10 master)", source.clone(), set_source, false),
+        file_field("Encode to patch", encoded.clone(), set_encoded, false),
+        file_field("Output (.mkv)", output.clone(), set_output, true),
         tool_status(),
         button("Patch HDR10")
             .enabled(!patch_state.is_loading())
@@ -57,8 +49,70 @@ fn app(cx: &mut RenderCx) -> Element {
     .into()
 }
 
-/// A small group of rows showing each external tool with a coloured status dot:
-/// green = on PATH / custom, blue = found at a fallback install dir, red = missing.
+/// A path text box that accepts a typed path, a dragged-and-dropped file, or a Browse… dialog.
+fn file_field(label: &str, value: String, set: AsyncSetState<String>, save: bool) -> Element {
+    let field = text_box(value)
+        .header(label)
+        .on_text_changed({
+            let set = set.clone();
+            move |v: String| set.call(v)
+        })
+        .allow_drop(true)
+        .drag_over(accept_files)
+        .drag_drop({
+            let set = set.clone();
+            move |ctx| match ctx.get_storage_items().first() {
+                Some(item) => {
+                    set.call(item.path.clone());
+                    DragOperation::Link
+                }
+                None => DragOperation::None,
+            }
+        });
+    let browse = button("Browse…")
+        .vertical_alignment(VerticalAlignment::Bottom)
+        .on_click(move || {
+            if let Some(path) = pick_file(save) {
+                set.call(path);
+            }
+        });
+    hstack((field, browse)).spacing(8.0).into()
+}
+
+/// Shows a native Open (or Save) file dialog; returns the chosen path, or `None` if cancelled.
+fn pick_file(save: bool) -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, FileSaveDialog, IFileDialog, SIGDN_FILESYSPATH,
+    };
+
+    unsafe {
+        let dialog: IFileDialog = if save {
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?
+        } else {
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?
+        };
+        // `Show` returns an error when the user cancels.
+        dialog.Show(None).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = pwstr.to_string().ok()?;
+        CoTaskMemFree(Some(pwstr.0 as *const _));
+        Some(path)
+    }
+}
+
+/// Accept a drag only when it carries file(s).
+fn accept_files(ctx: &mut DragContext) -> DragOperation {
+    if ctx.has_storage_items {
+        ctx.caption = Some("Use this file".into());
+        DragOperation::Link
+    } else {
+        DragOperation::None
+    }
+}
+
+/// A small group of rows showing each external tool with a coloured status dot.
 fn tool_status() -> Element {
     let tools = Toolset::discover(&Overrides::default());
     let rows: Vec<Element> = tools
