@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 use nvhvc_core::config::Settings;
 use nvhvc_core::naming;
@@ -192,6 +192,46 @@ fn build_ui(app: &adw::Application) {
     // Output (save).
     connect_save_into(&output_btn, &window, &selection, &output_row);
 
+    // --- Wiring: drag-and-drop a file onto a row ---
+    {
+        let selection = selection.clone();
+        let row = source_row.clone();
+        let meta_row = meta_row.clone();
+        let ffprobe_path = ffprobe_path.clone();
+        attach_file_drop(&source_row, move |path| {
+            row.set_subtitle(&path.display().to_string());
+            if let Some(ffprobe) = &ffprobe_path {
+                match probe::probe_hdr10(ffprobe, &path) {
+                    Ok(p) => {
+                        meta_row.set_title("HDR10 detected");
+                        meta_row.set_subtitle(&metadata_summary(&p));
+                    }
+                    Err(e) => {
+                        meta_row.set_title("Probe failed");
+                        meta_row.set_subtitle(&e.to_string());
+                    }
+                }
+            }
+            selection.borrow_mut().source = Some(path);
+        });
+    }
+    {
+        let selection = selection.clone();
+        let row = encoded_row.clone();
+        attach_file_drop(&encoded_row, move |path| {
+            row.set_subtitle(&path.display().to_string());
+            selection.borrow_mut().encoded = Some(path);
+        });
+    }
+    {
+        let selection = selection.clone();
+        let row = output_row.clone();
+        attach_file_drop(&output_row, move |path| {
+            row.set_subtitle(&path.display().to_string());
+            selection.borrow_mut().output = Some(path);
+        });
+    }
+
     // --- Wiring: run ---
     {
         let selection = selection.clone();
@@ -332,6 +372,21 @@ fn connect_save_into(
             }
         });
     });
+}
+
+/// Adds a drag-and-drop target to `row`: dropping a file invokes `on_file` with its path.
+fn attach_file_drop<F: Fn(PathBuf) + 'static>(row: &adw::ActionRow, on_file: F) {
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    drop.connect_drop(move |_, value, _, _| {
+        if let Ok(list) = value.get::<gdk::FileList>() {
+            if let Some(path) = list.files().into_iter().next().and_then(|f| f.path()) {
+                on_file(path);
+                return true;
+            }
+        }
+        false
+    });
+    row.add_controller(drop);
 }
 
 /// Colour and description for a tool's resolution.
