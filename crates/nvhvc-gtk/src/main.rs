@@ -5,6 +5,14 @@
 
 #[cfg(target_os = "linux")]
 mod app;
+#[cfg(target_os = "linux")]
+mod css;
+#[cfg(target_os = "linux")]
+mod prefs;
+#[cfg(target_os = "linux")]
+mod stages;
+#[cfg(target_os = "linux")]
+mod state;
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

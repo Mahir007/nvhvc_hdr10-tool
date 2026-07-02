@@ -23,6 +23,7 @@ fn main() {
         &PipelineOptions {
             chroma_loc,
             keep_intermediates: false,
+            metadata_override: None,
         },
     )
     .expect("pipeline failed");

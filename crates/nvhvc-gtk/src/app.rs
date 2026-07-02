@@ -1,437 +1,541 @@
-//! The libadwaita application window and its wiring to the core pipeline.
+//! The libadwaita application: window chrome (header bar, page dots), the three-stage
+//! wizard in a `GtkStack`, and the async glue to the core pipeline.
 //!
-//! Layout (a single `AdwPreferencesPage`):
-//! * **Files** — source / encode / output pickers.
-//! * **Detected HDR10 metadata** — populated (with friendly names) after a source is chosen.
-//! * **External tools** — one row per tool with a coloured status dot (green = on PATH / custom,
-//!   blue = found at a fallback install dir, red = missing).
-//! * **Run** — a button, a progress bar and a status line. The pipeline runs on a worker thread and
-//!   reports [`Stage`]s back to the UI over an async channel.
+//! Rendering model: state lives in [`Ctx`]; after every change a handler calls
+//! [`render`], which rebuilds the visible stage's content and footer from scratch.
+//! That keeps the UI a pure function of state (no partial-update bugs) and is cheap
+//! at this widget count.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use nvhvc_core::config::Settings;
-use nvhvc_core::naming;
-use nvhvc_core::pipeline::{self, PipelineOptions, Stage};
-use nvhvc_core::probe::{self, ProbedHdr10};
-use nvhvc_core::tools::{Resolution, Tool, Toolset};
+use nvhvc_core::pipeline::{self, PipelineOptions, Stage as PipeStage};
+use nvhvc_core::probe;
+use nvhvc_core::tools::{Tool, Toolset};
+
+use crate::state::{AppState, FileInfo, RunOutcome};
+use crate::{css, prefs, stages};
 
 const APP_ID: &str = "io.github.Mahir007.NvhvcHdr10Tool";
 
-// GNOME palette dots for the tool-status indicator.
-const DOT_GREEN: &str = "#33d17a";
-const DOT_BLUE: &str = "#62a0ea";
-const DOT_RED: &str = "#e01b24";
-
-/// The three files the user picks.
-#[derive(Default)]
-struct Selection {
-    source: Option<PathBuf>,
-    encoded: Option<PathBuf>,
-    output: Option<PathBuf>,
-}
-
-/// Messages from the worker thread to the UI.
-enum Msg {
-    Progress(Stage),
-    Done(Result<PathBuf, String>),
+/// Widgets that live for the whole session plus the mutable wizard state.
+pub struct Ctx {
+    pub state: RefCell<AppState>,
+    pub window: adw::ApplicationWindow,
+    pub title: adw::WindowTitle,
+    pub back_btn: gtk::Button,
+    pub dots: [gtk::Box; 3],
+    pub stack: gtk::Stack,
+    pub pages: [gtk::Box; 3],
+    pub footer: gtk::Box,
 }
 
 /// Builds the application and runs the GTK main loop.
 pub fn run() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| load_css());
     app.connect_activate(build_ui);
     app.run()
 }
 
+fn load_css() {
+    let provider = gtk::CssProvider::new();
+    #[allow(deprecated)] // load_from_string needs the v4_12 feature; we target 4.10.
+    provider.load_from_data(css::STYLE);
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
 fn build_ui(app: &adw::Application) {
-    let settings = Settings::load();
-    let toolset = Toolset::discover(&settings.tool_overrides);
-    let selection = Rc::new(RefCell::new(Selection::default()));
+    // Restore the persisted theme before the window shows.
+    apply_theme_setting(Settings::load().ui_theme.as_deref().unwrap_or("system"));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("nvhvc — HDR10 patcher")
-        .default_width(720)
-        .default_height(660)
+        .title("HDR10 Patcher")
+        .default_width(768)
+        .default_height(716)
         .build();
 
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
-
-    let page = adw::PreferencesPage::new();
-
-    // --- Files ---
-    let files = adw::PreferencesGroup::builder()
-        .title("Files")
-        .description("Pick the HDR10 master, the encode to patch, and where to save the result")
+    // --- Header bar ---
+    let title = adw::WindowTitle::new("HDR10 Patcher", "Step 1 of 3");
+    let back_btn = gtk::Button::from_icon_name("go-previous-symbolic");
+    back_btn.set_tooltip_text(Some("Back"));
+    back_btn.set_visible(false);
+    let menu_btn = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main menu")
         .build();
-    let (source_row, source_btn) = file_row("Source", "HDR10 master to copy metadata from");
-    let (encoded_row, encoded_btn) = file_row("Encode", "HEVC encode missing HDR10");
-    let (output_row, output_btn) = file_row("Output", "Destination .mkv");
-    files.add(&source_row);
-    files.add(&encoded_row);
-    files.add(&output_row);
-    page.add(&files);
 
-    // --- Detected metadata ---
-    let meta_group = adw::PreferencesGroup::builder()
-        .title("Detected HDR10 metadata")
-        .build();
-    let meta_row = adw::ActionRow::builder()
-        .title("—")
-        .subtitle("Select a source to read its metadata")
-        .build();
-    meta_group.add(&meta_row);
-    page.add(&meta_group);
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&title));
+    header.pack_start(&back_btn);
+    header.pack_end(&menu_btn);
 
-    // --- External tools (coloured dots) ---
-    let tools_group = adw::PreferencesGroup::builder()
-        .title("External tools")
-        .build();
-    for (tool, resolution) in toolset.all() {
-        let (color, detail) = tool_status(tool, resolution);
-        let row = adw::ActionRow::builder()
-            .title(tool.label())
-            .subtitle(&detail)
-            .build();
-        let dot = gtk::Label::new(None);
-        dot.set_markup(&format!(
-            "<span foreground=\"{color}\" size=\"large\">●</span>"
-        ));
-        dot.set_valign(gtk::Align::Center);
-        row.add_prefix(&dot);
-        tools_group.add(&row);
-    }
-    page.add(&tools_group);
-
-    // --- Run + progress ---
-    let run_group = adw::PreferencesGroup::new();
-    let run_button = gtk::Button::builder()
-        .label("Patch HDR10")
+    // --- Page dots ---
+    let dots_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(7)
         .halign(gtk::Align::Center)
         .build();
-    run_button.add_css_class("suggested-action");
-    run_button.add_css_class("pill");
-    let progress = gtk::ProgressBar::builder()
-        .show_text(true)
-        .visible(false)
-        .build();
-    let status = gtk::Label::builder().wrap(true).xalign(0.0).build();
-    let run_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(6)
-        .build();
-    run_box.append(&run_button);
-    run_box.append(&progress);
-    run_box.append(&status);
-    run_group.add(&run_box);
-    page.add(&run_group);
+    let dots: [gtk::Box; 3] = std::array::from_fn(|_| {
+        let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        d.add_css_class("dot");
+        dots_row.append(&d);
+        d
+    });
+    let dots_wrap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dots_wrap.add_css_class("dots-row");
+    dots_wrap.set_halign(gtk::Align::Fill);
+    let dots_center = gtk::CenterBox::new();
+    dots_center.set_center_widget(Some(&dots_row));
+    dots_center.set_hexpand(true);
+    dots_wrap.append(&dots_center);
 
-    toolbar.set_content(Some(&page));
+    // --- Stage pages in a stack ---
+    let stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::SlideLeftRight)
+        .transition_duration(220)
+        .vexpand(true)
+        .build();
+    let pages: [gtk::Box; 3] = std::array::from_fn(|i| {
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.set_vexpand(true);
+        stack.add_named(&page, Some(&format!("stage{}", i + 1)));
+        page
+    });
+
+    // --- Footer bar ---
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    footer.add_css_class("footer-bar");
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&dots_wrap);
+    content.append(&stack);
+    content.append(&footer);
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
     window.set_content(Some(&toolbar));
 
-    // --- Wiring: file choosers ---
-    let ffprobe_path = toolset
-        .resolution(Tool::Ffprobe)
-        .path()
-        .map(Path::to_path_buf);
+    let ctx = Rc::new(Ctx {
+        state: RefCell::new(AppState::new()),
+        window: window.clone(),
+        title,
+        back_btn: back_btn.clone(),
+        dots,
+        stack,
+        pages,
+        footer,
+    });
 
-    // Source (also probes for metadata).
+    menu_btn.set_popover(Some(&build_app_menu(&ctx)));
+
     {
-        let window = window.clone();
-        let selection = selection.clone();
-        let row = source_row.clone();
-        let meta_row = meta_row.clone();
-        let ffprobe_path = ffprobe_path.clone();
-        source_btn.connect_clicked(move |_| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Choose HDR10 source")
-                .build();
-            let selection = selection.clone();
-            let row = row.clone();
-            let meta_row = meta_row.clone();
-            let ffprobe_path = ffprobe_path.clone();
-            dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                if let Some(path) = result.ok().and_then(|f| f.path()) {
-                    row.set_subtitle(&path.display().to_string());
-                    if let Some(ffprobe) = &ffprobe_path {
-                        match probe::probe_hdr10(ffprobe, &path) {
-                            Ok(p) => {
-                                meta_row.set_title("HDR10 detected");
-                                meta_row.set_subtitle(&metadata_summary(&p));
-                            }
-                            Err(e) => {
-                                meta_row.set_title("Probe failed");
-                                meta_row.set_subtitle(&e.to_string());
-                            }
-                        }
-                    }
-                    selection.borrow_mut().source = Some(path);
+        let ctx = ctx.clone();
+        back_btn.connect_clicked(move |_| {
+            {
+                let mut s = ctx.state.borrow_mut();
+                if s.processing.is_some() {
+                    return;
                 }
-            });
-        });
-    }
-
-    // Encode (open).
-    connect_open_into(
-        &encoded_btn,
-        &window,
-        &selection,
-        &encoded_row,
-        |sel, path| {
-            sel.encoded = Some(path);
-        },
-    );
-    // Output (save).
-    connect_save_into(&output_btn, &window, &selection, &output_row);
-
-    // --- Wiring: drag-and-drop a file onto a row ---
-    {
-        let selection = selection.clone();
-        let row = source_row.clone();
-        let meta_row = meta_row.clone();
-        let ffprobe_path = ffprobe_path.clone();
-        attach_file_drop(&source_row, move |path| {
-            row.set_subtitle(&path.display().to_string());
-            if let Some(ffprobe) = &ffprobe_path {
-                match probe::probe_hdr10(ffprobe, &path) {
-                    Ok(p) => {
-                        meta_row.set_title("HDR10 detected");
-                        meta_row.set_subtitle(&metadata_summary(&p));
-                    }
-                    Err(e) => {
-                        meta_row.set_title("Probe failed");
-                        meta_row.set_subtitle(&e.to_string());
-                    }
+                if s.stage == 3 {
+                    s.result = None;
+                    s.stage = 2;
+                } else if s.stage > 1 {
+                    s.stage -= 1;
                 }
             }
-            selection.borrow_mut().source = Some(path);
-        });
-    }
-    {
-        let selection = selection.clone();
-        let row = encoded_row.clone();
-        attach_file_drop(&encoded_row, move |path| {
-            row.set_subtitle(&path.display().to_string());
-            selection.borrow_mut().encoded = Some(path);
-        });
-    }
-    {
-        let selection = selection.clone();
-        let row = output_row.clone();
-        attach_file_drop(&output_row, move |path| {
-            row.set_subtitle(&path.display().to_string());
-            selection.borrow_mut().output = Some(path);
+            render(&ctx);
         });
     }
 
-    // --- Wiring: run ---
-    {
-        let selection = selection.clone();
-        let overrides = settings.tool_overrides.clone();
-        let progress = progress.clone();
-        let status = status.clone();
-        let run_button_for_async = run_button.clone();
-        run_button.connect_clicked(move |btn| {
-            let (source, encoded, output) = {
-                let sel = selection.borrow();
-                match (sel.source.clone(), sel.encoded.clone(), sel.output.clone()) {
-                    (Some(s), Some(e), Some(o)) => (s, e, o),
-                    _ => {
-                        status.set_text("Choose a source, an encode and an output file first.");
-                        return;
-                    }
-                }
-            };
-
-            btn.set_sensitive(false);
-            progress.set_visible(true);
-            progress.set_fraction(0.0);
-            status.set_text("Working…");
-
-            let (tx, rx) = async_channel::unbounded::<Msg>();
-            let overrides = overrides.clone();
-
-            // Worker thread: the whole pipeline.
-            gio::spawn_blocking(move || {
-                let tools = Toolset::discover(&overrides);
-                let opts = PipelineOptions::default();
-                let result = pipeline::run_with_progress(
-                    &tools,
-                    &source,
-                    &encoded,
-                    &output,
-                    &opts,
-                    &mut |stage| {
-                        let _ = tx.send_blocking(Msg::Progress(stage));
-                    },
-                );
-                let outcome = result.map(|r| r.output).map_err(|e| e.to_string());
-                let _ = tx.send_blocking(Msg::Done(outcome));
-            });
-
-            // UI side: consume progress messages.
-            let progress = progress.clone();
-            let status = status.clone();
-            let button = run_button_for_async.clone();
-            glib::spawn_future_local(async move {
-                while let Ok(msg) = rx.recv().await {
-                    match msg {
-                        Msg::Progress(stage) => {
-                            progress.set_text(Some(stage.label()));
-                            progress.set_fraction(stage_fraction(stage));
-                        }
-                        Msg::Done(Ok(path)) => {
-                            progress.set_fraction(1.0);
-                            progress.set_text(Some("Done"));
-                            status.set_text(&format!("✓ Wrote {}", path.display()));
-                            button.set_sensitive(true);
-                        }
-                        Msg::Done(Err(e)) => {
-                            progress.set_visible(false);
-                            status.set_text(&format!("Error: {e}"));
-                            button.set_sensitive(true);
-                        }
-                    }
-                }
-            });
-        });
-    }
-
+    render(&ctx);
     window.present();
 }
 
-/// Builds an `ActionRow` with a trailing "choose file" button.
-fn file_row(title: &str, subtitle: &str) -> (adw::ActionRow, gtk::Button) {
-    let button = gtk::Button::builder()
-        .icon_name("document-open-symbolic")
-        .valign(gtk::Align::Center)
-        .build();
-    button.add_css_class("flat");
-    let row = adw::ActionRow::builder()
-        .title(title)
-        .subtitle(subtitle)
-        .build();
-    row.add_suffix(&button);
-    row.set_activatable_widget(Some(&button));
-    (row, button)
+/// Rebuilds everything that depends on state: chrome, the visible page, the footer.
+pub fn render(ctx: &Rc<Ctx>) {
+    let (stage, processing) = {
+        let s = ctx.state.borrow();
+        (s.stage, s.processing.is_some())
+    };
+
+    ctx.title.set_subtitle(&format!("Step {stage} of 3"));
+    ctx.back_btn.set_visible(stage > 1 && !processing);
+    for (i, dot) in ctx.dots.iter().enumerate() {
+        if i + 1 == stage as usize {
+            dot.add_css_class("active");
+        } else {
+            dot.remove_css_class("active");
+        }
+    }
+
+    // Rebuild the visible page.
+    let page = &ctx.pages[stage as usize - 1];
+    while let Some(child) = page.first_child() {
+        page.remove(&child);
+    }
+    let body: gtk::Widget = match stage {
+        1 => stages::stage_source(ctx),
+        2 => stages::stage_encode(ctx),
+        _ => stages::stage_result(ctx),
+    };
+    page.append(&body);
+    ctx.stack.set_visible_child_name(&format!("stage{stage}"));
+
+    // Rebuild the footer.
+    while let Some(child) = ctx.footer.first_child() {
+        ctx.footer.remove(&child);
+    }
+    ctx.footer.set_visible(!processing);
+    if !processing {
+        stages::build_footer(ctx, &ctx.footer);
+    }
 }
 
-/// Wires an "open file" chooser that stores the chosen path into `selection`.
-fn connect_open_into(
-    button: &gtk::Button,
-    window: &adw::ApplicationWindow,
-    selection: &Rc<RefCell<Selection>>,
-    row: &adw::ActionRow,
-    set: fn(&mut Selection, PathBuf),
-) {
-    let window = window.clone();
-    let selection = selection.clone();
-    let row = row.clone();
-    button.connect_clicked(move |_| {
-        let dialog = gtk::FileDialog::builder().title("Choose a file").build();
-        let selection = selection.clone();
-        let row = row.clone();
-        dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-            if let Some(path) = result.ok().and_then(|f| f.path()) {
-                row.set_subtitle(&path.display().to_string());
-                set(&mut selection.borrow_mut(), path);
+// ===================== App menu (theme circles + entries) =====================
+
+fn build_app_menu(ctx: &Rc<Ctx>) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    root.set_width_request(230);
+
+    // Theme selector circles.
+    let circles = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(18)
+        .halign(gtk::Align::Center)
+        .margin_top(9)
+        .margin_bottom(9)
+        .build();
+    let current = Settings::load().ui_theme.unwrap_or_else(|| "system".into());
+    let mk_circle = |mode: &'static str, tooltip: &str| -> gtk::Button {
+        let b = gtk::Button::new();
+        b.add_css_class("theme-circle");
+        b.add_css_class(mode);
+        b.set_tooltip_text(Some(tooltip));
+        if current == mode {
+            b.add_css_class("selected");
+        }
+        b
+    };
+    let sys = mk_circle("system", "Follow system style");
+    let light = mk_circle("light", "Light style");
+    let dark = mk_circle("dark", "Dark style");
+    for (btn, mode) in [(&sys, "system"), (&light, "light"), (&dark, "dark")] {
+        let all = [sys.clone(), light.clone(), dark.clone()];
+        btn.connect_clicked(move |b| {
+            apply_theme_setting(mode);
+            let mut settings = Settings::load();
+            settings.ui_theme = Some(mode.to_owned());
+            let _ = settings.save();
+            for other in &all {
+                other.remove_css_class("selected");
             }
+            b.add_css_class("selected");
         });
-    });
-}
+        circles.append(btn);
+    }
+    root.append(&circles);
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-/// Wires a "save file" chooser that stores the chosen path as the output.
-fn connect_save_into(
-    button: &gtk::Button,
-    window: &adw::ApplicationWindow,
-    selection: &Rc<RefCell<Selection>>,
-    row: &adw::ActionRow,
-) {
-    let window = window.clone();
-    let selection = selection.clone();
-    let row = row.clone();
-    button.connect_clicked(move |_| {
-        let dialog = gtk::FileDialog::builder()
-            .title("Choose output file")
-            .initial_name("out.mkv")
+    let entry = |label: &str| -> gtk::Button {
+        let b = gtk::Button::builder()
+            .child(
+                &gtk::Label::builder()
+                    .label(label)
+                    .halign(gtk::Align::Start)
+                    .build(),
+            )
             .build();
-        let selection = selection.clone();
-        let row = row.clone();
-        dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
-            if let Some(path) = result.ok().and_then(|f| f.path()) {
-                row.set_subtitle(&path.display().to_string());
-                selection.borrow_mut().output = Some(path);
+        b.add_css_class("flat");
+        b
+    };
+    let prefs_btn = entry("Preferences");
+    {
+        let ctx = ctx.clone();
+        let popover_weak = glib::clone::Downgrade::downgrade(&popover);
+        prefs_btn.connect_clicked(move |_| {
+            if let Some(p) = popover_weak.upgrade() {
+                p.popdown();
             }
+            prefs::show(&ctx.window);
         });
+    }
+    let about_btn = entry("About nvhvc");
+    {
+        let window = ctx.window.clone();
+        let popover_weak = glib::clone::Downgrade::downgrade(&popover);
+        about_btn.connect_clicked(move |_| {
+            if let Some(p) = popover_weak.upgrade() {
+                p.popdown();
+            }
+            show_about(&window);
+        });
+    }
+    root.append(&prefs_btn);
+    root.append(&about_btn);
+
+    popover.set_child(Some(&root));
+    popover
+}
+
+fn apply_theme_setting(mode: &str) {
+    let scheme = match mode {
+        "light" => adw::ColorScheme::ForceLight,
+        "dark" => adw::ColorScheme::ForceDark,
+        _ => adw::ColorScheme::Default,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
+}
+
+fn show_about(window: &adw::ApplicationWindow) {
+    let about = adw::AboutWindow::builder()
+        .transient_for(window)
+        .application_name("HDR10 Patcher")
+        .application_icon("video-display")
+        .version(nvhvc_core::VERSION)
+        .developer_name("nvhvc")
+        .license_type(gtk::License::Gpl30)
+        .comments(
+            "Injects HDR10 metadata into HEVC streams without re-encoding — bit-exact \
+             SPS/VUI editing with the encode's frame timing preserved exactly.",
+        )
+        .build();
+    about.present();
+}
+
+// ===================== Async: probing & the pipeline =====================
+
+/// Kicks off a background ffprobe of `path` for the source (`is_source`) or encode slot.
+pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
+    let seq = {
+        let mut s = ctx.state.borrow_mut();
+        s.probe_seq += 1;
+        if is_source {
+            s.src_probing = true;
+            s.src_error = None;
+            s.source = None;
+            // New source invalidates edits made against the old one.
+            s.overrides = None;
+            s.editing = None;
+        } else {
+            s.enc_probing = true;
+            s.enc_error = None;
+            s.encode = None;
+            s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
+                &path.display().to_string(),
+            )));
+        }
+        s.probe_seq
+    };
+    render(ctx);
+
+    let (tx, rx) = async_channel::bounded::<Result<FileInfo, String>>(1);
+    {
+        let path = path.clone();
+        gio::spawn_blocking(move || {
+            let result = (|| {
+                let settings = Settings::load();
+                let tools = Toolset::discover(&settings.tool_overrides);
+                let ffprobe = tools.require(Tool::Ffprobe).map_err(|e| e.to_string())?;
+                let (hdr, info) = probe::probe_media(ffprobe, &path).map_err(|e| e.to_string())?;
+                let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                Ok(FileInfo {
+                    path,
+                    size_bytes,
+                    info,
+                    hdr,
+                })
+            })();
+            let _ = tx.send_blocking(result);
+        });
+    }
+
+    let ctx = ctx.clone();
+    glib::spawn_future_local(async move {
+        let Ok(result) = rx.recv().await else { return };
+        {
+            let mut s = ctx.state.borrow_mut();
+            if s.probe_seq != seq {
+                return; // a newer pick superseded this probe
+            }
+            match (is_source, result) {
+                (true, Ok(info)) => {
+                    s.source = Some(info);
+                    s.src_probing = false;
+                }
+                (true, Err(e)) => {
+                    s.src_error = Some(e);
+                    s.src_probing = false;
+                }
+                (false, Ok(info)) => {
+                    s.encode = Some(info);
+                    s.enc_probing = false;
+                }
+                (false, Err(e)) => {
+                    s.enc_error = Some(e);
+                    s.enc_probing = false;
+                }
+            }
+        }
+        render(&ctx);
     });
 }
 
-/// Adds a drag-and-drop target to `row`: dropping a file invokes `on_file` with its path.
-fn attach_file_drop<F: Fn(PathBuf) + 'static>(row: &adw::ActionRow, on_file: F) {
-    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-    drop.connect_drop(move |_, value, _, _| {
-        if let Ok(list) = value.get::<gdk::FileList>() {
-            if let Some(path) = list.files().into_iter().next().and_then(|f| f.path()) {
-                on_file(path);
-                return true;
+/// Runs the pipeline on a worker thread with staged progress.
+pub fn start_run(ctx: &Rc<Ctx>) {
+    let (source, encoded, output, metadata_override) = {
+        let s = ctx.state.borrow();
+        let (Some(src), Some(enc), Some(out)) = (&s.source, &s.encode, &s.output) else {
+            return;
+        };
+        (src.path.clone(), enc.path.clone(), out.clone(), s.overrides)
+    };
+    {
+        let mut s = ctx.state.borrow_mut();
+        s.processing = Some(PipeStage::Probing);
+        s.run_error = None;
+    }
+    render(ctx);
+
+    enum Msg {
+        Progress(PipeStage),
+        Done(Result<RunOutcome, String>),
+    }
+
+    let (tx, rx) = async_channel::unbounded::<Msg>();
+    gio::spawn_blocking(move || {
+        let settings = Settings::load();
+        let tools = Toolset::discover(&settings.tool_overrides);
+        let opts = PipelineOptions {
+            chroma_loc: settings.default_chroma_loc,
+            keep_intermediates: false,
+            metadata_override,
+        };
+        let tx_progress = tx.clone();
+        let result =
+            pipeline::run_with_progress(&tools, &source, &encoded, &output, &opts, &mut |stage| {
+                let _ = tx_progress.send_blocking(Msg::Progress(stage));
+            })
+            .map(|r| RunOutcome {
+                output: r.output,
+                sps_patched: r.sps_patched,
+                sei_inserted: r.sei_inserted,
+                frames: r.frames,
+            })
+            .map_err(|e| e.to_string());
+        let _ = tx.send_blocking(Msg::Done(result));
+    });
+
+    let ctx = ctx.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(msg) = rx.recv().await {
+            let done = {
+                let mut s = ctx.state.borrow_mut();
+                match msg {
+                    Msg::Progress(stage) => {
+                        s.processing = Some(stage);
+                        false
+                    }
+                    Msg::Done(Ok(outcome)) => {
+                        s.processing = None;
+                        s.result = Some(outcome);
+                        s.stage = 3;
+                        true
+                    }
+                    Msg::Done(Err(e)) => {
+                        s.processing = None;
+                        s.run_error = Some(e);
+                        true
+                    }
+                }
+            };
+            render(&ctx);
+            if done {
+                break;
             }
+        }
+    });
+}
+
+/// Opens a native file dialog; `on_pick` receives the chosen path.
+pub fn pick_file(
+    ctx: &Rc<Ctx>,
+    save: bool,
+    title: &str,
+    initial_name: Option<&str>,
+    on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
+) {
+    let mut builder = gtk::FileDialog::builder().title(title);
+    if let Some(name) = initial_name {
+        builder = builder.initial_name(name);
+    }
+    let dialog = builder.build();
+    let ctx = ctx.clone();
+    if save {
+        dialog.save(
+            Some(&ctx.window.clone()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if let Some(path) = result.ok().and_then(|f| f.path()) {
+                    on_pick(&ctx, path);
+                }
+            },
+        );
+    } else {
+        dialog.open(
+            Some(&ctx.window.clone()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if let Some(path) = result.ok().and_then(|f| f.path()) {
+                    on_pick(&ctx, path);
+                }
+            },
+        );
+    }
+}
+
+/// Attaches a file drag-and-drop target to `widget`.
+pub fn attach_file_drop(
+    ctx: &Rc<Ctx>,
+    widget: &impl IsA<gtk::Widget>,
+    on_file: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
+) {
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    let ctx = ctx.clone();
+    drop.connect_drop(move |_, value, _, _| {
+        if let Ok(list) = value.get::<gdk::FileList>()
+            && let Some(path) = list.files().into_iter().next().and_then(|f| f.path())
+        {
+            on_file(&ctx, path);
+            return true;
         }
         false
     });
-    row.add_controller(drop);
+    widget.add_controller(drop);
 }
 
-/// Colour and description for a tool's resolution.
-fn tool_status(tool: Tool, resolution: &Resolution) -> (&'static str, String) {
-    match resolution {
-        Resolution::OnPath(p) => (DOT_GREEN, format!("On PATH — {}", p.display())),
-        Resolution::Override(p) => (DOT_GREEN, format!("Custom path — {}", p.display())),
-        Resolution::Fallback(p) => (DOT_BLUE, format!("Install dir — {}", p.display())),
-        Resolution::NotFound => (DOT_RED, format!("Not found — {}", tool.install_hint())),
-    }
+/// Opens a file with the default handler (plays the output).
+pub fn launch_file(window: &adw::ApplicationWindow, path: &std::path::Path) {
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+    launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
 }
 
-/// A one-line, friendly summary of probed metadata for the UI.
-fn metadata_summary(p: &ProbedHdr10) -> String {
-    let c = &p.color;
-    let mut parts = vec![
-        format!(
-            "{} / {} / {}",
-            naming::primaries_name(c.colour_primaries),
-            naming::transfer_name(c.transfer_characteristics),
-            naming::matrix_name(c.matrix_coeffs),
-        ),
-        naming::range_name(c.video_full_range).to_string(),
-    ];
-    if let Some(md) = &p.mastering_display {
-        let gamut = naming::gamut_name(md).unwrap_or("Custom");
-        parts.push(format!(
-            "{gamut}, {:.0} nits",
-            md.max_luminance as f64 / 10_000.0
-        ));
-    }
-    if let Some(cll) = &p.content_light_level {
-        parts.push(format!("MaxCLL {}", cll.max_cll));
-    }
-    parts.join(" · ")
-}
-
-/// Rough progress fraction for each pipeline stage.
-fn stage_fraction(stage: Stage) -> f64 {
-    match stage {
-        Stage::Probing => 0.1,
-        Stage::Extracting => 0.3,
-        Stage::Patching => 0.55,
-        Stage::CapturingTiming => 0.75,
-        Stage::Remuxing => 0.9,
-        Stage::Done => 1.0,
-    }
+/// Reveals a file in the file manager.
+pub fn open_containing_folder(window: &adw::ApplicationWindow, path: &std::path::Path) {
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+    launcher.open_containing_folder(Some(window), gio::Cancellable::NONE, |_| {});
 }
