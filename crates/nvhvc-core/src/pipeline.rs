@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::hevc::patch::patch_stream;
+use crate::hevc::patch::{Hdr10Metadata, patch_stream};
 use crate::probe::{ProbedHdr10, probe_hdr10};
 use crate::tools::{Tool, Toolset};
 use crate::{extract, remux, timing};
@@ -15,6 +15,9 @@ pub struct PipelineOptions {
     pub chroma_loc: Option<u32>,
     /// Keep the intermediate extracted/patched/timecode files instead of deleting them.
     pub keep_intermediates: bool,
+    /// Inject these values instead of the source's probed metadata (user overrides from a GUI).
+    /// The source is still probed for the report; only the injected signalling changes.
+    pub metadata_override: Option<Hdr10Metadata>,
 }
 
 /// Stages emitted by the pipeline so a front-end can show progress.
@@ -51,12 +54,16 @@ impl Stage {
 /// What a pipeline run produced.
 #[derive(Debug, Clone)]
 pub struct PipelineReport {
-    /// The HDR10 metadata probed from the source and injected.
+    /// The HDR10 metadata probed from the source.
     pub probed: ProbedHdr10,
+    /// The metadata actually written into the encode (the probe, or the caller's override).
+    pub injected: Hdr10Metadata,
     /// Number of SPS NAL units rewritten in the encode.
     pub sps_patched: usize,
     /// Whether an HDR10 SEI was inserted.
     pub sei_inserted: bool,
+    /// Number of video frames whose timestamps were captured and reproduced (when known).
+    pub frames: Option<usize>,
     /// The finished output file.
     pub output: PathBuf,
 }
@@ -93,6 +100,13 @@ pub fn run_with_progress(
     if let Some(chroma) = opts.chroma_loc {
         probed.color.chroma_loc = Some(chroma);
     }
+    // The user's override (if any) wins over the probe; an explicit chroma_loc wins over both.
+    let mut metadata = opts
+        .metadata_override
+        .unwrap_or_else(|| probed.to_metadata());
+    if let Some(chroma) = opts.chroma_loc {
+        metadata.color.chroma_loc = Some(chroma);
+    }
 
     let work = make_workdir()?;
     let extracted = work.join("extracted.hevc");
@@ -106,7 +120,7 @@ pub fn run_with_progress(
     // 3. Patch the bitstream.
     progress(Stage::Patching);
     let input = std::fs::read(&extracted)?;
-    let (patched_bytes, patch_report) = patch_stream(&input, &probed.to_metadata())?;
+    let (patched_bytes, patch_report) = patch_stream(&input, &metadata)?;
     std::fs::write(&patched, &patched_bytes)?;
 
     // 4. Capture timing and remux into the chosen container.
@@ -114,15 +128,26 @@ pub fn run_with_progress(
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase());
-    match container.as_deref() {
+    let frames = match container.as_deref() {
         Some("mkv") => {
             let mkvmerge = tools.require(Tool::Mkvmerge)?;
             let mkvextract = tools.require(Tool::Mkvextract)?;
             progress(Stage::CapturingTiming);
             let track_id = timing::video_track_id(mkvmerge, encoded)?;
             timing::extract_timestamps_mkv(mkvextract, encoded, track_id, &timecodes)?;
+            // One timestamp per frame, plus one: mkvextract appends the end timestamp of the
+            // final frame (so its duration survives the remux). Skip the "# timestamp format
+            // v2" header and blank lines, then subtract that trailing end marker.
+            let frames = std::fs::read_to_string(&timecodes).ok().map(|t| {
+                t.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .count()
+                    .saturating_sub(1)
+            });
             progress(Stage::Remuxing);
             remux::remux_mkv(mkvmerge, &patched, encoded, &timecodes, output)?;
+            frames
         }
         other => {
             return Err(Error::Probe {
@@ -132,7 +157,7 @@ pub fn run_with_progress(
                 ),
             });
         }
-    }
+    };
 
     if !opts.keep_intermediates {
         let _ = std::fs::remove_dir_all(&work);
@@ -141,8 +166,10 @@ pub fn run_with_progress(
     progress(Stage::Done);
     Ok(PipelineReport {
         probed,
+        injected: metadata,
         sps_patched: patch_report.sps_patched,
         sei_inserted: patch_report.sei_inserted,
+        frames,
         output: output.to_path_buf(),
     })
 }

@@ -115,6 +115,7 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
             let opts = PipelineOptions {
                 chroma_loc: chroma_loc.or(settings.default_chroma_loc),
                 keep_intermediates: *keep_intermediates,
+                metadata_override: None,
             };
             let report =
                 pipeline::run_with_progress(tools, source, encoded, output, &opts, &mut |stage| {
