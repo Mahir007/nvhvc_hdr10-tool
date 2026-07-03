@@ -123,7 +123,37 @@ fn app(cx: &mut RenderCx) -> Element {
     if vm.ui.prefs_open {
         layers.push(views::prefs_overlay(&vm).with_key("prefs"));
     }
-    if vm.ui.about_open {
+    // Both dialogs stay mounted permanently and are driven by `is_open` alone:
+    // unmounting a ContentDialog from inside its own Closed callback crashes the
+    // WinUI backend, so closing must be a property update, never a removal.
+    {
+        let upd = vm.upd.clone();
+        let launch = launch_run(&vm);
+        layers.push(
+            ContentDialog::new(format!(
+                "Replace \u{201C}{}\u{201D}?",
+                file_name(&vm.output)
+            ))
+            .with_key("overwrite")
+            .content(
+                "A file with this name already exists. Replacing it will overwrite its contents.",
+            )
+            .primary_button_text("Replace")
+            .close_button_text("Cancel")
+            .is_open(vm.ui.confirm_overwrite)
+            .on_closed(move |result| {
+                upd.call(|mut s| {
+                    s.confirm_overwrite = false;
+                    s
+                });
+                if result == ContentDialogResult::Primary {
+                    launch();
+                }
+            })
+            .into(),
+        );
+    }
+    {
         let upd = vm.upd.clone();
         layers.push(
             ContentDialog::new("About nvhvc")
@@ -134,7 +164,7 @@ fn app(cx: &mut RenderCx) -> Element {
                     nvhvc_core::VERSION
                 ))
                 .close_button_text("OK")
-                .is_open(true)
+                .is_open(vm.ui.about_open)
                 .on_closed(move |_| {
                     upd.call(|mut s| {
                         s.about_open = false;
@@ -208,15 +238,40 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
 /// Click handler for choosing the output path (save dialog).
 pub fn pick_output_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let set_output = vm.set_output.clone();
+    let upd = vm.upd.clone();
     move || {
         if let Some(path) = pick_file(true) {
-            set_output.call(path);
+            set_output.call(path.clone());
+            // The Win32 save dialog already warned about an existing file.
+            upd.call(move |mut s| {
+                s.output_chosen_for = Some(path);
+                s
+            });
         }
     }
 }
 
-/// Click handler that launches the pipeline on a worker thread with staged progress.
+/// Click handler for the Patch button: asks about overwriting an existing output file
+/// the user didn't pick themselves, then launches.
 pub fn run_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let launch = launch_run(vm);
+    let output = vm.output.clone();
+    let user_chosen = vm.ui.output_chosen_for.as_deref() == Some(vm.output.as_str());
+    let upd = vm.upd.clone();
+    move || {
+        if !user_chosen && std::path::Path::new(&output).exists() {
+            upd.call(|mut s| {
+                s.confirm_overwrite = true;
+                s
+            });
+        } else {
+            launch();
+        }
+    }
+}
+
+/// Launches the pipeline on a worker thread with staged progress.
+pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
     let (source, encode, output) = (vm.source.clone(), vm.encode.clone(), vm.output.clone());
     let metadata_override = vm.ui.override_for(&vm.source);
     let token = vm.ui.run_token + 1;
