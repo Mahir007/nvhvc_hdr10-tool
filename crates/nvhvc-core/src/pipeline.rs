@@ -64,6 +64,8 @@ pub struct PipelineReport {
     pub sei_inserted: bool,
     /// Number of video frames whose timestamps were captured and reproduced (when known).
     pub frames: Option<usize>,
+    /// The encode's track inventory that the remux carried over (when known).
+    pub tracks: Option<crate::timing::MkvTracks>,
     /// The finished output file.
     pub output: PathBuf,
 }
@@ -128,13 +130,18 @@ pub fn run_with_progress(
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase());
-    let frames = match container.as_deref() {
+    let (frames, tracks) = match container.as_deref() {
         Some("mkv") => {
             let mkvmerge = tools.require(Tool::Mkvmerge)?;
             let mkvextract = tools.require(Tool::Mkvextract)?;
             progress(Stage::CapturingTiming);
-            let track_id = timing::video_track_id(mkvmerge, encoded)?;
-            timing::extract_timestamps_mkv(mkvextract, encoded, track_id, &timecodes)?;
+            let mkv_tracks = timing::identify_mkv(mkvmerge, encoded)?;
+            timing::extract_timestamps_mkv(
+                mkvextract,
+                encoded,
+                mkv_tracks.video_track_id,
+                &timecodes,
+            )?;
             // One timestamp per frame, plus one: mkvextract appends the end timestamp of the
             // final frame (so its duration survives the remux). Skip the "# timestamp format
             // v2" header and blank lines, then subtract that trailing end marker.
@@ -147,7 +154,7 @@ pub fn run_with_progress(
             });
             progress(Stage::Remuxing);
             remux::remux_mkv(mkvmerge, &patched, encoded, &timecodes, output)?;
-            frames
+            (frames, Some(mkv_tracks))
         }
         other => {
             return Err(Error::Probe {
@@ -170,6 +177,7 @@ pub fn run_with_progress(
         sps_patched: patch_report.sps_patched,
         sei_inserted: patch_report.sei_inserted,
         frames,
+        tracks,
         output: output.to_path_buf(),
     })
 }

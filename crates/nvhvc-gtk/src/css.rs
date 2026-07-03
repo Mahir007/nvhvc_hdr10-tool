@@ -5,14 +5,15 @@
 
 pub const STYLE: &str = r#"
 /* ===== drop zone ===== */
-button.dropzone {
+.dropzone {
   border: 2px dashed alpha(currentColor, .25);
   border-radius: 16px;
   background: @card_bg_color;
   padding: 40px 24px 34px 24px;
   transition: all .15s ease;
 }
-button.dropzone:hover {
+/* Highlight only while a drag hovers the zone — not on plain mouse-over. */
+.dropzone:drop(active) {
   border-color: @accent_bg_color;
   background: alpha(@accent_bg_color, .08);
 }
@@ -23,12 +24,15 @@ button.dropzone:hover {
   background: alpha(@accent_bg_color, .12);
   color: @accent_color;
 }
-.open-pill {
+button.open-pill {
   background: @accent_bg_color;
   color: @accent_fg_color;
   border-radius: 8px;
   padding: 9px 20px;
   font-weight: 700;
+}
+button.open-pill:hover {
+  background: shade(@accent_bg_color, 0.92);
 }
 
 /* ===== cards & rows ===== */
@@ -160,13 +164,22 @@ button.suggested-action:disabled {
   color: alpha(@accent_fg_color, .85);
 }
 
-/* ===== tool status dots ===== */
+/* ===== tool status dots =====
+   green = found on PATH · blue = custom user path · purple = well-known install dir */
 .tool-dot {
   min-width: 9px;
   min-height: 9px;
   border-radius: 999px;
 }
-.tool-dot.green { background: @success_color; }
-.tool-dot.blue  { background: @accent_bg_color; }
-.tool-dot.red   { background: @error_color; }
+.tool-dot.green  { background: @success_color; }
+.tool-dot.blue   { background: @accent_bg_color; }
+.tool-dot.purple { background: @purple_3; }
+.tool-dot.red    { background: @error_color; }
+
+/* ===== processing spinner (large ring) ===== */
+spinner.processing-spinner {
+  min-width: 56px;
+  min-height: 56px;
+  color: @accent_bg_color;
+}
 "#;

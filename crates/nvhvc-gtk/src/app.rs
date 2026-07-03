@@ -688,6 +688,7 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 sps_patched: r.sps_patched,
                 sei_inserted: r.sei_inserted,
                 frames: r.frames,
+                tracks: r.tracks,
             })
             .map_err(|e| e.to_string());
         let _ = tx.send_blocking(Msg::Done(result));

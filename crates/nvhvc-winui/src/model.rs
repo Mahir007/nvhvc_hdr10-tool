@@ -71,6 +71,8 @@ pub struct RunSummary {
     pub sps_patched: usize,
     pub sei_inserted: bool,
     pub frames: Option<usize>,
+    /// Preformatted `"11 · Opus + 9 subtitles"` line, when the container was inspected.
+    pub tracks: Option<String>,
 }
 
 /// An open metadata-row editor. Tagged with the source path so a drag-dropped

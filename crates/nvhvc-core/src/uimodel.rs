@@ -222,6 +222,42 @@ fn short_transfer(code: u8) -> &'static str {
     }
 }
 
+/// `"11 · Opus + 9 subtitles"`-style summary of the tracks a remux carried over.
+pub fn tracks_line(tracks: &crate::timing::MkvTracks) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    // Collapse repeated audio codecs: ["AAC", "AAC"] → "2× AAC".
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for codec in &tracks.audio_codecs {
+        match seen.iter_mut().find(|(c, _)| c == codec) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((codec.clone(), 1)),
+        }
+    }
+    for (codec, n) in seen {
+        parts.push(if n > 1 {
+            format!("{n}× {codec}")
+        } else {
+            codec
+        });
+    }
+    if tracks.subtitle_count > 0 {
+        parts.push(format!(
+            "{} subtitle{}",
+            tracks.subtitle_count,
+            if tracks.subtitle_count == 1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        format!(
+            "{} track{}",
+            tracks.total,
+            if tracks.total == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("{} · {}", tracks.total, parts.join(" + "))
+    }
+}
+
 /// `"518 MB"`-style file size.
 pub fn human_size(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
@@ -316,6 +352,32 @@ mod tests {
         let out = d.apply_row(4, m);
         assert!(out.content_light_level.is_none());
         assert_eq!(row_value(4, &out), "Not signalled");
+    }
+
+    #[test]
+    fn tracks_line_matches_mockup_shape() {
+        use crate::timing::MkvTracks;
+        let t = MkvTracks {
+            video_track_id: 0,
+            total: 11,
+            audio_codecs: vec!["Opus".to_owned()],
+            subtitle_count: 9,
+        };
+        assert_eq!(tracks_line(&t), "11 · Opus + 9 subtitles");
+        let dual = MkvTracks {
+            video_track_id: 0,
+            total: 4,
+            audio_codecs: vec!["AAC".to_owned(), "AAC".to_owned()],
+            subtitle_count: 1,
+        };
+        assert_eq!(tracks_line(&dual), "4 · 2× AAC + 1 subtitle");
+        let bare = MkvTracks {
+            video_track_id: 0,
+            total: 1,
+            audio_codecs: vec![],
+            subtitle_count: 0,
+        };
+        assert_eq!(tracks_line(&bare), "1 track");
     }
 
     #[test]

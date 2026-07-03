@@ -254,6 +254,7 @@ pub fn run_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
                 sps_patched: report.sps_patched,
                 sei_inserted: report.sei_inserted,
                 frames: report.frames,
+                tracks: report.tracks.as_ref().map(nvhvc_core::uimodel::tracks_line),
             })
         });
     }

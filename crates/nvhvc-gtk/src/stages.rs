@@ -101,6 +101,39 @@ fn banner_markup(kind: &str, icon: &str, markup: &str) -> gtk::Box {
     b
 }
 
+/// A list-item factory rendering a string label; `ellipsize` for `GtkDropDown` buttons
+/// (the popup list keeps a full-width factory so options stay readable).
+fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::builder().halign(gtk::Align::Start).build();
+        if ellipsize {
+            // Small minimum + capped natural width so three dropdowns fit the 560px
+            // clamp; longer names ellipsize but stay readable.
+            label.set_ellipsize(pango::EllipsizeMode::End);
+            label.set_width_chars(6);
+            label.set_max_width_chars(12);
+            label.set_hexpand(true);
+        }
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(label), Some(text)) = (
+            item.child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_label(&text.string());
+        }
+    });
+    factory
+}
+
 /// A button whose content is an icon next to (or after) its label, per the mockup.
 fn icon_button(label: &str, icon: &str, icon_after: bool) -> gtk::Button {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
@@ -151,26 +184,14 @@ fn drop_zone(
     cap.add_css_class("dim-label");
     inner.append(&cap);
 
-    let pill = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(7)
-        .halign(gtk::Align::Center)
-        .margin_top(12)
-        .build();
+    // Only this button opens the picker — the zone itself is inert except for drag-and-drop.
+    let pill = icon_button("Open File…", "document-open-symbolic", false);
     pill.add_css_class("open-pill");
-    pill.append(&gtk::Image::from_icon_name("document-open-symbolic"));
-    pill.append(&gtk::Label::new(Some("Open File…")));
-    inner.append(&pill);
-
-    let zone = gtk::Button::builder().child(&inner).build();
-    zone.add_css_class("dropzone");
-
-    let on_file = move |ctx: &Rc<Ctx>, path: std::path::PathBuf| {
-        app::start_probe(ctx, path, is_source);
-    };
+    pill.set_halign(gtk::Align::Center);
+    pill.set_margin_top(12);
     {
         let ctx = ctx.clone();
-        zone.connect_clicked(move |_| {
+        pill.connect_clicked(move |_| {
             let title = if is_source {
                 "Choose HDR10 source"
             } else {
@@ -181,7 +202,17 @@ fn drop_zone(
             });
         });
     }
-    app::attach_file_drop(ctx, &zone, on_file);
+    inner.append(&pill);
+
+    let zone = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    zone.add_css_class("dropzone");
+    zone.append(&inner);
+    // Hug the content instead of stretching to fill the page.
+    zone.set_valign(gtk::Align::Start);
+
+    app::attach_file_drop(ctx, &zone, move |ctx, path| {
+        app::start_probe(ctx, path, is_source);
+    });
     zone.upcast()
 }
 
@@ -504,9 +535,13 @@ fn row_editor(
         b
     }
     let number_entry = |initial: u32, on_change: Box<dyn Fn(u32)>| -> gtk::Entry {
+        // Keep the minimum width small so a 4-across grid of these still fits the
+        // 560px content clamp (a default GtkEntry would force the card much wider).
         let e = gtk::Entry::builder()
             .text(initial.to_string())
             .input_purpose(gtk::InputPurpose::Digits)
+            .width_chars(5)
+            .hexpand(true)
             .build();
         e.connect_changed(move |e| {
             if let Ok(v) = e.text().trim().parse::<u32>() {
@@ -523,6 +558,11 @@ fn row_editor(
         let labels: Vec<String> = opts.iter().map(|&c| code_label(c, namer(c))).collect();
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let dd = gtk::DropDown::from_strings(&refs);
+        // The closed button ellipsizes long names ("16 · PQ (SMPTE ST 2084)") so three
+        // dropdowns fit side by side; the opened list still shows the full text.
+        dd.set_factory(Some(&label_factory(true)));
+        dd.set_list_factory(Some(&label_factory(false)));
+        dd.set_hexpand(true);
         dd.set_selected(opts.iter().position(|&c| c == current).unwrap_or(0) as u32);
         dd.connect_selected_notify(move |dd| {
             if let Some(&code) = opts.get(dd.selected() as usize) {
@@ -704,7 +744,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         drop(s);
         col.append(&drop_zone(
             ctx,
-            "send-to-symbolic",
+            "go-up-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -900,7 +940,7 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
 
     let spinner = gtk::Spinner::new();
     spinner.set_spinning(true);
-    spinner.set_size_request(54, 54);
+    spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
 
@@ -1071,7 +1111,11 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         "audio-x-generic-symbolic",
         false,
         "Tracks carried over",
-        "audio & subtitles untouched",
+        &result
+            .tracks
+            .as_ref()
+            .map(uimodel::tracks_line)
+            .unwrap_or_else(|| "audio & subtitles untouched".to_owned()),
     );
     col.append(&summary);
 
