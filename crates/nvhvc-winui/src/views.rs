@@ -1636,18 +1636,22 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
         }
     }
 
-    let (dot, detail) = match resolution {
+    // green = found on PATH · blue (accent) = custom user path · purple = install dir.
+    let (dot, detail): (BrushBinding, String) = match resolution {
         Resolution::OnPath(p) => (
-            ThemeRef::SystemSuccess,
+            ThemeRef::SystemSuccess.into(),
             format!("On PATH · {}", p.display()),
         ),
         Resolution::Override(p) => (
-            ThemeRef::SystemSuccess,
+            ThemeRef::Accent.into(),
             format!("Custom path · {}", p.display()),
         ),
-        Resolution::Fallback(p) => (ThemeRef::Accent, format!("Install dir · {}", p.display())),
+        Resolution::Fallback(p) => (
+            Color::rgb(160, 84, 200).into(),
+            format!("Install dir · {}", p.display()),
+        ),
         Resolution::NotFound => (
-            ThemeRef::SystemCritical,
+            ThemeRef::SystemCritical.into(),
             format!("Not found · {}", tool.install_hint()),
         ),
     };

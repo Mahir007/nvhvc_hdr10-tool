@@ -141,10 +141,11 @@ fn view_row(
     tool: Tool,
     resolution: &Resolution,
 ) -> gtk::Widget {
+    // green = found on PATH · blue = custom user path · purple = well-known install dir.
     let (dot_class, detail) = match resolution {
         Resolution::OnPath(p) => ("green", format!("On PATH · {}", p.display())),
-        Resolution::Override(p) => ("green", format!("Custom path · {}", p.display())),
-        Resolution::Fallback(p) => ("blue", format!("Install dir · {}", p.display())),
+        Resolution::Override(p) => ("blue", format!("Custom path · {}", p.display())),
+        Resolution::Fallback(p) => ("purple", format!("Install dir · {}", p.display())),
         Resolution::NotFound => ("red", format!("Not found · {}", tool.install_hint())),
     };
 

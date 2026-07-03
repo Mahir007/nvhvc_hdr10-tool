@@ -160,13 +160,16 @@ button.suggested-action:disabled {
   color: alpha(@accent_fg_color, .85);
 }
 
-/* ===== tool status dots ===== */
+/* ===== tool status dots =====
+   green = found on PATH · blue = custom user path · purple = well-known install dir */
 .tool-dot {
   min-width: 9px;
   min-height: 9px;
   border-radius: 999px;
 }
-.tool-dot.green { background: @success_color; }
-.tool-dot.blue  { background: @accent_bg_color; }
-.tool-dot.red   { background: @error_color; }
+.tool-dot.green  { background: @success_color; }
+.tool-dot.blue   { background: @accent_bg_color; }
+.tool-dot.purple { background: @purple_3; }
+.tool-dot.red    { background: @error_color; }
+
 "#;
