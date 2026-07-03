@@ -1375,7 +1375,10 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
         GLYPH_AUDIO,
         ThemeRef::AccentText,
         "Tracks carried over",
-        "audio & subtitles untouched".to_owned(),
+        summary
+            .tracks
+            .clone()
+            .unwrap_or_else(|| "audio & subtitles untouched".to_owned()),
     );
     children.push(card(vstack(rows).spacing(0.0)).with_key("sum-card"));
 

@@ -45,6 +45,7 @@ pub struct RunOutcome {
     pub sps_patched: usize,
     pub sei_inserted: bool,
     pub frames: Option<usize>,
+    pub tracks: Option<nvhvc_core::timing::MkvTracks>,
 }
 
 /// The whole wizard state.

@@ -1071,7 +1071,11 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         "audio-x-generic-symbolic",
         false,
         "Tracks carried over",
-        "audio & subtitles untouched",
+        &result
+            .tracks
+            .as_ref()
+            .map(uimodel::tracks_line)
+            .unwrap_or_else(|| "audio & subtitles untouched".to_owned()),
     );
     col.append(&summary);
 
