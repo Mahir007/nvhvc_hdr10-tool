@@ -140,6 +140,8 @@ fn build_ui(app: &adw::Application) {
         footer,
     });
 
+    install_actions(app, &ctx);
+    app.set_menubar(Some(&build_menubar()));
     menu_btn.set_popover(Some(&build_app_menu(&ctx)));
 
     {
@@ -203,90 +205,341 @@ pub fn render(ctx: &Rc<Ctx>) {
     if !processing {
         stages::build_footer(ctx, &ctx.footer);
     }
+
+    // "Open Encode…" only makes sense once a source is picked.
+    if let Some(app) = ctx.window.application()
+        && let Some(action) = app.lookup_action("open-encode")
+        && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
+    {
+        action.set_enabled(ctx.state.borrow().source.is_some() && !processing);
+    }
+}
+
+// ===================== Application actions & exported menubar =====================
+
+/// Registers the application's `GAction`s and their accelerators.
+///
+/// These back both the in-window menu popover and the exported menubar (global menus).
+fn install_actions(app: &adw::Application, ctx: &Rc<Ctx>) {
+    let add = |name: &str, accels: &[&str], f: Box<dyn Fn()>| {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate(move |_, _| f());
+        app.add_action(&action);
+        if !accels.is_empty() {
+            app.set_accels_for_action(&format!("app.{name}"), accels);
+        }
+        action
+    };
+
+    {
+        let ctx = ctx.clone();
+        add(
+            "open-source",
+            &["<Control>o"],
+            Box::new(move || {
+                pick_file(&ctx, false, "Choose HDR10 source", None, |ctx, path| {
+                    ctx.state.borrow_mut().stage = 1;
+                    start_probe(ctx, path, true);
+                });
+            }),
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        add(
+            "open-encode",
+            &["<Control><Shift>o"],
+            Box::new(move || {
+                if ctx.state.borrow().source.is_none() {
+                    return;
+                }
+                pick_file(
+                    &ctx,
+                    false,
+                    "Choose the encode to patch",
+                    None,
+                    |ctx, path| {
+                        ctx.state.borrow_mut().stage = 2;
+                        start_probe(ctx, path, false);
+                    },
+                );
+            }),
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        add(
+            "preferences",
+            &["<Control>comma"],
+            Box::new(move || prefs::show(&ctx.window)),
+        );
+    }
+    {
+        let window = ctx.window.clone();
+        add(
+            "shortcuts",
+            &["<Control>question"],
+            Box::new(move || show_shortcuts(&window)),
+        );
+    }
+    {
+        let window = ctx.window.clone();
+        add("help", &["F1"], Box::new(move || show_help(&window)));
+    }
+    {
+        let window = ctx.window.clone();
+        add("about", &[], Box::new(move || show_about(&window)));
+    }
+    {
+        let app = app.clone();
+        add("quit", &["<Control>q"], Box::new(move || app.quit()));
+    }
+
+    // Stateful radio action for the theme (System / Light / Dark).
+    let initial = Settings::load().ui_theme.unwrap_or_else(|| "system".into());
+    let theme = gio::SimpleAction::new_stateful(
+        "theme",
+        Some(glib::VariantTy::STRING),
+        &initial.to_variant(),
+    );
+    theme.connect_activate(|action, param| {
+        let Some(param) = param else { return };
+        let Some(mode) = param.str() else { return };
+        action.set_state(param);
+        apply_theme_setting(mode);
+        let mut settings = Settings::load();
+        settings.ui_theme = Some(mode.to_owned());
+        let _ = settings.save();
+    });
+    app.add_action(&theme);
+}
+
+/// The menubar model. `AdwApplicationWindow` never draws it in-window; it exists so
+/// `GtkApplication` exports it over D-Bus (plus the `_GTK_MENUBAR_OBJECT_PATH` X11
+/// window properties), which desktop global menus — e.g. KDE Plasma's — pick up.
+fn build_menubar() -> gio::Menu {
+    let file = gio::Menu::new();
+    file.append(Some("Open Source…"), Some("app.open-source"));
+    file.append(Some("Open Encode…"), Some("app.open-encode"));
+    let file_quit = gio::Menu::new();
+    file_quit.append(Some("Quit"), Some("app.quit"));
+    file.append_section(None, &file_quit);
+
+    let theme = gio::Menu::new();
+    theme.append(Some("System"), Some("app.theme::system"));
+    theme.append(Some("Light"), Some("app.theme::light"));
+    theme.append(Some("Dark"), Some("app.theme::dark"));
+    let view = gio::Menu::new();
+    view.append_submenu(Some("Theme"), &theme);
+
+    let help = gio::Menu::new();
+    help.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
+    help.append(Some("Help"), Some("app.help"));
+    help.append(Some("About nvhvc"), Some("app.about"));
+
+    let menubar = gio::Menu::new();
+    menubar.append_submenu(Some("File"), &file);
+    menubar.append_submenu(Some("View"), &view);
+    menubar.append_submenu(Some("Help"), &help);
+    menubar
+}
+
+/// The keyboard-shortcuts overlay window.
+fn show_shortcuts(window: &adw::ApplicationWindow) {
+    const UI: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkShortcutsWindow" id="shortcuts">
+    <child>
+      <object class="GtkShortcutsSection">
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Files</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Open source</property>
+                <property name="accelerator">&lt;Control&gt;o</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Open encode</property>
+                <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;o</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">General</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Preferences</property>
+                <property name="accelerator">&lt;Control&gt;comma</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Keyboard shortcuts</property>
+                <property name="accelerator">&lt;Control&gt;question</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Help</property>
+                <property name="accelerator">F1</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Quit</property>
+                <property name="accelerator">&lt;Control&gt;q</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>"#;
+    let builder = gtk::Builder::from_string(UI);
+    if let Some(shortcuts) = builder.object::<gtk::ShortcutsWindow>("shortcuts") {
+        shortcuts.set_transient_for(Some(window));
+        shortcuts.set_modal(true);
+        shortcuts.present();
+    }
+}
+
+/// Opens the project page (the closest thing to online help).
+fn show_help(window: &adw::ApplicationWindow) {
+    gtk::UriLauncher::new("https://github.com/Mahir007/nvhvc_hdr10-tool").launch(
+        Some(window),
+        gio::Cancellable::NONE,
+        |_| {},
+    );
 }
 
 // ===================== App menu (theme circles + entries) =====================
 
 fn build_app_menu(ctx: &Rc<Ctx>) -> gtk::Popover {
     let popover = gtk::Popover::new();
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 2);
     root.set_width_request(230);
 
-    // Theme selector circles.
+    // Theme selector circles with a check badge on the selected one (per the mockup).
     let circles = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(18)
         .halign(gtk::Align::Center)
         .margin_top(9)
-        .margin_bottom(9)
+        .margin_bottom(11)
         .build();
-    let current = Settings::load().ui_theme.unwrap_or_else(|| "system".into());
-    let mk_circle = |mode: &'static str, tooltip: &str| -> gtk::Button {
-        let b = gtk::Button::new();
-        b.add_css_class("theme-circle");
-        b.add_css_class(mode);
-        b.set_tooltip_text(Some(tooltip));
-        if current == mode {
-            b.add_css_class("selected");
-        }
-        b
+    struct Circle {
+        mode: &'static str,
+        button: gtk::Button,
+        badge: gtk::Image,
+    }
+    let mk_circle = |mode: &'static str, tooltip: &str| -> (gtk::Overlay, Circle) {
+        let button = gtk::Button::new();
+        button.add_css_class("theme-circle");
+        button.add_css_class(mode);
+        button.set_tooltip_text(Some(tooltip));
+        let badge = gtk::Image::from_icon_name("object-select-symbolic");
+        badge.add_css_class("badge-check");
+        badge.set_pixel_size(9);
+        badge.set_halign(gtk::Align::End);
+        badge.set_valign(gtk::Align::End);
+        badge.set_can_target(false);
+        badge.set_visible(false);
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&button));
+        overlay.add_overlay(&badge);
+        (
+            overlay,
+            Circle {
+                mode,
+                button,
+                badge,
+            },
+        )
     };
-    let sys = mk_circle("system", "Follow system style");
-    let light = mk_circle("light", "Light style");
-    let dark = mk_circle("dark", "Dark style");
-    for (btn, mode) in [(&sys, "system"), (&light, "light"), (&dark, "dark")] {
-        let all = [sys.clone(), light.clone(), dark.clone()];
-        btn.connect_clicked(move |b| {
-            apply_theme_setting(mode);
-            let mut settings = Settings::load();
-            settings.ui_theme = Some(mode.to_owned());
-            let _ = settings.save();
-            for other in &all {
-                other.remove_css_class("selected");
+    let (sys_w, sys) = mk_circle("system", "Follow system style");
+    let (light_w, light) = mk_circle("light", "Light style");
+    let (dark_w, dark) = mk_circle("dark", "Dark style");
+    circles.append(&sys_w);
+    circles.append(&light_w);
+    circles.append(&dark_w);
+
+    let all = Rc::new([sys, light, dark]);
+    let sync = {
+        let all = all.clone();
+        move || {
+            let current = Settings::load().ui_theme.unwrap_or_else(|| "system".into());
+            for c in all.iter() {
+                if c.mode == current {
+                    c.button.add_css_class("selected");
+                } else {
+                    c.button.remove_css_class("selected");
+                }
+                c.badge.set_visible(c.mode == current);
             }
-            b.add_css_class("selected");
+        }
+    };
+    sync();
+    for c in all.iter() {
+        let window = ctx.window.clone();
+        let mode = c.mode;
+        let sync = sync.clone();
+        c.button.connect_clicked(move |_| {
+            // Route through the app action so the exported menubar radio stays in sync.
+            let _ = gtk::prelude::WidgetExt::activate_action(
+                &window,
+                "app.theme",
+                Some(&mode.to_variant()),
+            );
+            sync();
         });
-        circles.append(btn);
+    }
+    {
+        // Theme may also change from the (global) menubar — refresh whenever we open.
+        let sync = sync.clone();
+        popover.connect_show(move |_| sync());
     }
     root.append(&circles);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    let entry = |label: &str| -> gtk::Button {
-        let b = gtk::Button::builder()
-            .child(
-                &gtk::Label::builder()
-                    .label(label)
-                    .halign(gtk::Align::Start)
-                    .build(),
-            )
-            .build();
+    // Menu rows: icon + label, activating the shared app actions.
+    let entry = |icon: &str, label: &str, action: &'static str| -> gtk::Button {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 11);
+        row.set_halign(gtk::Align::Start);
+        let image = gtk::Image::from_icon_name(icon);
+        image.add_css_class("dim-label");
+        row.append(&image);
+        row.append(&gtk::Label::new(Some(label)));
+        let b = gtk::Button::builder().child(&row).build();
         b.add_css_class("flat");
-        b
-    };
-    let prefs_btn = entry("Preferences");
-    {
-        let ctx = ctx.clone();
-        let popover_weak = glib::clone::Downgrade::downgrade(&popover);
-        prefs_btn.connect_clicked(move |_| {
-            if let Some(p) = popover_weak.upgrade() {
-                p.popdown();
-            }
-            prefs::show(&ctx.window);
-        });
-    }
-    let about_btn = entry("About nvhvc");
-    {
+        b.add_css_class("menu-entry");
         let window = ctx.window.clone();
         let popover_weak = glib::clone::Downgrade::downgrade(&popover);
-        about_btn.connect_clicked(move |_| {
+        b.connect_clicked(move |_| {
             if let Some(p) = popover_weak.upgrade() {
                 p.popdown();
             }
-            show_about(&window);
+            let _ = gtk::prelude::WidgetExt::activate_action(&window, action, None);
         });
-    }
-    root.append(&prefs_btn);
-    root.append(&about_btn);
+        b
+    };
+    root.append(&entry(
+        "emblem-system-symbolic",
+        "Preferences",
+        "app.preferences",
+    ));
+    root.append(&entry(
+        "input-keyboard-symbolic",
+        "Keyboard Shortcuts",
+        "app.shortcuts",
+    ));
+    root.append(&entry("help-browser-symbolic", "Help", "app.help"));
+    root.append(&entry("help-about-symbolic", "About nvhvc", "app.about"));
 
     popover.set_child(Some(&root));
     popover
