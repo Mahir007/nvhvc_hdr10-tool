@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::pango;
+use gtk::{glib, pango};
 
 use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
@@ -101,23 +101,21 @@ fn banner_markup(kind: &str, icon: &str, markup: &str) -> gtk::Box {
     b
 }
 
-/// A list-item factory rendering a string label; `ellipsize` for `GtkDropDown` buttons
-/// (the popup list keeps a full-width factory so options stay readable).
-fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
+/// A list-item factory rendering an ellipsizing string label (for `GtkDropDown` buttons:
+/// small minimum + capped natural width so three dropdowns fit the 560px clamp).
+fn ellipsized_button_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_, item| {
+    factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let label = gtk::Label::builder().halign(gtk::Align::Start).build();
-        if ellipsize {
-            // Small minimum + capped natural width so three dropdowns fit the 560px
-            // clamp; longer names ellipsize but stay readable.
-            label.set_ellipsize(pango::EllipsizeMode::End);
-            label.set_width_chars(6);
-            label.set_max_width_chars(12);
-            label.set_hexpand(true);
-        }
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(6)
+            .max_width_chars(12)
+            .hexpand(true)
+            .build();
         item.set_child(Some(&label));
     });
     factory.connect_bind(|_, item| {
@@ -131,6 +129,83 @@ fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
             label.set_label(&text.string());
         }
     });
+    factory
+}
+
+/// A list-item factory for a `GtkDropDown`'s popup: full-width label plus the checkmark
+/// on the selected item (a custom factory loses the built-in selection indicator).
+fn checked_list_factory(dd: &gtk::DropDown) -> gtk::SignalListItemFactory {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let check = gtk::Image::from_icon_name("object-select-symbolic");
+        check.set_opacity(0.0);
+        row.append(&label);
+        row.append(&check);
+        item.set_child(Some(&row));
+    });
+
+    // Each bound row listens for selection changes; handlers are dropped on unbind
+    // (list items get recycled, so bind/unbind bookkeeping is required). The factory is
+    // owned by the dropdown, so it only holds weak references back to it.
+    let handlers: Rc<RefCell<HashMap<usize, gtk::glib::SignalHandlerId>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    {
+        let dd = glib::clone::Downgrade::downgrade(dd);
+        let handlers = handlers.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(dd) = dd.upgrade() else { return };
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(row) = item.child().and_downcast::<gtk::Box>() else {
+                return;
+            };
+            let Some(label) = row.first_child().and_downcast::<gtk::Label>() else {
+                return;
+            };
+            let Some(check) = row.last_child().and_downcast::<gtk::Image>() else {
+                return;
+            };
+            let Some(obj) = item.item() else { return };
+            if let Some(text) = obj.downcast_ref::<gtk::StringObject>() {
+                label.set_label(&text.string());
+            }
+            let selected = dd.selected_item().is_some_and(|sel| sel == obj);
+            check.set_opacity(if selected { 1.0 } else { 0.0 });
+            let id = dd.connect_selected_item_notify({
+                let check = check.clone();
+                move |dd| {
+                    let selected = dd.selected_item().is_some_and(|sel| sel == obj);
+                    check.set_opacity(if selected { 1.0 } else { 0.0 });
+                }
+            });
+            handlers.borrow_mut().insert(item.as_ptr() as usize, id);
+        });
+    }
+    {
+        let dd = glib::clone::Downgrade::downgrade(dd);
+        let handlers = handlers.clone();
+        factory.connect_unbind(move |_, item| {
+            let Some(dd) = dd.upgrade() else { return };
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            if let Some(id) = handlers.borrow_mut().remove(&(item.as_ptr() as usize)) {
+                dd.disconnect(id);
+            }
+        });
+    }
     factory
 }
 
@@ -301,9 +376,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.src_probing {
         let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let spinner = gtk::Spinner::new();
-        spinner.set_spinning(true);
-        probing.append(&spinner);
+        probing.append(&adw::Spinner::new());
         probing.append(&dim_label("Reading HDR10 metadata…"));
         col.append(&probing);
         drop(s);
@@ -559,9 +632,9 @@ fn row_editor(
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let dd = gtk::DropDown::from_strings(&refs);
         // The closed button ellipsizes long names ("16 · PQ (SMPTE ST 2084)") so three
-        // dropdowns fit side by side; the opened list still shows the full text.
-        dd.set_factory(Some(&label_factory(true)));
-        dd.set_list_factory(Some(&label_factory(false)));
+        // dropdowns fit side by side; the opened list shows full text plus the checkmark.
+        dd.set_factory(Some(&ellipsized_button_factory()));
+        dd.set_list_factory(Some(&checked_list_factory(&dd)));
         dd.set_hexpand(true);
         dd.set_selected(opts.iter().position(|&c| c == current).unwrap_or(0) as u32);
         dd.connect_selected_notify(move |dd| {
@@ -717,14 +790,8 @@ fn row_editor(
 // ===================== Stage 2: Encode =====================
 
 pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
+    // While processing, `render` shows the persistent [`ProcessingUi`] instead.
     let s = ctx.state.borrow();
-
-    // Processing view replaces the whole stage.
-    if let Some(stage) = s.processing {
-        drop(s);
-        return processing_view(stage);
-    }
-
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // "Copying from …" banner (bold accent filename, per the mockup).
@@ -744,7 +811,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         drop(s);
         col.append(&drop_zone(
             ctx,
-            "go-up-symbolic",
+            "nvhvc-upload-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -754,9 +821,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.enc_probing {
         let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let spinner = gtk::Spinner::new();
-        spinner.set_spinning(true);
-        probing.append(&spinner);
+        probing.append(&adw::Spinner::new());
         probing.append(&dim_label("Reading encode metadata…"));
         col.append(&probing);
         drop(s);
@@ -868,7 +933,12 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
                 "Choose output file",
                 Some(&initial),
                 |ctx, path| {
-                    ctx.state.borrow_mut().output = Some(path);
+                    {
+                        let mut st = ctx.state.borrow_mut();
+                        st.output = Some(path);
+                        // The save dialog already warned about an existing file.
+                        st.output_user_chosen = true;
+                    }
                     app::render(ctx);
                 },
             );
@@ -911,25 +981,49 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     page(&col)
 }
 
-/// Centered spinner + staged progress bar while the pipeline runs.
-fn processing_view(stage: PipeStage) -> gtk::Widget {
-    let idx = match stage {
+/// The processing view: a spinner plus staged progress. Built once per run and updated
+/// in place, so the spinner animation runs uninterrupted across stage changes.
+pub struct ProcessingUi {
+    pub root: gtk::Widget,
+    title: gtk::Label,
+    bar: gtk::ProgressBar,
+    step: gtk::Label,
+    pct: gtk::Label,
+}
+
+fn stage_index(stage: PipeStage) -> usize {
+    match stage {
         PipeStage::Probing => 0,
         PipeStage::Extracting => 1,
         PipeStage::Patching => 2,
         PipeStage::CapturingTiming => 3,
         PipeStage::Remuxing => 4,
         PipeStage::Done => 5,
-    };
-    let labels = [
-        "Probing source metadata",
-        "Extracting HEVC stream",
-        "Patching bitstream",
-        "Capturing frame timing",
-        "Remuxing tracks",
-        "Finishing up",
-    ];
+    }
+}
 
+const STAGE_LABELS: [&str; 6] = [
+    "Probing source metadata",
+    "Extracting HEVC stream",
+    "Patching bitstream",
+    "Capturing frame timing",
+    "Remuxing tracks",
+    "Finishing up",
+];
+
+impl ProcessingUi {
+    pub fn update(&self, stage: PipeStage) {
+        let idx = stage_index(stage);
+        self.title.set_label(STAGE_LABELS[idx]);
+        self.bar.set_fraction(idx as f64 / 5.0);
+        self.step.set_label(&format!("Stage {} of 6", idx + 1));
+        self.pct
+            .set_label(&format!("{}%", (idx as f64 / 5.0 * 100.0).round()));
+    }
+}
+
+/// Builds the centered spinner + staged progress view for a fresh run.
+pub fn build_processing(stage: PipeStage) -> ProcessingUi {
     let col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(5)
@@ -938,13 +1032,13 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
         .vexpand(true)
         .build();
 
-    let spinner = gtk::Spinner::new();
-    spinner.set_spinning(true);
+    let spinner = adw::Spinner::new();
+    spinner.set_size_request(56, 56);
     spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
 
-    let title = gtk::Label::new(Some(labels[idx]));
+    let title = gtk::Label::new(None);
     title.add_css_class("title-3");
     title.set_margin_top(24);
     col.append(&title);
@@ -958,20 +1052,27 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
     bar_box.set_margin_top(22);
     bar_box.set_size_request(320, -1);
     let bar = gtk::ProgressBar::new();
-    bar.set_fraction(idx as f64 / 5.0);
     bar_box.append(&bar);
     let caption_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let step = dim_label(&format!("Stage {} of 6", idx + 1));
+    let step = dim_label("");
     step.add_css_class("caption");
     step.set_hexpand(true);
-    let pct = dim_label(&format!("{}%", (idx as f64 / 5.0 * 100.0).round()));
+    let pct = dim_label("");
     pct.add_css_class("caption");
     caption_row.append(&step);
     caption_row.append(&pct);
     bar_box.append(&caption_row);
     col.append(&bar_box);
 
-    col.upcast()
+    let ui = ProcessingUi {
+        root: col.upcast(),
+        title,
+        bar,
+        step,
+        pct,
+    };
+    ui.update(stage);
+    ui
 }
 
 // ===================== Stage 3: Result =====================
@@ -1174,7 +1275,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             run.set_visible(s.encode.is_some());
             {
                 let ctx = ctx.clone();
-                run.connect_clicked(move |_| app::start_run(&ctx));
+                run.connect_clicked(move |_| app::confirm_and_run(&ctx));
             }
             footer.append(&run);
         }

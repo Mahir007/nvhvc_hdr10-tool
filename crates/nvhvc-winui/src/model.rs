@@ -100,6 +100,11 @@ pub struct Ui {
     pub about_open: bool,
     /// Preferences: tool row being edited (index into `Toolset::all()`) and its draft text.
     pub tool_edit: Option<(usize, String)>,
+    /// The output path the user explicitly chose via the save dialog (which already warns
+    /// about overwriting). Auto-derived names that already exist get our own confirmation.
+    pub output_chosen_for: Option<String>,
+    /// An overwrite confirmation dialog is showing for the current run request.
+    pub confirm_overwrite: bool,
     pub theme: ThemeMode,
     /// Incremented for every pipeline launch; the matching [`RunSummary::token`] marks
     /// the result screen as current.
