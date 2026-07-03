@@ -101,6 +101,39 @@ fn banner_markup(kind: &str, icon: &str, markup: &str) -> gtk::Box {
     b
 }
 
+/// A list-item factory rendering a string label; `ellipsize` for `GtkDropDown` buttons
+/// (the popup list keeps a full-width factory so options stay readable).
+fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::builder().halign(gtk::Align::Start).build();
+        if ellipsize {
+            // Small minimum + capped natural width so three dropdowns fit the 560px
+            // clamp; longer names ellipsize but stay readable.
+            label.set_ellipsize(pango::EllipsizeMode::End);
+            label.set_width_chars(6);
+            label.set_max_width_chars(12);
+            label.set_hexpand(true);
+        }
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(label), Some(text)) = (
+            item.child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_label(&text.string());
+        }
+    });
+    factory
+}
+
 /// A button whose content is an icon next to (or after) its label, per the mockup.
 fn icon_button(label: &str, icon: &str, icon_after: bool) -> gtk::Button {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
@@ -502,9 +535,13 @@ fn row_editor(
         b
     }
     let number_entry = |initial: u32, on_change: Box<dyn Fn(u32)>| -> gtk::Entry {
+        // Keep the minimum width small so a 4-across grid of these still fits the
+        // 560px content clamp (a default GtkEntry would force the card much wider).
         let e = gtk::Entry::builder()
             .text(initial.to_string())
             .input_purpose(gtk::InputPurpose::Digits)
+            .width_chars(5)
+            .hexpand(true)
             .build();
         e.connect_changed(move |e| {
             if let Ok(v) = e.text().trim().parse::<u32>() {
@@ -521,6 +558,11 @@ fn row_editor(
         let labels: Vec<String> = opts.iter().map(|&c| code_label(c, namer(c))).collect();
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let dd = gtk::DropDown::from_strings(&refs);
+        // The closed button ellipsizes long names ("16 · PQ (SMPTE ST 2084)") so three
+        // dropdowns fit side by side; the opened list still shows the full text.
+        dd.set_factory(Some(&label_factory(true)));
+        dd.set_list_factory(Some(&label_factory(false)));
+        dd.set_hexpand(true);
         dd.set_selected(opts.iter().position(|&c| c == current).unwrap_or(0) as u32);
         dd.connect_selected_notify(move |dd| {
             if let Some(&code) = opts.get(dd.selected() as usize) {
