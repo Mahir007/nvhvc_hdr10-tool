@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::pango;
+use gtk::{glib, pango};
 
 use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
@@ -101,23 +101,21 @@ fn banner_markup(kind: &str, icon: &str, markup: &str) -> gtk::Box {
     b
 }
 
-/// A list-item factory rendering a string label; `ellipsize` for `GtkDropDown` buttons
-/// (the popup list keeps a full-width factory so options stay readable).
-fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
+/// A list-item factory rendering an ellipsizing string label (for `GtkDropDown` buttons:
+/// small minimum + capped natural width so three dropdowns fit the 560px clamp).
+fn ellipsized_button_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_, item| {
+    factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let label = gtk::Label::builder().halign(gtk::Align::Start).build();
-        if ellipsize {
-            // Small minimum + capped natural width so three dropdowns fit the 560px
-            // clamp; longer names ellipsize but stay readable.
-            label.set_ellipsize(pango::EllipsizeMode::End);
-            label.set_width_chars(6);
-            label.set_max_width_chars(12);
-            label.set_hexpand(true);
-        }
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(6)
+            .max_width_chars(12)
+            .hexpand(true)
+            .build();
         item.set_child(Some(&label));
     });
     factory.connect_bind(|_, item| {
@@ -131,6 +129,83 @@ fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
             label.set_label(&text.string());
         }
     });
+    factory
+}
+
+/// A list-item factory for a `GtkDropDown`'s popup: full-width label plus the checkmark
+/// on the selected item (a custom factory loses the built-in selection indicator).
+fn checked_list_factory(dd: &gtk::DropDown) -> gtk::SignalListItemFactory {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let check = gtk::Image::from_icon_name("object-select-symbolic");
+        check.set_opacity(0.0);
+        row.append(&label);
+        row.append(&check);
+        item.set_child(Some(&row));
+    });
+
+    // Each bound row listens for selection changes; handlers are dropped on unbind
+    // (list items get recycled, so bind/unbind bookkeeping is required). The factory is
+    // owned by the dropdown, so it only holds weak references back to it.
+    let handlers: Rc<RefCell<HashMap<usize, gtk::glib::SignalHandlerId>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    {
+        let dd = glib::clone::Downgrade::downgrade(dd);
+        let handlers = handlers.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(dd) = dd.upgrade() else { return };
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(row) = item.child().and_downcast::<gtk::Box>() else {
+                return;
+            };
+            let Some(label) = row.first_child().and_downcast::<gtk::Label>() else {
+                return;
+            };
+            let Some(check) = row.last_child().and_downcast::<gtk::Image>() else {
+                return;
+            };
+            let Some(obj) = item.item() else { return };
+            if let Some(text) = obj.downcast_ref::<gtk::StringObject>() {
+                label.set_label(&text.string());
+            }
+            let selected = dd.selected_item().is_some_and(|sel| sel == obj);
+            check.set_opacity(if selected { 1.0 } else { 0.0 });
+            let id = dd.connect_selected_item_notify({
+                let check = check.clone();
+                move |dd| {
+                    let selected = dd.selected_item().is_some_and(|sel| sel == obj);
+                    check.set_opacity(if selected { 1.0 } else { 0.0 });
+                }
+            });
+            handlers.borrow_mut().insert(item.as_ptr() as usize, id);
+        });
+    }
+    {
+        let dd = glib::clone::Downgrade::downgrade(dd);
+        let handlers = handlers.clone();
+        factory.connect_unbind(move |_, item| {
+            let Some(dd) = dd.upgrade() else { return };
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            if let Some(id) = handlers.borrow_mut().remove(&(item.as_ptr() as usize)) {
+                dd.disconnect(id);
+            }
+        });
+    }
     factory
 }
 
@@ -559,9 +634,9 @@ fn row_editor(
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let dd = gtk::DropDown::from_strings(&refs);
         // The closed button ellipsizes long names ("16 · PQ (SMPTE ST 2084)") so three
-        // dropdowns fit side by side; the opened list still shows the full text.
-        dd.set_factory(Some(&label_factory(true)));
-        dd.set_list_factory(Some(&label_factory(false)));
+        // dropdowns fit side by side; the opened list shows full text plus the checkmark.
+        dd.set_factory(Some(&ellipsized_button_factory()));
+        dd.set_list_factory(Some(&checked_list_factory(&dd)));
         dd.set_hexpand(true);
         dd.set_selected(opts.iter().position(|&c| c == current).unwrap_or(0) as u32);
         dd.connect_selected_notify(move |dd| {
