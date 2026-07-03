@@ -78,7 +78,11 @@ button.dropzone:hover {
 }
 .banner.green { background: alpha(@success_color, .14); color: @success_color; }
 .banner.amber { background: alpha(@warning_color, .16); color: @warning_color; }
-.banner.blue  { background: alpha(@accent_bg_color, .12); color: @accent_color; }
+.banner.blue  {
+  background: alpha(@accent_bg_color, .12);
+  color: @accent_color;
+  border: 1px solid alpha(@accent_bg_color, .26);
+}
 .banner.red   { background: alpha(@error_color, .14); color: @error_color; }
 
 /* ===== metadata row editor ===== */
