@@ -744,7 +744,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         drop(s);
         col.append(&drop_zone(
             ctx,
-            "send-to-symbolic",
+            "go-up-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -940,7 +940,7 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
 
     let spinner = gtk::Spinner::new();
     spinner.set_spinning(true);
-    spinner.set_size_request(54, 54);
+    spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
 
