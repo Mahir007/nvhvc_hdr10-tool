@@ -376,9 +376,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.src_probing {
         let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let spinner = gtk::Spinner::new();
-        spinner.set_spinning(true);
-        probing.append(&spinner);
+        probing.append(&adw::Spinner::new());
         probing.append(&dim_label("Reading HDR10 metadata…"));
         col.append(&probing);
         drop(s);
@@ -792,14 +790,8 @@ fn row_editor(
 // ===================== Stage 2: Encode =====================
 
 pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
+    // While processing, `render` shows the persistent [`ProcessingUi`] instead.
     let s = ctx.state.borrow();
-
-    // Processing view replaces the whole stage.
-    if let Some(stage) = s.processing {
-        drop(s);
-        return processing_view(stage);
-    }
-
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // "Copying from …" banner (bold accent filename, per the mockup).
@@ -819,7 +811,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         drop(s);
         col.append(&drop_zone(
             ctx,
-            "go-up-symbolic",
+            "nvhvc-upload-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -829,9 +821,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.enc_probing {
         let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let spinner = gtk::Spinner::new();
-        spinner.set_spinning(true);
-        probing.append(&spinner);
+        probing.append(&adw::Spinner::new());
         probing.append(&dim_label("Reading encode metadata…"));
         col.append(&probing);
         drop(s);
@@ -943,7 +933,12 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
                 "Choose output file",
                 Some(&initial),
                 |ctx, path| {
-                    ctx.state.borrow_mut().output = Some(path);
+                    {
+                        let mut st = ctx.state.borrow_mut();
+                        st.output = Some(path);
+                        // The save dialog already warned about an existing file.
+                        st.output_user_chosen = true;
+                    }
                     app::render(ctx);
                 },
             );
@@ -986,25 +981,49 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     page(&col)
 }
 
-/// Centered spinner + staged progress bar while the pipeline runs.
-fn processing_view(stage: PipeStage) -> gtk::Widget {
-    let idx = match stage {
+/// The processing view: a spinner plus staged progress. Built once per run and updated
+/// in place, so the spinner animation runs uninterrupted across stage changes.
+pub struct ProcessingUi {
+    pub root: gtk::Widget,
+    title: gtk::Label,
+    bar: gtk::ProgressBar,
+    step: gtk::Label,
+    pct: gtk::Label,
+}
+
+fn stage_index(stage: PipeStage) -> usize {
+    match stage {
         PipeStage::Probing => 0,
         PipeStage::Extracting => 1,
         PipeStage::Patching => 2,
         PipeStage::CapturingTiming => 3,
         PipeStage::Remuxing => 4,
         PipeStage::Done => 5,
-    };
-    let labels = [
-        "Probing source metadata",
-        "Extracting HEVC stream",
-        "Patching bitstream",
-        "Capturing frame timing",
-        "Remuxing tracks",
-        "Finishing up",
-    ];
+    }
+}
 
+const STAGE_LABELS: [&str; 6] = [
+    "Probing source metadata",
+    "Extracting HEVC stream",
+    "Patching bitstream",
+    "Capturing frame timing",
+    "Remuxing tracks",
+    "Finishing up",
+];
+
+impl ProcessingUi {
+    pub fn update(&self, stage: PipeStage) {
+        let idx = stage_index(stage);
+        self.title.set_label(STAGE_LABELS[idx]);
+        self.bar.set_fraction(idx as f64 / 5.0);
+        self.step.set_label(&format!("Stage {} of 6", idx + 1));
+        self.pct
+            .set_label(&format!("{}%", (idx as f64 / 5.0 * 100.0).round()));
+    }
+}
+
+/// Builds the centered spinner + staged progress view for a fresh run.
+pub fn build_processing(stage: PipeStage) -> ProcessingUi {
     let col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(5)
@@ -1013,13 +1032,13 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
         .vexpand(true)
         .build();
 
-    let spinner = gtk::Spinner::new();
-    spinner.set_spinning(true);
+    let spinner = adw::Spinner::new();
+    spinner.set_size_request(56, 56);
     spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
 
-    let title = gtk::Label::new(Some(labels[idx]));
+    let title = gtk::Label::new(None);
     title.add_css_class("title-3");
     title.set_margin_top(24);
     col.append(&title);
@@ -1033,20 +1052,27 @@ fn processing_view(stage: PipeStage) -> gtk::Widget {
     bar_box.set_margin_top(22);
     bar_box.set_size_request(320, -1);
     let bar = gtk::ProgressBar::new();
-    bar.set_fraction(idx as f64 / 5.0);
     bar_box.append(&bar);
     let caption_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let step = dim_label(&format!("Stage {} of 6", idx + 1));
+    let step = dim_label("");
     step.add_css_class("caption");
     step.set_hexpand(true);
-    let pct = dim_label(&format!("{}%", (idx as f64 / 5.0 * 100.0).round()));
+    let pct = dim_label("");
     pct.add_css_class("caption");
     caption_row.append(&step);
     caption_row.append(&pct);
     bar_box.append(&caption_row);
     col.append(&bar_box);
 
-    col.upcast()
+    let ui = ProcessingUi {
+        root: col.upcast(),
+        title,
+        bar,
+        step,
+        pct,
+    };
+    ui.update(stage);
+    ui
 }
 
 // ===================== Stage 3: Result =====================
@@ -1249,7 +1275,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             run.set_visible(s.encode.is_some());
             {
                 let ctx = ctx.clone();
-                run.connect_clicked(move |_| app::start_run(&ctx));
+                run.connect_clicked(move |_| app::confirm_and_run(&ctx));
             }
             footer.append(&run);
         }

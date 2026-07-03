@@ -60,6 +60,9 @@ pub struct AppState {
     pub enc_probing: bool,
     pub enc_error: Option<String>,
     pub output: Option<PathBuf>,
+    /// Whether the user picked `output` via the save dialog (which already warns about
+    /// overwriting); auto-derived names get our own confirmation instead.
+    pub output_user_chosen: bool,
     /// Edited HDR10 metadata; `None` = detected values as-is.
     pub overrides: Option<Hdr10Metadata>,
     /// Open metadata-row editor: row index + field draft.

@@ -177,7 +177,7 @@ button.suggested-action:disabled {
 .tool-dot.red    { background: @error_color; }
 
 /* ===== processing spinner (large ring) ===== */
-spinner.processing-spinner {
+.processing-spinner {
   min-width: 56px;
   min-height: 56px;
   color: @accent_bg_color;

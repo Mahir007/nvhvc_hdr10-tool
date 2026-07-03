@@ -9,14 +9,12 @@ use gtk::pango;
 use nvhvc_core::config::Settings;
 use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
 
-/// Shows the modal Preferences window.
+/// Shows the Preferences dialog (a floating sheet inside the parent window).
 pub fn show(parent: &adw::ApplicationWindow) {
-    let window = adw::Window::builder()
-        .transient_for(parent)
-        .modal(true)
+    let dialog = adw::Dialog::builder()
         .title("Preferences")
-        .default_width(484)
-        .default_height(560)
+        .content_width(484)
+        .content_height(560)
         .build();
 
     let header = adw::HeaderBar::new();
@@ -106,8 +104,8 @@ pub fn show(parent: &adw::ApplicationWindow) {
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&scroll));
-    window.set_content(Some(&toolbar));
-    window.present();
+    dialog.set_child(Some(&toolbar));
+    dialog.present(Some(parent));
 }
 
 /// Fills the tool list from a fresh discovery; rows swap to an inline editor when edited.

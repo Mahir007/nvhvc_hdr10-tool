@@ -33,26 +33,48 @@ pub struct Ctx {
     pub stack: gtk::Stack,
     pub pages: [gtk::Box; 3],
     pub footer: gtk::Box,
+    /// The live processing view, kept across progress updates so its spinner
+    /// animation isn't restarted by every stage change.
+    pub processing_ui: RefCell<Option<stages::ProcessingUi>>,
 }
 
 /// Builds the application and runs the GTK main loop.
 pub fn run() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_startup(|_| load_css());
+    app.connect_startup(|_| {
+        load_css();
+        install_bundled_icons();
+    });
     app.connect_activate(build_ui);
     app.run()
 }
 
 fn load_css() {
     let provider = gtk::CssProvider::new();
-    #[allow(deprecated)] // load_from_string needs the v4_12 feature; we target 4.10.
-    provider.load_from_data(css::STYLE);
+    provider.load_from_string(css::STYLE);
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+    }
+}
+
+/// Icons the stock theme lacks, written to the cache dir and added as an (unthemed)
+/// icon search path. Monochrome `-symbolic` SVGs recolor with the theme like any other.
+fn install_bundled_icons() {
+    // The mockup's upload glyph: a stemmed up arrow over an open tray. Drawn as filled
+    // outlines (not strokes) because GTK's symbolic recolouring fills paths.
+    const UPLOAD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M8 1l4.5 4.5-1.06 1.06-2.69-2.69v6.63h-1.5V3.87L4.56 6.56 3.5 5.5Z"/><path d="M1.5 10.5H3V13h10v-2.5h1.5v4h-13Z"/></svg>"##;
+
+    let dir = glib::user_cache_dir().join("nvhvc-icons");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(dir.join("nvhvc-upload-symbolic.svg"), UPLOAD_SVG);
+    if let Some(display) = gdk::Display::default() {
+        gtk::IconTheme::for_display(&display).add_search_path(&dir);
     }
 }
 
@@ -138,6 +160,7 @@ fn build_ui(app: &adw::Application) {
         stack,
         pages,
         footer,
+        processing_ui: RefCell::new(None),
     });
 
     install_actions(app, &ctx);
@@ -168,14 +191,17 @@ fn build_ui(app: &adw::Application) {
 }
 
 /// Rebuilds everything that depends on state: chrome, the visible page, the footer.
+///
+/// Exception: while the pipeline runs, the processing view is built once and then only
+/// *updated* per stage message, so its spinner animation runs uninterrupted.
 pub fn render(ctx: &Rc<Ctx>) {
     let (stage, processing) = {
         let s = ctx.state.borrow();
-        (s.stage, s.processing.is_some())
+        (s.stage, s.processing)
     };
 
     ctx.title.set_subtitle(&format!("Step {stage} of 3"));
-    ctx.back_btn.set_visible(stage > 1 && !processing);
+    ctx.back_btn.set_visible(stage > 1 && processing.is_none());
     for (i, dot) in ctx.dots.iter().enumerate() {
         if i + 1 == stage as usize {
             dot.add_css_class("active");
@@ -184,8 +210,31 @@ pub fn render(ctx: &Rc<Ctx>) {
         }
     }
 
-    // Rebuild the visible page.
     let page = &ctx.pages[stage as usize - 1];
+
+    if let Some(pipe_stage) = processing {
+        let mut slot = ctx.processing_ui.borrow_mut();
+        match slot.as_ref() {
+            Some(ui) => ui.update(pipe_stage),
+            None => {
+                while let Some(child) = page.first_child() {
+                    page.remove(&child);
+                }
+                let ui = stages::build_processing(pipe_stage);
+                page.append(&ui.root);
+                *slot = Some(ui);
+            }
+        }
+        ctx.stack.set_visible_child_name(&format!("stage{stage}"));
+        while let Some(child) = ctx.footer.first_child() {
+            ctx.footer.remove(&child);
+        }
+        ctx.footer.set_visible(false);
+        return;
+    }
+    ctx.processing_ui.replace(None);
+
+    // Rebuild the visible page.
     while let Some(child) = page.first_child() {
         page.remove(&child);
     }
@@ -201,17 +250,15 @@ pub fn render(ctx: &Rc<Ctx>) {
     while let Some(child) = ctx.footer.first_child() {
         ctx.footer.remove(&child);
     }
-    ctx.footer.set_visible(!processing);
-    if !processing {
-        stages::build_footer(ctx, &ctx.footer);
-    }
+    ctx.footer.set_visible(true);
+    stages::build_footer(ctx, &ctx.footer);
 
     // "Open Encode…" only makes sense once a source is picked.
     if let Some(app) = ctx.window.application()
         && let Some(action) = app.lookup_action("open-encode")
         && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
     {
-        action.set_enabled(ctx.state.borrow().source.is_some() && !processing);
+        action.set_enabled(ctx.state.borrow().source.is_some() && processing.is_none());
     }
 }
 
@@ -555,8 +602,7 @@ fn apply_theme_setting(mode: &str) {
 }
 
 fn show_about(window: &adw::ApplicationWindow) {
-    let about = adw::AboutWindow::builder()
-        .transient_for(window)
+    let about = adw::AboutDialog::builder()
         .application_name("HDR10 Patcher")
         .application_icon("video-display")
         .version(nvhvc_core::VERSION)
@@ -567,7 +613,46 @@ fn show_about(window: &adw::ApplicationWindow) {
              SPS/VUI editing with the encode's frame timing preserved exactly.",
         )
         .build();
-    about.present();
+    about.present(Some(window));
+}
+
+/// Runs the pipeline, first asking about overwriting an existing output file the user
+/// didn't pick themselves (the save dialog warns for manual choices; the auto-derived
+/// default name gets this dialog instead).
+pub fn confirm_and_run(ctx: &Rc<Ctx>) {
+    let pending_overwrite = {
+        let s = ctx.state.borrow();
+        match &s.output {
+            Some(out) if out.exists() && !s.output_user_chosen => Some(
+                out.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| out.display().to_string()),
+            ),
+            Some(_) => None,
+            None => return,
+        }
+    };
+    let Some(name) = pending_overwrite else {
+        start_run(ctx);
+        return;
+    };
+    let dialog = adw::AlertDialog::builder()
+        .heading(format!("Replace “{name}”?"))
+        .body("A file with this name already exists. Replacing it will overwrite its contents.")
+        .build();
+    dialog.add_responses(&[("cancel", "Cancel"), ("replace", "Replace")]);
+    dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    {
+        let ctx = ctx.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "replace" {
+                start_run(&ctx);
+            }
+        });
+    }
+    dialog.present(Some(&ctx.window));
 }
 
 // ===================== Async: probing & the pipeline =====================
@@ -591,6 +676,7 @@ pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
             s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
                 &path.display().to_string(),
             )));
+            s.output_user_chosen = false;
         }
         s.probe_seq
     };
