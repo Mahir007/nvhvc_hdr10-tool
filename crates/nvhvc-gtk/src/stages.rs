@@ -71,8 +71,13 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with an icon and a label.
+/// Tinted rounded banner with an icon and a (plain-text) label.
 fn banner(kind: &str, icon: &str, text: &str) -> gtk::Box {
+    banner_markup(kind, icon, &gtk::glib::markup_escape_text(text))
+}
+
+/// Like [`banner`], but the text is Pango markup (caller escapes dynamic pieces).
+fn banner_markup(kind: &str, icon: &str, markup: &str) -> gtk::Box {
     let b = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(10)
@@ -85,7 +90,8 @@ fn banner(kind: &str, icon: &str, text: &str) -> gtk::Box {
     image.set_margin_top(2);
     b.append(&image);
     let label = gtk::Label::builder()
-        .label(text)
+        .use_markup(true)
+        .label(markup)
         .halign(gtk::Align::Start)
         .wrap(true)
         .xalign(0.0)
@@ -93,6 +99,22 @@ fn banner(kind: &str, icon: &str, text: &str) -> gtk::Box {
         .build();
     b.append(&label);
     b
+}
+
+/// A button whose content is an icon next to (or after) its label, per the mockup.
+fn icon_button(label: &str, icon: &str, icon_after: bool) -> gtk::Button {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    row.set_halign(gtk::Align::Center);
+    let image = gtk::Image::from_icon_name(icon);
+    let text = gtk::Label::new(Some(label));
+    if icon_after {
+        row.append(&text);
+        row.append(&image);
+    } else {
+        row.append(&image);
+        row.append(&text);
+    }
+    gtk::Button::builder().child(&row).build()
 }
 
 /// The big dashed drop zone with an inner accent pill.
@@ -665,14 +687,14 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // "Copying from …" banner.
+    // "Copying from …" banner (bold accent filename, per the mockup).
     if let (Some(src), Some(meta)) = (&s.source, s.effective()) {
-        let text = format!(
-            "Copying from {} · {}",
-            uimodel::file_name(&src.path.display().to_string()),
-            uimodel::colour_summary(&meta),
+        let markup = format!(
+            "Copying from <b>{}</b> · {}",
+            gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
+            gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
-        let b = banner("blue", "video-x-generic-symbolic", &text);
+        let b = banner_markup("blue", "video-x-generic-symbolic", &markup);
         b.set_margin_top(0);
         b.set_margin_bottom(22);
         col.append(&b);
@@ -789,7 +811,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     save_text.append(&save_title);
     save_text.append(&save_path);
     save_row.append(&save_text);
-    let choose = gtk::Button::with_label("Choose…");
+    let choose = icon_button("Choose…", "document-open-symbolic", false);
     choose.set_valign(gtk::Align::Center);
     {
         let ctx = ctx.clone();
@@ -1030,7 +1052,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     );
     if let Some(meta) = s.effective() {
         add_row(
-            "applications-graphics-symbolic",
+            "color-select-symbolic",
             false,
             "Colour",
             &uimodel::colour_summary(&meta),
@@ -1073,7 +1095,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             hint.set_valign(gtk::Align::Center);
             footer.append(&hint);
 
-            let cont = gtk::Button::with_label("Continue");
+            let cont = icon_button("Continue", "go-next-symbolic", true);
             cont.add_css_class("suggested-action");
             cont.set_sensitive(s.source.is_some());
             {
@@ -1102,7 +1124,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             hint.set_valign(gtk::Align::Center);
             footer.append(&hint);
 
-            let run = gtk::Button::with_label("Patch HDR10");
+            let run = icon_button("Patch HDR10", "starred-symbolic", false);
             run.add_css_class("suggested-action");
             run.set_sensitive(s.encode.is_some() && s.output.is_some());
             run.set_visible(s.encode.is_some());
@@ -1113,7 +1135,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             footer.append(&run);
         }
         _ => {
-            let another = gtk::Button::with_label("Patch another");
+            let another = icon_button("Patch another", "view-refresh-symbolic", false);
             another.add_css_class("flat");
             {
                 let ctx = ctx.clone();
@@ -1127,7 +1149,7 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
             footer.append(&another);
 
             if let Some(result) = &s.result {
-                let open = gtk::Button::with_label("Open output folder");
+                let open = icon_button("Open output folder", "folder-open-symbolic", false);
                 open.add_css_class("suggested-action");
                 let window = ctx.window.clone();
                 let path = result.output.clone();

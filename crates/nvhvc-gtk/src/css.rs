@@ -78,7 +78,11 @@ button.dropzone:hover {
 }
 .banner.green { background: alpha(@success_color, .14); color: @success_color; }
 .banner.amber { background: alpha(@warning_color, .16); color: @warning_color; }
-.banner.blue  { background: alpha(@accent_bg_color, .12); color: @accent_color; }
+.banner.blue  {
+  background: alpha(@accent_bg_color, .12);
+  color: @accent_color;
+  border: 1px solid alpha(@accent_bg_color, .26);
+}
 .banner.red   { background: alpha(@error_color, .14); color: @error_color; }
 
 /* ===== metadata row editor ===== */
@@ -140,6 +144,20 @@ button.theme-circle.light { background: #fafafb; }
 button.theme-circle.dark { background: #2c2c32; }
 button.theme-circle.system {
   background: linear-gradient(135deg, #ffffff 0%, #ffffff 50%, #2c2c32 50%, #2c2c32 100%);
+}
+.badge-check {
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 999px;
+  padding: 3px;
+  border: 2px solid @popover_bg_color;
+}
+button.menu-entry { padding: 8px 9px; }
+
+/* Disabled primary action keeps its accent tint (mockup style) instead of going grey. */
+button.suggested-action:disabled {
+  background: alpha(@accent_bg_color, .45);
+  color: alpha(@accent_fg_color, .85);
 }
 
 /* ===== tool status dots ===== */

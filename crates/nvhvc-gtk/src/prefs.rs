@@ -181,7 +181,11 @@ fn view_row(
     text.append(&det);
     row.append(&text);
 
-    let edit = gtk::Button::with_label("Edit");
+    let edit_row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    edit_row_box.set_halign(gtk::Align::Center);
+    edit_row_box.append(&gtk::Image::from_icon_name("document-edit-symbolic"));
+    edit_row_box.append(&gtk::Label::new(Some("Edit")));
+    let edit = gtk::Button::builder().child(&edit_row_box).build();
     edit.set_valign(gtk::Align::Center);
     {
         let list = list.clone();
