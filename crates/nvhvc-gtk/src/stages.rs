@@ -151,26 +151,14 @@ fn drop_zone(
     cap.add_css_class("dim-label");
     inner.append(&cap);
 
-    let pill = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(7)
-        .halign(gtk::Align::Center)
-        .margin_top(12)
-        .build();
+    // Only this button opens the picker — the zone itself is inert except for drag-and-drop.
+    let pill = icon_button("Open File…", "document-open-symbolic", false);
     pill.add_css_class("open-pill");
-    pill.append(&gtk::Image::from_icon_name("document-open-symbolic"));
-    pill.append(&gtk::Label::new(Some("Open File…")));
-    inner.append(&pill);
-
-    let zone = gtk::Button::builder().child(&inner).build();
-    zone.add_css_class("dropzone");
-
-    let on_file = move |ctx: &Rc<Ctx>, path: std::path::PathBuf| {
-        app::start_probe(ctx, path, is_source);
-    };
+    pill.set_halign(gtk::Align::Center);
+    pill.set_margin_top(12);
     {
         let ctx = ctx.clone();
-        zone.connect_clicked(move |_| {
+        pill.connect_clicked(move |_| {
             let title = if is_source {
                 "Choose HDR10 source"
             } else {
@@ -181,7 +169,17 @@ fn drop_zone(
             });
         });
     }
-    app::attach_file_drop(ctx, &zone, on_file);
+    inner.append(&pill);
+
+    let zone = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    zone.add_css_class("dropzone");
+    zone.append(&inner);
+    // Hug the content instead of stretching to fill the page.
+    zone.set_valign(gtk::Align::Start);
+
+    app::attach_file_drop(ctx, &zone, move |ctx, path| {
+        app::start_probe(ctx, path, is_source);
+    });
     zone.upcast()
 }
 
