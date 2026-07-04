@@ -118,41 +118,12 @@ fn app(cx: &mut RenderCx) -> Element {
     ])
     .columns([GridLength::Star(1.0)]);
 
-    // Overlay layers stack in the same grid cell (later children render on top).
+    // Overlay layers stack in the same grid cell (later children render on top). The
+    // always-mounted About ContentDialog is pushed BEFORE any conditional Border overlay:
+    // a ContentDialog isn't a visual child, and removing a keyed Border that sits *before*
+    // it left the Border stuck on screen (the reconciler's child mirror desynced). Keeping
+    // every conditional visual overlay strictly last makes its removal a clean truncation.
     let mut layers: Vec<Element> = vec![main.with_key("app").into()];
-    if vm.ui.prefs_open {
-        layers.push(views::prefs_overlay(&vm).with_key("prefs"));
-    }
-    // Both dialogs stay mounted permanently and are driven by `is_open` alone:
-    // unmounting a ContentDialog from inside its own Closed callback crashes the
-    // WinUI backend, so closing must be a property update, never a removal.
-    {
-        let upd = vm.upd.clone();
-        let launch = launch_run(&vm);
-        layers.push(
-            ContentDialog::new(format!(
-                "Replace \u{201C}{}\u{201D}?",
-                file_name(&vm.output)
-            ))
-            .with_key("overwrite")
-            .content(
-                "A file with this name already exists. Replacing it will overwrite its contents.",
-            )
-            .primary_button_text("Replace")
-            .close_button_text("Cancel")
-            .is_open(vm.ui.confirm_overwrite)
-            .on_closed(move |result| {
-                upd.call(|mut s| {
-                    s.confirm_overwrite = false;
-                    s
-                });
-                if result == ContentDialogResult::Primary {
-                    launch();
-                }
-            })
-            .into(),
-        );
-    }
     {
         let upd = vm.upd.clone();
         layers.push(
@@ -173,6 +144,16 @@ fn app(cx: &mut RenderCx) -> Element {
                 })
                 .into(),
         );
+    }
+    if vm.ui.prefs_open {
+        layers.push(views::prefs_overlay(&vm).with_key("prefs"));
+    }
+    // The overwrite confirmation is a custom smoke overlay (not a ContentDialog) so the
+    // destructive Replace button can be red — reactor's ContentDialog exposes no button
+    // styling. A conditional overlay layer is also crash-safe (unlike unmounting a
+    // ContentDialog from its own Closed callback, which aborts the WinUI backend).
+    if vm.ui.confirm_overwrite {
+        layers.push(views::overwrite_overlay(&vm, launch_run(&vm)).with_key("overwrite"));
     }
     grid(layers).into()
 }
@@ -279,8 +260,12 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
     let trigger = vm.run_trigger.clone();
     let set_progress = vm.set_progress.clone();
     move || {
+        // Clear the overwrite prompt in the SAME update that starts the run — separate
+        // updater calls in one event don't chain, so setting it in the tap handler and the
+        // run_token here would clobber each other and leave the overlay stuck.
         upd.call(move |mut s| {
             s.run_token = token;
+            s.confirm_overwrite = false;
             s
         });
         set_progress.call(0);
