@@ -209,20 +209,23 @@ fn checked_list_factory(dd: &gtk::DropDown) -> gtk::SignalListItemFactory {
     factory
 }
 
-/// A button whose content is an icon next to (or after) its label, per the mockup.
+/// A button whose content is an icon + label. Leading-icon buttons use the native
+/// `adw::ButtonContent`; the trailing-icon case (the mockup's "Continue →") is hand-built
+/// because `AdwButtonContent` only ever puts the icon before the label.
 fn icon_button(label: &str, icon: &str, icon_after: bool) -> gtk::Button {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
-    row.set_halign(gtk::Align::Center);
-    let image = gtk::Image::from_icon_name(icon);
-    let text = gtk::Label::new(Some(label));
     if icon_after {
-        row.append(&text);
-        row.append(&image);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        row.set_halign(gtk::Align::Center);
+        row.append(&gtk::Label::new(Some(label)));
+        row.append(&gtk::Image::from_icon_name(icon));
+        gtk::Button::builder().child(&row).build()
     } else {
-        row.append(&image);
-        row.append(&text);
+        let content = adw::ButtonContent::builder()
+            .icon_name(icon)
+            .label(label)
+            .build();
+        gtk::Button::builder().child(&content).build()
     }
-    gtk::Button::builder().child(&row).build()
 }
 
 /// The big dashed drop zone with an inner accent pill.

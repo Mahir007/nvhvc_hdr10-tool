@@ -391,69 +391,26 @@ fn build_menubar() -> gio::Menu {
     menubar
 }
 
-/// The keyboard-shortcuts overlay window.
+/// The keyboard-shortcuts dialog (native `AdwShortcutsDialog`; `GtkShortcutsWindow` is
+/// deprecated at GTK 4.18).
 fn show_shortcuts(window: &adw::ApplicationWindow) {
-    const UI: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<interface>
-  <object class="GtkShortcutsWindow" id="shortcuts">
-    <child>
-      <object class="GtkShortcutsSection">
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Files</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Open source</property>
-                <property name="accelerator">&lt;Control&gt;o</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Open encode</property>
-                <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;o</property>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">General</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Preferences</property>
-                <property name="accelerator">&lt;Control&gt;comma</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Keyboard shortcuts</property>
-                <property name="accelerator">&lt;Control&gt;question</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Help</property>
-                <property name="accelerator">F1</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Quit</property>
-                <property name="accelerator">&lt;Control&gt;q</property>
-              </object>
-            </child>
-          </object>
-        </child>
-      </object>
-    </child>
-  </object>
-</interface>"#;
-    let builder = gtk::Builder::from_string(UI);
-    if let Some(shortcuts) = builder.object::<gtk::ShortcutsWindow>("shortcuts") {
-        shortcuts.set_transient_for(Some(window));
-        shortcuts.set_modal(true);
-        shortcuts.present();
-    }
+    let files = adw::ShortcutsSection::new(Some("Files"));
+    files.add(adw::ShortcutsItem::new("Open source", "<Control>o"));
+    files.add(adw::ShortcutsItem::new("Open encode", "<Control><Shift>o"));
+
+    let general = adw::ShortcutsSection::new(Some("General"));
+    general.add(adw::ShortcutsItem::new("Preferences", "<Control>comma"));
+    general.add(adw::ShortcutsItem::new(
+        "Keyboard shortcuts",
+        "<Control>question",
+    ));
+    general.add(adw::ShortcutsItem::new("Help", "F1"));
+    general.add(adw::ShortcutsItem::new("Quit", "<Control>q"));
+
+    let dialog = adw::ShortcutsDialog::new();
+    dialog.add(files);
+    dialog.add(general);
+    dialog.present(Some(window));
 }
 
 /// Opens the project page (the closest thing to online help).
