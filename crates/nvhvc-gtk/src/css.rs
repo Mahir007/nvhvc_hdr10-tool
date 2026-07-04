@@ -165,14 +165,16 @@ button.suggested-action:disabled {
 }
 
 /* ===== tool status dots =====
-   green = found on PATH · blue = custom user path · purple = well-known install dir */
+   green = found on PATH · blue = custom user path · purple = well-known install dir · red = missing.
+   These are FIXED palette/semantic colours — never the accent (a custom-path dot must read blue
+   regardless of the chosen accent colour). */
 .tool-dot {
   min-width: 9px;
   min-height: 9px;
   border-radius: 999px;
 }
 .tool-dot.green  { background: @success_color; }
-.tool-dot.blue   { background: @accent_bg_color; }
+.tool-dot.blue   { background: @blue_3; }
 .tool-dot.purple { background: @purple_3; }
 .tool-dot.red    { background: @error_color; }
 
