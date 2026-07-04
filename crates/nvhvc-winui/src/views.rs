@@ -1570,6 +1570,85 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
         .into()
 }
 
+/// The overwrite confirmation, as a smoke overlay so the destructive Replace button can be
+/// red (reactor's `ContentDialog` exposes no button styling). Replace sits on the LEFT —
+/// deliberately away from the pointer's resting spot — and Cancel is the safe right-hand button.
+pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
+    let name = file_name(&vm.output);
+
+    // A red Border (not a Button): a reactor Button's PointerOver visual state overrides a
+    // locally-set Background, so a red button reverts to grey on hover. A Border has no visual
+    // states, so it stays reliably red — and a destructive action being a deliberate tap target
+    // rather than a one-keystroke default is a feature, not a bug. Cancel stays a real button.
+    // `launch()` clears `confirm_overwrite` itself (in the same update that starts the run).
+    let replace = border(
+        text_block("Replace")
+            .semibold()
+            .foreground(Color::rgb(255, 255, 255))
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .vertical_alignment(VerticalAlignment::Center),
+    )
+    .background(Color::rgb(196, 43, 28)) // Fluent SystemFillColorCritical
+    .corner_radius(4.0)
+    .on_tapped(launch)
+    .horizontal_alignment(HorizontalAlignment::Stretch)
+    .vertical_alignment(VerticalAlignment::Stretch)
+    .grid_column(0)
+    .with_key("replace");
+
+    let upd = vm.upd.clone();
+    let cancel = button("Cancel")
+        .on_click(move || {
+            upd.call(|mut s| {
+                s.confirm_overwrite = false;
+                s
+            });
+        })
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .grid_column(1)
+        .with_key("cancel");
+
+    let buttons = grid((replace, cancel))
+        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+        .column_spacing(8.0)
+        .margin(Thickness {
+            left: 0.0,
+            top: 20.0,
+            right: 0.0,
+            bottom: 0.0,
+        });
+
+    let card = border(
+        vstack((
+            text_block(format!("Replace \u{201C}{name}\u{201D}?"))
+                .font_size(18.0)
+                .semibold(),
+            text_block(
+                "A file with this name already exists. Replacing it will overwrite its contents.",
+            )
+            .font_size(13.0)
+            .foreground(ThemeRef::SecondaryText)
+            .wrap(),
+            buttons,
+        ))
+        .spacing(6.0),
+    )
+    .corner_radius(8.0)
+    .background(ThemeRef::SolidBackground)
+    .border_brush(ThemeRef::SurfaceStroke)
+    .border_thickness(Thickness::uniform(1.0))
+    .padding(Thickness::uniform(24.0))
+    .width(400.0)
+    .horizontal_alignment(HorizontalAlignment::Center)
+    .vertical_alignment(VerticalAlignment::Center);
+
+    border(card)
+        .background(ThemeRef::SmokeFill)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .into()
+}
+
 /// One tool row in Preferences: status dot, name + resolution detail, Edit button —
 /// or the inline custom-path editor when this row is being edited.
 fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Element {
