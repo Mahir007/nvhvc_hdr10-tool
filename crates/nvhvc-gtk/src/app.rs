@@ -597,7 +597,10 @@ pub fn confirm_and_run(ctx: &Rc<Ctx>) {
         .heading(format!("Replace “{name}”?"))
         .body("A file with this name already exists. Replacing it will overwrite its contents.")
         .build();
-    dialog.add_responses(&[("cancel", "Cancel"), ("replace", "Replace")]);
+    // Replace is added first so it sits on the LEFT (destructive, red) — deliberately not
+    // under the pointer's default resting spot. Cancel stays the default/close response so
+    // Enter and Esc both cancel safely.
+    dialog.add_responses(&[("replace", "Replace"), ("cancel", "Cancel")]);
     dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
