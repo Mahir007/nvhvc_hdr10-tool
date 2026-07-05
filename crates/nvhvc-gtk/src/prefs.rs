@@ -1,8 +1,7 @@
-//! The Preferences dialog: a native `AdwPreferencesDialog` with the external-tool paths as
-//! editable `AdwEntryRow`s (status dot prefix, status word suffix, apply-on-edit) and an About
-//! group. All the old hand-built ListBox / view-edit state machine is gone — each tool row is
-//! simply always-editable, applying (Enter or the ✓ button) saves the override, and clearing it
-//! resets to auto-detect.
+//! The Preferences dialog: a native `AdwPreferencesDialog` listing the external-tool paths as
+//! `AdwActionRow`s (status-dot prefix, name, "status · path" subtitle, pencil Edit suffix) and an
+//! About group. Editing opens a small native `AdwAlertDialog` with an entry — so a row is never
+//! "stuck" in an editable state: you click the pencil, set or cancel, and the row reverts.
 
 use adw::prelude::*;
 
@@ -24,7 +23,7 @@ pub fn show(parent: &adw::ApplicationWindow) {
     let settings = Settings::load();
     let toolset = Toolset::discover(&settings.tool_overrides);
     for (tool, resolution) in toolset.all() {
-        tools_group.add(&tool_row(tool, resolution));
+        tools_group.add(&tool_row(parent, tool, resolution));
     }
     page.add(&tools_group);
 
@@ -40,67 +39,112 @@ pub fn show(parent: &adw::ApplicationWindow) {
     dialog.present(Some(parent));
 }
 
-/// One external tool as an editable path row: `[● dot] name  [/path/to/exe……]  [On PATH]`.
-/// Applying saves the override; an empty value resets to auto-detection.
-fn tool_row(tool: Tool, resolution: &Resolution) -> adw::EntryRow {
-    let row = adw::EntryRow::builder()
+/// One external tool as a read-only row with a pencil that opens the editor.
+fn tool_row(
+    window: &adw::ApplicationWindow,
+    tool: Tool,
+    resolution: &Resolution,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
         .title(tool.label())
-        .text(path_text(resolution))
-        .show_apply_button(true)
+        .subtitle(status_subtitle(tool, resolution))
         .build();
 
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("tool-dot");
     dot.set_valign(gtk::Align::Center);
+    apply_dot(&dot, resolution);
     row.add_prefix(&dot);
 
-    let status = gtk::Label::new(None);
-    status.add_css_class("dim-label");
-    status.add_css_class("caption");
-    status.set_valign(gtk::Align::Center);
-    row.add_suffix(&status);
+    let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit.add_css_class("flat");
+    edit.set_valign(gtk::Align::Center);
+    edit.set_tooltip_text(Some("Edit path"));
+    row.add_suffix(&edit);
+    // Activating the row (click anywhere / Enter) opens the editor too.
+    row.set_activatable_widget(Some(&edit));
 
-    apply_status(&dot, &status, tool, resolution);
-
-    let dot = dot.clone();
-    let status = status.clone();
-    row.connect_apply(move |row| {
-        let value = row.text().trim().to_string();
-        let mut settings = Settings::load();
-        set_tool_override(&mut settings.tool_overrides, tool, &value);
-        let _ = settings.save();
-        // Re-resolve so the dot/status (and the auto-detected path, if cleared) refresh in place.
-        let toolset = Toolset::discover(&settings.tool_overrides);
-        let res = toolset.resolution(tool);
-        row.set_text(&path_text(res));
-        apply_status(&dot, &status, tool, res);
-    });
+    {
+        let window = window.clone();
+        let row = row.clone();
+        let dot = dot.clone();
+        edit.connect_clicked(move |_| open_editor(&window, tool, &row, &dot));
+    }
     row
 }
 
-/// The path (or empty) a resolution points at, for the entry text.
-fn path_text(resolution: &Resolution) -> String {
-    resolution
+/// Opens a modal editor for a tool's custom path; on "Set" saves and refreshes the row in place.
+fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow, dot: &gtk::Box) {
+    let settings = Settings::load();
+    let toolset = Toolset::discover(&settings.tool_overrides);
+    let current = toolset
+        .resolution(tool)
         .path()
         .map(|p| p.display().to_string())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    let entry = gtk::Entry::builder()
+        .text(&current)
+        .placeholder_text("/path/to/executable")
+        .hexpand(true)
+        .activates_default(true)
+        .build();
+
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("{} — custom executable", tool.label())),
+        Some("Point at your own build, or leave empty to auto-detect."),
+    );
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Cancel"), ("set", "Set")]);
+    dialog.set_response_appearance("set", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("set"));
+    dialog.set_close_response("cancel");
+
+    {
+        let row = row.clone();
+        let dot = dot.clone();
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "set" {
+                return;
+            }
+            let value = entry.text().trim().to_string();
+            let mut settings = Settings::load();
+            set_tool_override(&mut settings.tool_overrides, tool, &value);
+            let _ = settings.save();
+            let toolset = Toolset::discover(&settings.tool_overrides);
+            let res = toolset.resolution(tool);
+            row.set_subtitle(&status_subtitle(tool, res));
+            apply_dot(&dot, res);
+        });
+    }
+    dialog.present(Some(window));
+    entry.grab_focus();
 }
 
-/// Recolours the status dot and sets the status word + tooltip from a resolution.
-/// green = on PATH · blue = custom path · purple = install-dir fallback · red = not found.
-fn apply_status(dot: &gtk::Box, status: &gtk::Label, tool: Tool, resolution: &Resolution) {
+/// `"On PATH · /usr/bin/ffmpeg"`-style subtitle for a resolution.
+fn status_subtitle(tool: Tool, resolution: &Resolution) -> String {
+    match resolution {
+        Resolution::OnPath(p) => format!("On PATH · {}", p.display()),
+        Resolution::Override(p) => format!("Custom path · {}", p.display()),
+        Resolution::Fallback(p) => format!("Install dir · {}", p.display()),
+        Resolution::NotFound => format!("Not found · {}", tool.install_hint()),
+    }
+}
+
+/// Recolours a status dot from a resolution. green = on PATH · blue = custom · purple = install
+/// dir · red = missing.
+fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
     for c in ["green", "blue", "purple", "red"] {
         dot.remove_css_class(c);
     }
-    let (class, word, detail) = match resolution {
-        Resolution::OnPath(p) => ("green", "On PATH", p.display().to_string()),
-        Resolution::Override(p) => ("blue", "Custom path", p.display().to_string()),
-        Resolution::Fallback(p) => ("purple", "Install dir", p.display().to_string()),
-        Resolution::NotFound => ("red", "Not found", tool.install_hint().to_string()),
+    let class = match resolution {
+        Resolution::OnPath(_) => "green",
+        Resolution::Override(_) => "blue",
+        Resolution::Fallback(_) => "purple",
+        Resolution::NotFound => "red",
     };
     dot.add_css_class(class);
-    status.set_text(word);
-    dot.set_tooltip_text(Some(&format!("{word} · {detail}")));
 }
 
 /// An "About" row: title on the left, a dim value on the right.
