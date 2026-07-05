@@ -812,9 +812,12 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.encode.is_none() && !s.enc_probing && s.enc_error.is_none() {
         drop(s);
+        // Trying a stock theme icon here (Adwaita has no dedicated upload glyph — this is the
+        // closest). The bundled "nvhvc-upload-symbolic" SVG is still registered in app.rs for an
+        // instant one-word revert if the stock icon looks worse in the real desktop theme.
         col.append(&drop_zone(
             ctx,
-            "nvhvc-upload-symbolic",
+            "document-send-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
