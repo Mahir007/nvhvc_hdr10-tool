@@ -482,8 +482,16 @@ fn build_app_menu(ctx: &Rc<Ctx>) -> gtk::Popover {
     let all = Rc::new([sys, light, dark]);
     let sync = {
         let all = all.clone();
+        let window = ctx.window.clone();
         move || {
-            let current = Settings::load().ui_theme.unwrap_or_else(|| "system".into());
+            // Read the current theme from the in-memory `theme` action state (its single source
+            // of truth), not by re-reading settings.json off disk on every menu open / click.
+            let current = window
+                .application()
+                .and_then(|a| a.lookup_action("theme"))
+                .and_then(|a| a.state())
+                .and_then(|v| v.str().map(str::to_owned))
+                .unwrap_or_else(|| "system".into());
             for c in all.iter() {
                 if c.mode == current {
                     c.button.add_css_class("selected");
@@ -771,6 +779,19 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 break;
             }
         }
+    });
+}
+
+/// Picks a source (or encode) file and starts its probe — the dialog title follows `is_source`.
+/// The app-level `open-source`/`open-encode` actions stay inline because they also set the stage.
+pub fn pick_and_probe(ctx: &Rc<Ctx>, is_source: bool) {
+    let title = if is_source {
+        "Choose HDR10 source"
+    } else {
+        "Choose the encode to patch"
+    };
+    pick_file(ctx, false, title, None, move |ctx, path| {
+        start_probe(ctx, path, is_source);
     });
 }
 

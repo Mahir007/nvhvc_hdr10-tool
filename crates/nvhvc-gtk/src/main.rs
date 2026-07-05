@@ -15,9 +15,8 @@ mod stages;
 mod state;
 
 #[cfg(target_os = "linux")]
-fn main() -> std::process::ExitCode {
-    let _ = app::run();
-    std::process::ExitCode::SUCCESS
+fn main() -> gtk::glib::ExitCode {
+    app::run()
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -269,16 +269,7 @@ fn drop_zone(
     pill.set_margin_top(12);
     {
         let ctx = ctx.clone();
-        pill.connect_clicked(move |_| {
-            let title = if is_source {
-                "Choose HDR10 source"
-            } else {
-                "Choose the encode to patch"
-            };
-            app::pick_file(&ctx, false, title, None, move |ctx, path| {
-                app::start_probe(ctx, path, is_source);
-            });
-        });
+        pill.connect_clicked(move |_| app::pick_and_probe(&ctx, is_source));
     }
     inner.append(&pill);
 
@@ -356,6 +347,14 @@ fn file_row(
 
 // ===================== Stage 1: Source =====================
 
+/// The spinner + dim caption shown while a file is being probed.
+fn probing_row(text: &str) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    row.append(&adw::Spinner::new());
+    row.append(&dim_label(text));
+    row
+}
+
 pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     let s = ctx.state.borrow();
 
@@ -378,10 +377,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     col.append(&header);
 
     if s.src_probing {
-        let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        probing.append(&adw::Spinner::new());
-        probing.append(&dim_label("Reading HDR10 metadata…"));
-        col.append(&probing);
+        col.append(&probing_row("Reading HDR10 metadata…"));
         drop(s);
         return page(&col);
     }
@@ -397,11 +393,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
         retry.set_margin_top(12);
         {
             let ctx = ctx.clone();
-            retry.connect_clicked(move |_| {
-                app::pick_file(&ctx, false, "Choose HDR10 source", None, |ctx, path| {
-                    app::start_probe(ctx, path, true);
-                });
-            });
+            retry.connect_clicked(move |_| app::pick_and_probe(&ctx, true));
         }
         col.append(&retry);
         drop(s);
@@ -417,11 +409,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     let change = gtk::Button::with_label("Change");
     {
         let ctx = ctx.clone();
-        change.connect_clicked(move |_| {
-            app::pick_file(&ctx, false, "Choose HDR10 source", None, |ctx, path| {
-                app::start_probe(ctx, path, true);
-            });
-        });
+        change.connect_clicked(move |_| app::pick_and_probe(&ctx, true));
     }
     let src_card = card();
     src_card.append(&card_row(&file_row(
@@ -825,10 +813,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
 
     if s.enc_probing {
-        let probing = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        probing.append(&adw::Spinner::new());
-        probing.append(&dim_label("Reading encode metadata…"));
-        col.append(&probing);
+        col.append(&probing_row("Reading encode metadata…"));
         drop(s);
         return page(&col);
     }
@@ -853,17 +838,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     let change = gtk::Button::with_label("Change");
     {
         let ctx = ctx.clone();
-        change.connect_clicked(move |_| {
-            app::pick_file(
-                &ctx,
-                false,
-                "Choose the encode to patch",
-                None,
-                |ctx, path| {
-                    app::start_probe(ctx, path, false);
-                },
-            );
-        });
+        change.connect_clicked(move |_| app::pick_and_probe(&ctx, false));
     }
     let badge = if enc.hdr.has_hdr10() {
         Some(("HDR10 present", "green"))
@@ -1038,7 +1013,6 @@ pub fn build_processing(stage: PipeStage) -> ProcessingUi {
         .build();
 
     let spinner = adw::Spinner::new();
-    spinner.set_size_request(56, 56);
     spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);

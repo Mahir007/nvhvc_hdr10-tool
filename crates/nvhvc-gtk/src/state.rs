@@ -93,10 +93,10 @@ impl AppState {
         self.overrides.or_else(|| self.detected())
     }
 
-    /// Resets everything for "Patch another".
+    /// Resets everything for "Patch another". Only ever called from the completed result
+    /// screen, where no probe is in flight — and `start_probe` bumps `probe_seq` before every
+    /// probe anyway, so a fresh (zeroed) counter still discards any stale result.
     pub fn reset_wizard(&mut self) {
-        let seq = self.probe_seq;
         *self = AppState::new();
-        self.probe_seq = seq;
     }
 }
