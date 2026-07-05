@@ -380,7 +380,6 @@ fn build_menubar() -> gio::Menu {
     view.append_submenu(Some("Theme"), &theme);
 
     let help = gio::Menu::new();
-    help.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
     help.append(Some("Help"), Some("app.help"));
     help.append(Some("About nvhvc"), Some("app.about"));
 
@@ -532,15 +531,12 @@ fn build_app_menu(ctx: &Rc<Ctx>) -> gtk::Popover {
         });
         b
     };
+    // No "Keyboard Shortcuts" row — it's too minor to earn a menu slot. The shortcuts
+    // themselves (incl. Ctrl+? to open the shortcuts dialog) still work.
     root.append(&entry(
         "emblem-system-symbolic",
         "Preferences",
         "app.preferences",
-    ));
-    root.append(&entry(
-        "input-keyboard-symbolic",
-        "Keyboard Shortcuts",
-        "app.shortcuts",
     ));
     root.append(&entry("help-browser-symbolic", "Help", "app.help"));
     root.append(&entry("help-about-symbolic", "About nvhvc", "app.about"));
