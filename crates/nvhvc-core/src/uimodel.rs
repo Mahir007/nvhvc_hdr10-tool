@@ -277,14 +277,14 @@ pub fn file_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
-/// Default output path for an encode: `<dir>/<stem> — HDR10.mkv`.
+/// Default output path for an encode: `<dir>/<stem> [HDR10].mkv`.
 pub fn default_output(encode: &str) -> String {
     let p = Path::new(encode);
     let stem = p
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".to_owned());
-    let name = format!("{stem} — HDR10.mkv");
+    let name = format!("{stem} [HDR10].mkv");
     match p.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.join(name).display().to_string(),
         _ => name,
@@ -386,7 +386,7 @@ mod tests {
         let p = Path::new(&out);
         assert_eq!(
             p.file_name().unwrap().to_str().unwrap(),
-            "encode — HDR10.mkv"
+            "encode [HDR10].mkv"
         );
         assert_eq!(p.parent().unwrap(), Path::new("/videos"));
     }
