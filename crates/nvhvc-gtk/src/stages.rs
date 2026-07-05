@@ -363,7 +363,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
         drop(s);
         return page(&drop_zone(
             ctx,
-            "video-x-generic-symbolic",
+            "video-reel-symbolic",
             "Select your HDR10 source",
             "The master file to copy HDR10 metadata from. Drag a video here, or browse.",
             true,
@@ -425,7 +425,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
     let src_card = card();
     src_card.append(&card_row(&file_row(
-        "video-x-generic-symbolic",
+        "video-reel-symbolic",
         "",
         &name,
         &info.detail(),
@@ -804,7 +804,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
             gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
             gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
-        let b = banner_markup("blue", "video-x-generic-symbolic", &markup);
+        let b = banner_markup("blue", "video-reel-symbolic", &markup);
         b.set_margin_top(0);
         b.set_margin_bottom(22);
         col.append(&b);
@@ -812,12 +812,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.encode.is_none() && !s.enc_probing && s.enc_error.is_none() {
         drop(s);
-        // Trying a stock theme icon here (Adwaita has no dedicated upload glyph — this is the
-        // closest). The bundled "nvhvc-upload-symbolic" SVG is still registered in app.rs for an
-        // instant one-word revert if the stock icon looks worse in the real desktop theme.
+        // Our bundled upload glyph (registered in app.rs) — Adwaita ships no dedicated upload
+        // icon, so the hand-drawn arrow-over-tray is the intended look here.
         col.append(&drop_zone(
             ctx,
-            "document-send-symbolic",
+            "nvhvc-upload-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -1139,7 +1138,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
     let out_card = card();
     out_card.append(&card_row(&file_row(
-        "video-x-generic-symbolic",
+        "video-reel-symbolic",
         "ok",
         &out_name,
         &detail,

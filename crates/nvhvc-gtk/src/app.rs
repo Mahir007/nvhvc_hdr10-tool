@@ -65,14 +65,21 @@ fn load_css() {
 /// icon search path. Monochrome `-symbolic` SVGs recolor with the theme like any other.
 fn install_bundled_icons() {
     // The mockup's upload glyph: a stemmed up arrow over an open tray. Drawn as filled
-    // outlines (not strokes) because GTK's symbolic recolouring fills paths.
-    const UPLOAD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M8 1l4.5 4.5-1.06 1.06-2.69-2.69v6.63h-1.5V3.87L4.56 6.56 3.5 5.5Z"/><path d="M1.5 10.5H3V13h10v-2.5h1.5v4h-13Z"/></svg>"##;
+    // outlines (not strokes) because GTK's symbolic recolouring fills paths; the tray's two
+    // bottom-outer corners are rounded (the trailing Q arcs, radius 1.5) for a softer look.
+    const UPLOAD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M8 1l4.5 4.5-1.06 1.06-2.69-2.69v6.63h-1.5V3.87L4.56 6.56 3.5 5.5Z"/><path d="M1.5 10.5H3V13h10v-2.5h1.5V13Q14.5 14.5 13 14.5H3Q1.5 14.5 1.5 13Z"/></svg>"##;
+
+    // Stage-1 source glyph: the GNOME icon-library "video-reel" (a film box with a play
+    // button). Bundled as a plain file on the same unthemed search path as the upload glyph —
+    // the library ships it via gresource, but we don't need that packaging here.
+    const REEL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 0 0 v 15 h 2 v -1 h 12 v 1 h 2 v -15 h -2 v 1 h -12 v -1 z m 2 3 h 12 v 9 h -12 z m 0 0"/><path d="m 13 11 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 0 0"/><path d="m 7 4.5 c 0.195312 0 0.386719 0.058594 0.554688 0.167969 l 3 2 c 0.589843 0.394531 0.589843 1.269531 0 1.664062 l -3 2 c -0.167969 0.109375 -0.359376 0.167969 -0.554688 0.167969 c 0 0 -1.003906 0 -1 -1 v -4 c -0.003906 -1 1 -1 1 -1 z m 0 0"/></g></svg>"##;
 
     let dir = glib::user_cache_dir().join("nvhvc-icons");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let _ = std::fs::write(dir.join("nvhvc-upload-symbolic.svg"), UPLOAD_SVG);
+    let _ = std::fs::write(dir.join("video-reel-symbolic.svg"), REEL_SVG);
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
     }
