@@ -67,6 +67,42 @@ pub fn probe_media(ffprobe: &Path, source: &Path) -> Result<(ProbedHdr10, VideoI
     Ok((parse_probe_json(&json)?, parse_video_info(&json)?))
 }
 
+/// Whether the ffmpeg remux fallback can reproduce this encode's timing bit-exactly.
+///
+/// A raw-stream ffmpeg remux stamps frames in decode order, so it only reproduces the original
+/// timing when there's **no B-frame reordering** (`has_b_frames == 0`) **and a constant frame
+/// rate** (`r_frame_rate == avg_frame_rate`). Returns the frame rate to replay at when it's safe,
+/// or `None` when only MKVToolNix will do (B-frames or VFR — ffmpeg would scramble the order).
+pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<String>> {
+    let f = encoded.to_str().ok_or_else(|| Error::Probe {
+        what: "encode path",
+        detail: "path is not valid UTF-8".to_owned(),
+    })?;
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=has_b_frames,r_frame_rate,avg_frame_rate",
+            f,
+        ],
+    )?;
+    let json: Value = serde_json::from_slice(&stdout)?;
+    let stream = &json["streams"][0];
+    // Unknown reorder depth → assume B-frames (don't risk a scrambled remux).
+    let has_b_frames = stream["has_b_frames"].as_u64().unwrap_or(1);
+    let r_rate = stream["r_frame_rate"].as_str().unwrap_or("");
+    let avg_rate = stream["avg_frame_rate"].as_str().unwrap_or("");
+    let safe = has_b_frames == 0 && !r_rate.is_empty() && r_rate != "0/0" && r_rate == avg_rate;
+    Ok(safe.then(|| r_rate.to_owned()))
+}
+
 /// Runs ffprobe on `source` and returns the parsed JSON document.
 fn fetch_probe_json(ffprobe: &Path, source: &Path) -> Result<Value> {
     let src = source.to_str().ok_or_else(|| Error::Probe {

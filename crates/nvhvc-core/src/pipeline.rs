@@ -66,6 +66,9 @@ pub struct PipelineReport {
     pub frames: Option<usize>,
     /// The encode's track inventory that the remux carried over (when known).
     pub tracks: Option<crate::timing::MkvTracks>,
+    /// Whether the remux fell back to ffmpeg (MKVToolNix absent). Only happens for encodes ffmpeg
+    /// re-times exactly (no B-frames + CFR); a front-end should still surface that it was used.
+    pub used_ffmpeg_fallback: bool,
     /// The finished output file.
     pub output: PathBuf,
 }
@@ -125,13 +128,17 @@ pub fn run_with_progress(
     let (patched_bytes, patch_report) = patch_stream(&input, &metadata)?;
     std::fs::write(&patched, &patched_bytes)?;
 
-    // 4. Capture timing and remux into the chosen container.
+    // 4. Capture timing and remux into the chosen container. The mkvmerge path reproduces the
+    //    encode's exact per-frame timing. If MKVToolNix is absent we fall back to ffmpeg, but only
+    //    for encodes it can re-time exactly (no B-frames + CFR) — otherwise MKVToolNix is required.
     let container = output
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase());
-    let (frames, tracks) = match container.as_deref() {
-        Some("mkv") => {
+    let mkv_ready = tools.resolution(Tool::Mkvmerge).is_found()
+        && tools.resolution(Tool::Mkvextract).is_found();
+    let (frames, tracks, used_ffmpeg_fallback) = match container.as_deref() {
+        Some("mkv") if mkv_ready => {
             let mkvmerge = tools.require(Tool::Mkvmerge)?;
             let mkvextract = tools.require(Tool::Mkvextract)?;
             progress(Stage::CapturingTiming);
@@ -154,13 +161,29 @@ pub fn run_with_progress(
             });
             progress(Stage::Remuxing);
             remux::remux_mkv(mkvmerge, &patched, encoded, &timecodes, output)?;
-            (frames, Some(mkv_tracks))
+            (frames, Some(mkv_tracks), false)
         }
+        Some("mkv") => match crate::probe::ffmpeg_cfr_remuxable(ffprobe, encoded)? {
+            // MKVToolNix missing but the encode has no B-frames and constant frame rate, so an
+            // ffmpeg remux reproduces its timing exactly.
+            Some(fps) => {
+                let temp_mp4 = work.join("fallback.mp4");
+                progress(Stage::Remuxing);
+                remux::remux_ffmpeg(ffmpeg, &patched, encoded, &fps, &temp_mp4, output)?;
+                (None, None, true)
+            }
+            // B-frames or VFR: only MKVToolNix can remux this losslessly. Surface the missing tool.
+            None => {
+                tools.require(Tool::Mkvmerge)?;
+                tools.require(Tool::Mkvextract)?;
+                unreachable!("mkv_ready was false, so one of the required tools is missing");
+            }
+        },
         other => {
             return Err(Error::Probe {
                 what: "output container",
                 detail: format!(
-                    "only .mkv output is implemented so far (got {other:?}); MP4/ffmpeg backends are next"
+                    "only .mkv output is implemented so far (got {other:?}); MP4 support is next"
                 ),
             });
         }
@@ -178,6 +201,7 @@ pub fn run_with_progress(
         sei_inserted: patch_report.sei_inserted,
         frames,
         tracks,
+        used_ffmpeg_fallback,
         output: output.to_path_buf(),
     })
 }

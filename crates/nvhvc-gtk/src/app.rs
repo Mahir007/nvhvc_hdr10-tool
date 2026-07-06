@@ -746,6 +746,7 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 sei_inserted: r.sei_inserted,
                 frames: r.frames,
                 tracks: r.tracks,
+                used_ffmpeg_fallback: r.used_ffmpeg_fallback,
             })
             .map_err(|e| e.to_string());
         let _ = tx.send_blocking(Msg::Done(result));
