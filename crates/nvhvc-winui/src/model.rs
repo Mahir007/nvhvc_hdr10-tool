@@ -73,6 +73,8 @@ pub struct RunSummary {
     pub frames: Option<usize>,
     /// Preformatted `"11 · Opus + 9 subtitles"` line, when the container was inspected.
     pub tracks: Option<String>,
+    /// The remux fell back to ffmpeg (MKVToolNix absent); the result screen notes it.
+    pub used_ffmpeg_fallback: bool,
 }
 
 /// An open metadata-row editor. Tagged with the source path so a drag-dropped

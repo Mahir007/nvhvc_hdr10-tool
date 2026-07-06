@@ -1382,6 +1382,28 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     );
     children.push(card(vstack(rows).spacing(0.0)).with_key("sum-card"));
 
+    // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
+    // constant-rate encodes, so timing is still exact). Mirror the GTK banner and note it.
+    if summary.used_ffmpeg_fallback {
+        children.push(
+            InfoBar::new("Remuxed with ffmpeg")
+                .message(
+                    "mkvmerge wasn't found, so ffmpeg remuxed this file. Timing was reproduced exactly (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use the primary remux path.",
+                )
+                .warning()
+                .is_open(true)
+                .is_closable(false)
+                .margin(Thickness {
+                    left: 0.0,
+                    top: 16.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                })
+                .with_key("res-fallback")
+                .into(),
+        );
+    }
+
     // Footer: Patch another (left) · Open output folder (accent).
     let upd = vm.upd.clone();
     let (set_source, set_encode, set_output) = (
