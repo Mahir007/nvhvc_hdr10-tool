@@ -1729,6 +1729,10 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
             Color::rgb(160, 84, 200).into(),
             format!("Install dir · {}", p.display()),
         ),
+        Resolution::OverrideMissing(p) => (
+            ThemeRef::SystemCritical.into(),
+            format!("Custom path not found · {}", p.display()),
+        ),
         Resolution::NotFound => (
             ThemeRef::SystemCritical.into(),
             format!("Not found · {}", tool.install_hint()),

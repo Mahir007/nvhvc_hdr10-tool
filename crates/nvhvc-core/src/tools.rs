@@ -103,6 +103,9 @@ pub enum Resolution {
     OnPath(PathBuf),
     /// Found at a well-known install location (not on `PATH`).
     Fallback(PathBuf),
+    /// An override was set, but the path doesn't point to an executable. Kept (with the bad
+    /// path) so the UI can warn about it instead of silently falling back to `PATH`.
+    OverrideMissing(PathBuf),
     /// Not found anywhere.
     #[default]
     NotFound,
@@ -113,7 +116,7 @@ impl Resolution {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Resolution::Override(p) | Resolution::OnPath(p) | Resolution::Fallback(p) => Some(p),
-            Resolution::NotFound => None,
+            Resolution::OverrideMissing(_) | Resolution::NotFound => None,
         }
     }
 
@@ -127,7 +130,8 @@ impl Resolution {
 ///
 /// `override_path` may point directly at the executable or at a directory that contains it.
 pub fn resolve_detailed(tool: Tool, override_path: Option<&Path>) -> Resolution {
-    // 1. Explicit override (file or containing directory).
+    // 1. Explicit override (file or containing directory). An explicit override always wins: if
+    //    it's set but resolves to nothing, report it missing rather than silently using `PATH`.
     if let Some(p) = override_path {
         if p.is_file() {
             return Resolution::Override(p.to_path_buf());
@@ -141,6 +145,7 @@ pub fn resolve_detailed(tool: Tool, override_path: Option<&Path>) -> Resolution 
                 }
             }
         }
+        return Resolution::OverrideMissing(p.to_path_buf());
     }
 
     // 2. PATH.
@@ -289,11 +294,15 @@ mod tests {
     }
 
     #[test]
-    fn nonexistent_override_falls_through() {
-        // A bogus override should not resolve to itself.
+    fn nonexistent_override_is_reported_missing() {
+        // An explicit but broken override must NOT silently fall back to PATH — it resolves to
+        // `OverrideMissing` (carrying the bad path) and yields no usable executable.
         let bogus = Path::new("Z:/definitely/not/here/ffprobe.exe");
-        let resolved = resolve(Tool::Ffprobe, Some(bogus));
-        assert_ne!(resolved.as_deref(), Some(bogus));
+        assert_eq!(
+            resolve_detailed(Tool::Ffprobe, Some(bogus)),
+            Resolution::OverrideMissing(bogus.to_path_buf())
+        );
+        assert_eq!(resolve(Tool::Ffprobe, Some(bogus)), None);
     }
 
     #[test]

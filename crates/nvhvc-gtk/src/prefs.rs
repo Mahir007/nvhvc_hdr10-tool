@@ -77,10 +77,16 @@ fn tool_row(
 fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow, dot: &gtk::Box) {
     let settings = Settings::load();
     let toolset = Toolset::discover(&settings.tool_overrides);
-    let current = toolset
-        .resolution(tool)
-        .path()
+    // Prefer the saved custom override so a broken path stays visible/editable; otherwise show
+    // where the tool currently resolves (PATH / install dir).
+    let current = tool_override(&settings.tool_overrides, tool)
         .map(|p| p.display().to_string())
+        .or_else(|| {
+            toolset
+                .resolution(tool)
+                .path()
+                .map(|p| p.display().to_string())
+        })
         .unwrap_or_default();
 
     let entry = gtk::Entry::builder()
@@ -128,12 +134,13 @@ fn status_subtitle(tool: Tool, resolution: &Resolution) -> String {
         Resolution::OnPath(p) => format!("On PATH · {}", p.display()),
         Resolution::Override(p) => format!("Custom path · {}", p.display()),
         Resolution::Fallback(p) => format!("Install dir · {}", p.display()),
+        Resolution::OverrideMissing(p) => format!("Custom path not found · {}", p.display()),
         Resolution::NotFound => format!("Not found · {}", tool.install_hint()),
     }
 }
 
 /// Recolours a status dot from a resolution. green = on PATH · blue = custom · purple = install
-/// dir · red = missing.
+/// dir · red = missing (including a custom path that doesn't resolve).
 fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
     for c in ["green", "blue", "purple", "red"] {
         dot.remove_css_class(c);
@@ -142,7 +149,7 @@ fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
         Resolution::OnPath(_) => "green",
         Resolution::Override(_) => "blue",
         Resolution::Fallback(_) => "purple",
-        Resolution::NotFound => "red",
+        Resolution::OverrideMissing(_) | Resolution::NotFound => "red",
     };
     dot.add_css_class(class);
 }
@@ -155,6 +162,17 @@ fn about_row(title: &str, value: &str) -> adw::ActionRow {
     v.set_valign(gtk::Align::Center);
     row.add_suffix(&v);
     row
+}
+
+/// The saved custom override for a tool, if any.
+fn tool_override(overrides: &Overrides, tool: Tool) -> Option<std::path::PathBuf> {
+    match tool {
+        Tool::Ffmpeg => overrides.ffmpeg.clone(),
+        Tool::Ffprobe => overrides.ffprobe.clone(),
+        Tool::Mkvmerge => overrides.mkvmerge.clone(),
+        Tool::Mkvextract => overrides.mkvextract.clone(),
+        Tool::Mp4box => overrides.mp4box.clone(),
+    }
 }
 
 /// Writes (or clears, when `value` is empty) a tool's custom path.
