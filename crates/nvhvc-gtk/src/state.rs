@@ -46,6 +46,8 @@ pub struct RunOutcome {
     pub sei_inserted: bool,
     pub frames: Option<usize>,
     pub tracks: Option<nvhvc_core::timing::MkvTracks>,
+    /// The remux fell back to ffmpeg (MKVToolNix absent); the result screen notes it.
+    pub used_ffmpeg_fallback: bool,
 }
 
 /// The whole wizard state.

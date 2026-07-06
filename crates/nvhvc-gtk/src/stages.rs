@@ -1199,6 +1199,20 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     );
     col.append(&summary);
 
+    // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
+    // constant-rate encodes, so timing is still exact). Let the user know it was used.
+    if result.used_ffmpeg_fallback {
+        let warn = banner(
+            "amber",
+            "dialog-warning-symbolic",
+            "mkvmerge wasn't found, so ffmpeg remuxed this file. Timing was reproduced exactly \
+             (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use \
+             the primary remux path.",
+        );
+        warn.set_margin_top(16);
+        col.append(&warn);
+    }
+
     drop(s);
     page(&col)
 }
