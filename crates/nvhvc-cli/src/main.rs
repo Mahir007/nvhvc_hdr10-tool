@@ -138,6 +138,7 @@ fn print_tools(tools: &Toolset) {
             Resolution::OnPath(p) => ("found (PATH)", p.display().to_string()),
             Resolution::Override(p) => ("found (custom)", p.display().to_string()),
             Resolution::Fallback(p) => ("found (install dir)", p.display().to_string()),
+            Resolution::OverrideMissing(p) => ("MISSING (custom)", p.display().to_string()),
             Resolution::NotFound => ("MISSING", tool.install_hint().to_string()),
         };
         println!("  {:<11} {:<20} {detail}", tool.label(), status);
