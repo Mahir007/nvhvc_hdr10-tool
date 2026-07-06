@@ -800,11 +800,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.encode.is_none() && !s.enc_probing && s.enc_error.is_none() {
         drop(s);
-        // Our bundled upload glyph (registered in app.rs) — Adwaita ships no dedicated upload
-        // icon, so the hand-drawn arrow-over-tray is the intended look here.
+        // Our bundled "arrow-into-box" glyph (registered in app.rs) — an arrow pointing into a
+        // box, i.e. dropping the encode in to be patched.
         col.append(&drop_zone(
             ctx,
-            "nvhvc-upload-symbolic",
+            "arrow-into-box-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
