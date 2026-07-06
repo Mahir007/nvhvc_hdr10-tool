@@ -1113,7 +1113,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     let out_card = card();
     out_card.append(&card_row(&file_row(
         "video-reel-symbolic",
-        "ok",
+        "", // default accent tint (not the green "ok" tint)
         &out_name,
         &detail,
         None,
