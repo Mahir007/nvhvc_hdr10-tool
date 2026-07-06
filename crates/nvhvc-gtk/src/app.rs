@@ -64,10 +64,10 @@ fn load_css() {
 /// Icons the stock theme lacks, written to the cache dir and added as an (unthemed)
 /// icon search path. Monochrome `-symbolic` SVGs recolor with the theme like any other.
 fn install_bundled_icons() {
-    // The mockup's upload glyph: a stemmed up arrow over an open tray. Drawn as filled
-    // outlines (not strokes) because GTK's symbolic recolouring fills paths; the tray's two
-    // bottom-outer corners are rounded (the trailing Q arcs, radius 1.5) for a softer look.
-    const UPLOAD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M8 1l4.5 4.5-1.06 1.06-2.69-2.69v6.63h-1.5V3.87L4.56 6.56 3.5 5.5Z"/><path d="M1.5 10.5H3V13h10v-2.5h1.5V13Q14.5 14.5 13 14.5H3Q1.5 14.5 1.5 13Z"/></svg>"##;
+    // Stage-2 encode glyph: the GNOME icon-library "arrow-into-box" (an arrow pointing into a
+    // rounded box). Bundled as a plain file on the unthemed search path; the library ships it
+    // via gresource, but we don't need that packaging here.
+    const ARROW_INTO_BOX_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 5 -0.0078125 c -1.644531 0 -3 1.3554685 -3 3.0000005 v 2 h 2 v -2 c 0 -0.570313 0.429688 -1 1 -1 h 8 c 0.570312 0 1 0.429687 1 1 v 10 c 0 0.570312 -0.429688 1 -1 1 h -8 c -0.570312 0 -1 -0.429688 -1 -1 v -2 h -2 v 2 c 0 1.644531 1.355469 3 3 3 h 8 c 1.644531 0 3 -1.355469 3 -3 v -10 c 0 -1.644532 -1.355469 -3.0000005 -3 -3.0000005 z m 0 0"/><path d="m 6 3.992188 v 1 c 0 0.257812 0.128906 0.527343 0.3125 0.71875 l 1.28125 1.28125 h -7.59375 v 2 h 7.59375 l -1.28125 1.28125 c -0.183594 0.191406 -0.3125 0.410156 -0.3125 0.71875 v 1 h 1 c 0.308594 0 0.550781 -0.089844 0.75 -0.28125 l 3.65625 -3.71875 l -3.65625 -3.71875 c -0.199219 -0.191407 -0.441406 -0.28125 -0.75 -0.28125 z m 0 0"/></g></svg>"##;
 
     // Stage-1 source glyph: the GNOME icon-library "video-reel" (a film box with a play
     // button). Bundled as a plain file on the same unthemed search path as the upload glyph —
@@ -78,7 +78,7 @@ fn install_bundled_icons() {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let _ = std::fs::write(dir.join("nvhvc-upload-symbolic.svg"), UPLOAD_SVG);
+    let _ = std::fs::write(dir.join("arrow-into-box-symbolic.svg"), ARROW_INTO_BOX_SVG);
     let _ = std::fs::write(dir.join("video-reel-symbolic.svg"), REEL_SVG);
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
