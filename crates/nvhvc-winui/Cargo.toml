@@ -14,14 +14,14 @@ description = "WinUI3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Wi
 
 [dependencies]
 nvhvc-core = { path = "../nvhvc-core" }
-windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "cdb2b0c" }
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92" }
 # Same git source as windows-reactor so the windows-core types are compatible. Used for the native
 # file open/save dialogs (Win32 common item dialog).
-windows = { git = "https://github.com/microsoft/windows-rs", rev = "cdb2b0c", features = [
+windows = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92", features = [
     "Win32_UI_Shell",
     "Win32_System_Com",
     "Win32_Foundation",
 ] }
 
 [build-dependencies]
-windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "cdb2b0c" }
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92" }
