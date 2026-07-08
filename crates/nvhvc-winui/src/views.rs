@@ -1011,8 +1011,8 @@ fn meta_editor(
                         s
                     });
                 })
-                .max_width(220.0)
-                .horizontal_alignment(HorizontalAlignment::Left)
+                // Full width, matching the GTK editor (was a compact left-aligned box).
+                .horizontal_alignment(HorizontalAlignment::Stretch)
                 .into()
         }
         2 => {
