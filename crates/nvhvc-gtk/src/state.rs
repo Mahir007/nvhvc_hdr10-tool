@@ -22,7 +22,7 @@ impl FileInfo {
     pub fn detail(&self) -> String {
         let mut s = format!(
             "{} · {}",
-            self.path.display(),
+            nvhvc_core::uimodel::compact_path(&self.path.display().to_string()),
             nvhvc_core::uimodel::human_size(self.size_bytes)
         );
         if self.info.width > 0 {

@@ -36,6 +36,10 @@ pub struct Vm {
     pub run_trigger: MutationTrigger<RunSummary>,
     pub progress: usize,
     pub set_progress: AsyncSetState<usize>,
+    /// A file is being dragged over the current drop zone (drives its accent tint). One flag
+    /// serves both zones — only one is ever on screen.
+    pub drag_hover: bool,
+    pub set_drag_hover: AsyncSetState<bool>,
 }
 
 fn app(cx: &mut RenderCx) -> Element {
@@ -47,6 +51,11 @@ fn app(cx: &mut RenderCx) -> Element {
     let (enc_probe, enc_trigger) = cx.use_mutation::<FileProbe>();
     let (run, run_trigger) = cx.use_mutation::<RunSummary>();
     let (progress, set_progress) = cx.use_async_state(0usize);
+    let (drag_hover, set_drag_hover) = cx.use_async_state(false);
+
+    // Mica occasionally fails to attach at window creation (the host swallows the error);
+    // re-applying once after the first render makes it stick reliably.
+    cx.use_effect((), || set_backdrop(Some(Backdrop::Mica)));
 
     let vm = Vm {
         ui,
@@ -65,6 +74,8 @@ fn app(cx: &mut RenderCx) -> Element {
         run_trigger,
         progress,
         set_progress,
+        drag_hover,
+        set_drag_hover,
     };
 
     // The stage to display: a fresh successful run shows the result screen.
@@ -154,6 +165,10 @@ fn app(cx: &mut RenderCx) -> Element {
     // ContentDialog from its own Closed callback, which aborts the WinUI backend).
     if vm.ui.confirm_overwrite {
         layers.push(views::overwrite_overlay(&vm, launch_run(&vm)).with_key("overwrite"));
+    }
+    // Topmost so it draws over everything, and last so its unmount is a clean truncation.
+    if vm.ui.menu_open {
+        layers.push(views::menu_overlay(&vm).with_key("menu"));
     }
     grid(layers).into()
 }
