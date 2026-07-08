@@ -133,12 +133,13 @@ pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
         .height(32.0)
         .padding(0.0)
         .vertical_alignment(VerticalAlignment::Top)
-        // The TitleBar's RightHeader slot sits ~12px below the top edge, but the system
-        // caption buttons hug it (glyph centres ≈ 15px) — pull the button up to match.
+        // The TitleBar's RightHeader slot sits ~12px below the top edge and ~48px left of the
+        // caption buttons; the system buttons hug the corner (glyph centres ≈ 15px), so pull
+        // the button up and right to sit beside minimize like the mockup.
         .margin(Thickness {
             left: 0.0,
             top: -12.0,
-            right: 0.0,
+            right: -48.0,
             bottom: 0.0,
         });
 
@@ -1483,10 +1484,13 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     let detail = format!("{} · {} · MKV", compact_path(&out), human_size(size));
     let play = {
         let out = out.clone();
+        // Zero padding: with the default control padding the 38px button clips the glyph.
         button("")
             .icon(Symbol::Play)
             .on_click(move || crate::open_path(&out))
+            .padding(0.0)
             .width(38.0)
+            .height(34.0)
     };
     children.push(
         file_card(
@@ -1829,9 +1833,10 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .with_key("catcher")
         .into();
 
-    // --- Theme switcher: three equal segments, selected = accent. ---
+    // --- Theme switcher: three equal segments, selected = accent, hover via hovered_action. ---
     let theme_btn = |mode: ThemeMode, g: &'static str, label: &'static str, col: i32| -> Element {
         let selected = vm.ui.theme == mode;
+        let hovered = vm.ui.hovered_action == Some(label);
         let fg = || -> BrushBinding {
             if selected {
                 ThemeRef::custom("TextOnAccentFillColorPrimaryBrush").into()
@@ -1840,6 +1845,8 @@ pub fn menu_overlay(vm: &Vm) -> Element {
             }
         };
         let upd = vm.upd.clone();
+        let enter = vm.upd.clone();
+        let exit = vm.upd.clone();
         border(
             vstack((
                 glyph(g, 16.0)
@@ -1853,10 +1860,22 @@ pub fn menu_overlay(vm: &Vm) -> Element {
             .spacing(3.0),
         )
         .corner_radius(4.0)
-        .background(if selected {
-            BrushBinding::from(ThemeRef::Accent)
-        } else {
-            BrushBinding::from(ThemeRef::SubtleFill)
+        // Unselected states are Direct greys (same binding kind, see the menu-item comment)
+        // and far enough apart to actually read as a hover.
+        .background(match (selected, hovered) {
+            (true, _) => BrushBinding::from(ThemeRef::Accent),
+            (false, true) => BrushBinding::from(Color {
+                a: 48,
+                r: 145,
+                g: 145,
+                b: 145,
+            }),
+            (false, false) => BrushBinding::from(Color {
+                a: 20,
+                r: 145,
+                g: 145,
+                b: 145,
+            }),
         })
         .padding(Thickness {
             left: 0.0,
@@ -1868,6 +1887,18 @@ pub fn menu_overlay(vm: &Vm) -> Element {
             apply_theme(mode);
             upd.call(move |mut s| {
                 s.theme = mode;
+                s
+            });
+        })
+        .on_pointer_entered(move |_| {
+            enter.call(move |mut s| {
+                s.hovered_action = Some(label);
+                s
+            });
+        })
+        .on_pointer_exited(move || {
+            exit.call(|mut s| {
+                s.hovered_action = None;
                 s
             });
         })
@@ -1915,10 +1946,19 @@ pub fn menu_overlay(vm: &Vm) -> Element {
             .spacing(11.0),
         )
         .corner_radius(4.0)
+        // Both states are Direct colors: flipping a background between a Direct color and a
+        // ThemeRef swaps the brush-binding kind, which recreates the element mid-hover and
+        // fires a spurious PointerExited (hover never sticks). A neutral translucent grey
+        // reads correctly on both the dark and light panel.
         .background(if hovered {
-            BrushBinding::from(ThemeRef::SubtleFill)
+            Color {
+                a: 34,
+                r: 145,
+                g: 145,
+                b: 145,
+            }
         } else {
-            BrushBinding::from(Color::transparent())
+            Color::transparent()
         })
         .padding(Thickness {
             left: 10.0,
@@ -1998,7 +2038,7 @@ pub fn menu_overlay(vm: &Vm) -> Element {
     let panel: Element = border(vstack(entries).spacing(1.0))
         // In-app acrylic per the mockup's translucent flyout (falls back visually to a plain
         // panel if the resource is unavailable on this OS).
-        .background(ThemeRef::custom("AcrylicInAppFillColorDefaultBrush"))
+        .background(ThemeRef::custom("AcrylicBackgroundFillColorDefaultBrush"))
         .corner_radius(8.0)
         .border_brush(ThemeRef::SurfaceStroke)
         .border_thickness(Thickness::uniform(1.0))
