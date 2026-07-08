@@ -118,6 +118,11 @@ pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
     // can't carry item icons or the theme switcher. This button just toggles it. TOP-aligned
     // at the caption-button height: min/max/close hug the top edge of the 48px bar (glyph
     // centres ≈ 16px), so a vertically-centred button sits visibly lower than they do.
+    //
+    // The toggle reads LIVE state inside the update: `on_click` closures are wired at mount
+    // and never rewired on re-render, so anything captured at render time goes stale. The
+    // overlay's click-catcher leaves a notch under this button (see `menu_overlay`) so a
+    // click here fires only the toggle — with both firing, close+reopen looked like a no-op.
     let upd = vm.upd.clone();
     let menu = button(GLYPH_MORE)
         .subtle()
@@ -1840,25 +1845,62 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
 /// `MenuFlyout` — flyout items can't carry icons, custom content, or the segmented theme row.
 /// A full-window transparent click-catcher behind the panel dismisses it.
 pub fn menu_overlay(vm: &Vm) -> Element {
-    let close = vm.upd.clone();
-    let catcher: Element = border(text_block(""))
-        // Transparent (not None): a null background isn't hit-testable in WinUI.
+    // Two click-catchers with a notch left uncovered over the "…" titlebar button: a click
+    // there reaches BOTH the catcher and the button (titlebar input routes through the
+    // non-client passthrough), and close-then-toggle nets out to "menu never closes". The
+    // notch lets the button's own toggle be the only handler in its corner.
+    // Transparent (not None) backgrounds: a null background isn't hit-testable in WinUI.
+    let close_main = vm.upd.clone();
+    let catcher_main: Element = border(text_block(""))
         .background(Color::transparent())
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Stretch)
+        .margin(Thickness {
+            left: 0.0,
+            top: 48.0,
+            right: 0.0,
+            bottom: 0.0,
+        })
         .on_tapped(move || {
-            close.call(|mut s| {
+            close_main.call(|mut s| {
                 s.menu_open = false;
                 s
             });
         })
         .with_key("catcher")
         .into();
+    let close_top = vm.upd.clone();
+    let catcher_top: Element = border(text_block(""))
+        .background(Color::transparent())
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Top)
+        .height(48.0)
+        // The notch spans the "…" button and the caption buttons (the latter are non-client,
+        // so the catcher never saw their clicks anyway).
+        .margin(Thickness {
+            left: 0.0,
+            top: 0.0,
+            right: 200.0,
+            bottom: 0.0,
+        })
+        .on_tapped(move || {
+            close_top.call(|mut s| {
+                s.menu_open = false;
+                s
+            });
+        })
+        .with_key("catcher-top")
+        .into();
 
-    // --- Theme switcher: three equal segments, selected = accent, hover via hovered_action. ---
+    // --- Theme switcher: three equal segments, selected = accent. ---
+    // Two nested borders so no background ever changes brush-binding KIND (Direct↔Theme
+    // recreates the element mid-interaction — see the menu-item comment): the OUTER border
+    // flips Theme(Accent)↔Theme(SubtleFill) for selection, the INNER flips Direct greys for
+    // hover/pressed. Mixing them on one border broke the accent overlay on click.
     let theme_btn = |mode: ThemeMode, g: &'static str, label: &'static str, col: i32| -> Element {
         let selected = vm.ui.theme == mode;
         let hovered = vm.ui.hovered_action == Some(label);
+        let pressed = vm.ui.pressed_action == Some(label);
         let fg = || -> BrushBinding {
             if selected {
                 ThemeRef::custom("TextOnAccentFillColorPrimaryBrush").into()
@@ -1869,64 +1911,85 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         let upd = vm.upd.clone();
         let enter = vm.upd.clone();
         let exit = vm.upd.clone();
-        border(
-            vstack((
-                glyph(g, 16.0)
-                    .foreground(fg())
-                    .horizontal_alignment(HorizontalAlignment::Center),
-                text_block(label)
-                    .font_size(11.0)
-                    .foreground(fg())
-                    .horizontal_alignment(HorizontalAlignment::Center),
-            ))
-            .spacing(3.0),
-        )
-        .corner_radius(4.0)
-        // Unselected states are Direct greys (same binding kind, see the menu-item comment)
-        // and far enough apart to actually read as a hover.
-        .background(match (selected, hovered) {
-            (true, _) => BrushBinding::from(ThemeRef::Accent),
-            (false, true) => BrushBinding::from(Color {
-                a: 48,
-                r: 145,
-                g: 145,
-                b: 145,
-            }),
-            (false, false) => BrushBinding::from(Color {
-                a: 20,
-                r: 145,
-                g: 145,
-                b: 145,
-            }),
-        })
-        .padding(Thickness {
-            left: 0.0,
-            top: 8.0,
-            right: 0.0,
-            bottom: 6.0,
-        })
-        .on_tapped(move || {
-            apply_theme(mode);
-            upd.call(move |mut s| {
-                s.theme = mode;
-                s
+        let press = vm.upd.clone();
+        let release = vm.upd.clone();
+        let content = vstack((
+            glyph(g, 16.0)
+                .foreground(fg())
+                .horizontal_alignment(HorizontalAlignment::Center),
+            text_block(label)
+                .font_size(11.0)
+                .foreground(fg())
+                .horizontal_alignment(HorizontalAlignment::Center),
+        ))
+        .spacing(3.0)
+        // Dimmed content is the "held down" cue (covers glyph + label alike).
+        .opacity(if pressed { 0.6 } else { 1.0 });
+        let inner = border(content)
+            .corner_radius(4.0)
+            .background(match (pressed, hovered) {
+                (true, _) => Color {
+                    a: 64,
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                },
+                (false, true) => Color {
+                    a: 34,
+                    r: 145,
+                    g: 145,
+                    b: 145,
+                },
+                (false, false) => Color::transparent(),
+            })
+            .padding(Thickness {
+                left: 0.0,
+                top: 8.0,
+                right: 0.0,
+                bottom: 6.0,
+            })
+            .on_tapped(move || {
+                apply_theme(mode);
+                upd.call(move |mut s| {
+                    s.theme = mode;
+                    s
+                });
+            })
+            .on_pointer_entered(move |_| {
+                enter.call(move |mut s| {
+                    s.hovered_action = Some(label);
+                    s
+                });
+            })
+            .on_pointer_exited(move || {
+                exit.call(|mut s| {
+                    s.hovered_action = None;
+                    s.pressed_action = None;
+                    s
+                });
+            })
+            .on_pointer_pressed(move |_| {
+                press.call(move |mut s| {
+                    s.pressed_action = Some(label);
+                    s
+                });
+            })
+            .on_pointer_released(move |_| {
+                release.call(|mut s| {
+                    s.pressed_action = None;
+                    s
+                });
             });
-        })
-        .on_pointer_entered(move |_| {
-            enter.call(move |mut s| {
-                s.hovered_action = Some(label);
-                s
-            });
-        })
-        .on_pointer_exited(move || {
-            exit.call(|mut s| {
-                s.hovered_action = None;
-                s
-            });
-        })
-        .grid_column(col)
-        .with_key(label)
-        .into()
+        border(inner)
+            .corner_radius(4.0)
+            .background(if selected {
+                BrushBinding::from(ThemeRef::Accent)
+            } else {
+                BrushBinding::from(ThemeRef::SubtleFill)
+            })
+            .grid_column(col)
+            .with_key(label)
+            .into()
     };
     let theme_row: Element = grid((
         theme_btn(ThemeMode::System, "\u{E7F8}", "System", 0),
@@ -2101,7 +2164,7 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .with_key("panel")
         .into();
 
-    grid(vec![catcher, panel]).into()
+    grid(vec![catcher_main, catcher_top, panel]).into()
 }
 
 /// The overwrite confirmation, as a smoke overlay so the destructive Replace button can be
