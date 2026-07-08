@@ -317,14 +317,21 @@ fn action_button(
     } else {
         vec![g.with_key("g").into(), text.with_key("t").into()]
     };
+    let hovered = enabled && vm.ui.hovered_action == Some(id);
+    let pressed = enabled && vm.ui.pressed_action == Some(id);
     let content = hstack(cells)
         .spacing(8.0)
-        .horizontal_alignment(HorizontalAlignment::Center);
+        .horizontal_alignment(HorizontalAlignment::Center)
+        // Dimmed content while held — the Fluent "pressed" cue.
+        .opacity(if pressed { 0.6 } else { 1.0 });
 
-    let hovered = enabled && vm.ui.hovered_action == Some(id);
     let b = border(content)
         .corner_radius(4.0)
-        .background(if hovered { hover_bg } else { rest_bg })
+        .background(if hovered || pressed {
+            hover_bg
+        } else {
+            rest_bg
+        })
         .padding(Thickness {
             left: 22.0,
             top: 9.0,
@@ -336,6 +343,8 @@ fn action_button(
     }
     let enter = vm.upd.clone();
     let exit = vm.upd.clone();
+    let press = vm.upd.clone();
+    let release = vm.upd.clone();
     b.on_tapped(on_tap)
         .on_pointer_entered(move |_| {
             enter.call(move |mut s| {
@@ -346,6 +355,19 @@ fn action_button(
         .on_pointer_exited(move || {
             exit.call(|mut s| {
                 s.hovered_action = None;
+                s.pressed_action = None;
+                s
+            });
+        })
+        .on_pointer_pressed(move |_| {
+            press.call(move |mut s| {
+                s.pressed_action = Some(id);
+                s
+            });
+        })
+        .on_pointer_released(move |_| {
+            release.call(|mut s| {
+                s.pressed_action = None;
                 s
             });
         })
@@ -1933,9 +1955,12 @@ pub fn menu_overlay(vm: &Vm) -> Element {
                 action: Box<dyn Fn()>|
      -> Element {
         let hovered = vm.ui.hovered_action == Some(id);
+        let pressed = vm.ui.pressed_action == Some(id);
         let close = vm.upd.clone();
         let enter = vm.upd.clone();
         let exit = vm.upd.clone();
+        let press = vm.upd.clone();
+        let release = vm.upd.clone();
         border(
             hstack((
                 glyph(g, 15.0).vertical_alignment(VerticalAlignment::Center),
@@ -1943,22 +1968,29 @@ pub fn menu_overlay(vm: &Vm) -> Element {
                     .font_size(13.0)
                     .vertical_alignment(VerticalAlignment::Center),
             ))
-            .spacing(11.0),
+            .spacing(11.0)
+            // Dimmed content while held — the Fluent "pressed" cue.
+            .opacity(if pressed { 0.6 } else { 1.0 }),
         )
         .corner_radius(4.0)
-        // Both states are Direct colors: flipping a background between a Direct color and a
+        // All states are Direct colors: flipping a background between a Direct color and a
         // ThemeRef swaps the brush-binding kind, which recreates the element mid-hover and
         // fires a spurious PointerExited (hover never sticks). A neutral translucent grey
-        // reads correctly on both the dark and light panel.
-        .background(if hovered {
-            Color {
+        // reads correctly on both the dark and light panel; pressed goes dimmer than hover.
+        .background(match (pressed, hovered) {
+            (true, _) => Color {
+                a: 20,
+                r: 145,
+                g: 145,
+                b: 145,
+            },
+            (false, true) => Color {
                 a: 34,
                 r: 145,
                 g: 145,
                 b: 145,
-            }
-        } else {
-            Color::transparent()
+            },
+            (false, false) => Color::transparent(),
         })
         .padding(Thickness {
             left: 10.0,
@@ -1971,6 +2003,7 @@ pub fn menu_overlay(vm: &Vm) -> Element {
             close.call(|mut s| {
                 s.menu_open = false;
                 s.hovered_action = None;
+                s.pressed_action = None;
                 s
             });
         })
@@ -1983,6 +2016,19 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .on_pointer_exited(move || {
             exit.call(|mut s| {
                 s.hovered_action = None;
+                s.pressed_action = None;
+                s
+            });
+        })
+        .on_pointer_pressed(move |_| {
+            press.call(move |mut s| {
+                s.pressed_action = Some(id);
+                s
+            });
+        })
+        .on_pointer_released(move |_| {
+            release.call(|mut s| {
+                s.pressed_action = None;
                 s
             });
         })
@@ -2071,19 +2117,23 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
     // one-keystroke default is a feature. Cancel stays a real button.
     // `launch()` clears `confirm_overwrite` itself (in the same update that starts the run).
     let hovered = vm.ui.hovered_action == Some("replace");
+    let pressed = vm.ui.pressed_action == Some("replace");
     let enter = vm.upd.clone();
     let exit = vm.upd.clone();
+    let press = vm.upd.clone();
+    let release = vm.upd.clone();
     let replace = border(
         text_block("Replace")
             .semibold()
             .foreground(Color::rgb(255, 255, 255))
             .horizontal_alignment(HorizontalAlignment::Center)
-            .vertical_alignment(VerticalAlignment::Center),
+            .vertical_alignment(VerticalAlignment::Center)
+            .opacity(if pressed { 0.7 } else { 1.0 }),
     )
-    .background(if hovered {
-        Color::rgb(215, 63, 48) // lighter critical red on hover
-    } else {
-        Color::rgb(196, 43, 28) // Fluent SystemFillColorCritical
+    .background(match (pressed, hovered) {
+        (true, _) => Color::rgb(160, 35, 23),      // darker while held
+        (false, true) => Color::rgb(215, 63, 48),  // lighter critical red on hover
+        (false, false) => Color::rgb(196, 43, 28), // Fluent SystemFillColorCritical
     })
     .corner_radius(4.0)
     .on_tapped(launch)
@@ -2096,6 +2146,19 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
     .on_pointer_exited(move || {
         exit.call(|mut s| {
             s.hovered_action = None;
+            s.pressed_action = None;
+            s
+        });
+    })
+    .on_pointer_pressed(move |_| {
+        press.call(|mut s| {
+            s.pressed_action = Some("replace");
+            s
+        });
+    })
+    .on_pointer_released(move |_| {
+        release.call(|mut s| {
+            s.pressed_action = None;
             s
         });
     })
