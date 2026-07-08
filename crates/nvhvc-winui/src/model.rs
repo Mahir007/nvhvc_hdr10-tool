@@ -6,7 +6,7 @@ use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 
 pub use nvhvc_core::uimodel::{
     Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS, code_label, colour_summary,
-    default_output, file_name, human_size, row_overridden, row_value,
+    compact_path, default_output, file_name, human_size, row_overridden, row_value,
 };
 
 /// Which wizard stage is showing.
@@ -115,6 +115,12 @@ pub struct Ui {
     pub ack_token: u32,
     /// Bumped when custom tool paths change so Preferences re-discovers the toolset.
     pub tools_rev: u32,
+    /// The custom (Border-based) action button the pointer is over, by id. Reactor buttons
+    /// repaint their background from theme visual states on hover, so custom-styled buttons
+    /// are Borders and track their hover here instead.
+    pub hovered_action: Option<&'static str>,
+    /// The app menu ("…") overlay is showing.
+    pub menu_open: bool,
 }
 
 impl Ui {
@@ -132,8 +138,9 @@ impl Ui {
     }
 }
 
-/// `"path · 518 MB · 3840×2160 · HEVC · HDR10"`-style card detail line.
+/// `"~\…\scratch\source.mkv · 518 MB · 3840×2160 · HEVC · HDR10"`-style card detail line.
 pub fn file_detail(path: &str, probe: Option<&FileProbe>) -> String {
+    let path = compact_path(path);
     match probe {
         Some(p) => {
             let mut s = format!("{path} · {}", human_size(p.size_bytes));
@@ -148,6 +155,6 @@ pub fn file_detail(path: &str, probe: Option<&FileProbe>) -> String {
             }
             s
         }
-        None => path.to_owned(),
+        None => path,
     }
 }
