@@ -53,9 +53,13 @@ fn app(cx: &mut RenderCx) -> Element {
     let (progress, set_progress) = cx.use_async_state(0usize);
     let (drag_hover, set_drag_hover) = cx.use_async_state(false);
 
-    // Mica occasionally fails to attach at window creation (the host swallows the error);
-    // re-applying once after the first render makes it stick reliably.
-    cx.use_effect((), || set_backdrop(Some(Backdrop::Mica)));
+    // Mica occasionally fails to attach at window creation (the host swallows the error), and
+    // the persisted theme can't be applied before the window exists — one post-first-render
+    // effect settles both.
+    cx.use_effect((), || {
+        set_backdrop(Some(Backdrop::Mica));
+        views::apply_startup_theme();
+    });
 
     let vm = Vm {
         ui,
@@ -140,9 +144,12 @@ fn app(cx: &mut RenderCx) -> Element {
         layers.push(
             ContentDialog::new("About nvhvc")
                 .with_key("about")
+                // Manual line breaks: the dialog's content TextBlock doesn't wrap (and the
+                // reactor ContentDialog only takes a string), so long lines get clipped.
                 .content(format!(
-                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without re-encoding — \
-                     bit-exact SPS/VUI editing with the encode's frame timing preserved exactly.\n\nGPL-3.0",
+                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams\n\
+                     without re-encoding — bit-exact SPS/VUI\nediting with the encode's frame \
+                     timing\npreserved exactly.\n\nGPL-3.0",
                     nvhvc_core::VERSION
                 ))
                 .close_button_text("OK")
