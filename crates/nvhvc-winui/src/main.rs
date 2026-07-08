@@ -53,9 +53,13 @@ fn app(cx: &mut RenderCx) -> Element {
     let (progress, set_progress) = cx.use_async_state(0usize);
     let (drag_hover, set_drag_hover) = cx.use_async_state(false);
 
-    // Mica occasionally fails to attach at window creation (the host swallows the error);
-    // re-applying once after the first render makes it stick reliably.
-    cx.use_effect((), || set_backdrop(Some(Backdrop::Mica)));
+    // Mica occasionally fails to attach at window creation (the host swallows the error), and
+    // the persisted theme can't be applied before the window exists — one post-first-render
+    // effect settles both.
+    cx.use_effect((), || {
+        set_backdrop(Some(Backdrop::Mica));
+        views::apply_startup_theme();
+    });
 
     let vm = Vm {
         ui,
