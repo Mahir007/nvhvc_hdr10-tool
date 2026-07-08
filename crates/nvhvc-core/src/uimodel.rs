@@ -277,6 +277,46 @@ pub fn file_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
+/// Longest a displayed path gets before [`compact_path`] collapses its middle.
+const COMPACT_PATH_MAX: usize = 48;
+
+/// Display-compacted path for file cards: the home directory becomes `~`, and anything still
+/// longer than [`COMPACT_PATH_MAX`] keeps only the first component and the last directory + file
+/// (`~\…\scratch\source.mkv`). Purely cosmetic — never feed the result back to the filesystem.
+pub fn compact_path(path: &str) -> String {
+    let home = directories::BaseDirs::new().map(|b| b.home_dir().display().to_string());
+    compact_path_impl(path, home.as_deref())
+}
+
+fn compact_path_impl(path: &str, home: Option<&str>) -> String {
+    // The separator the path itself uses (pickers hand us native paths).
+    let sep = if path.contains('\\') { '\\' } else { '/' };
+    let mut p = path.to_owned();
+    if let Some(h) = home {
+        let h = h.trim_end_matches(['/', '\\']);
+        if !h.is_empty() && p.starts_with(h) {
+            let rest = &p[h.len()..];
+            if rest.is_empty() || rest.starts_with(['/', '\\']) {
+                p = format!("~{rest}");
+            }
+        }
+    }
+    if p.chars().count() <= COMPACT_PATH_MAX {
+        return p;
+    }
+    let parts: Vec<&str> = p.split(['/', '\\']).collect();
+    if parts.len() <= 3 {
+        return p;
+    }
+    let (first, tail) = (parts[0], &parts[parts.len() - 2..]);
+    let short = format!("{first}{sep}\u{2026}{sep}{}{sep}{}", tail[0], tail[1]);
+    if short.chars().count() < p.chars().count() {
+        short
+    } else {
+        p
+    }
+}
+
 /// Default output path for an encode: `<dir>/<stem> [HDR10].mkv`.
 pub fn default_output(encode: &str) -> String {
     let p = Path::new(encode);
@@ -389,5 +429,49 @@ mod tests {
             "encode [HDR10].mkv"
         );
         assert_eq!(p.parent().unwrap(), Path::new("/videos"));
+    }
+
+    #[test]
+    fn compact_path_shortens_home() {
+        assert_eq!(
+            compact_path_impl(r"C:\Users\mahir\Videos\source.mkv", Some(r"C:\Users\mahir")),
+            r"~\Videos\source.mkv"
+        );
+        assert_eq!(
+            compact_path_impl("/home/x/Videos/source.mkv", Some("/home/x")),
+            "~/Videos/source.mkv"
+        );
+        // A sibling like C:\Users\mahir2 must NOT match the C:\Users\mahir home.
+        assert_eq!(
+            compact_path_impl(r"C:\Users\mahir2\a.mkv", Some(r"C:\Users\mahir")),
+            r"C:\Users\mahir2\a.mkv"
+        );
+    }
+
+    #[test]
+    fn compact_path_collapses_long_middles() {
+        assert_eq!(
+            compact_path_impl(
+                r"C:\Users\mahir\Documents\Projects\nvhvc_hdr10-tool\scratch\source.mkv",
+                Some(r"C:\Users\mahir"),
+            ),
+            "~\\\u{2026}\\scratch\\source.mkv"
+        );
+        assert_eq!(
+            compact_path_impl(
+                "/mnt/media/library/very/long/nested/dirs/somewhere/file.mkv",
+                None,
+            ),
+            "/\u{2026}/somewhere/file.mkv"
+        );
+    }
+
+    #[test]
+    fn compact_path_leaves_short_paths_alone() {
+        assert_eq!(
+            compact_path_impl("/videos/encode.mkv", None),
+            "/videos/encode.mkv"
+        );
+        assert_eq!(compact_path_impl("encode.mkv", None), "encode.mkv");
     }
 }
