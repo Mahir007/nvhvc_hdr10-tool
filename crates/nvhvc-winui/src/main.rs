@@ -146,10 +146,11 @@ fn app(cx: &mut RenderCx) -> Element {
                 .with_key("about")
                 // Manual line breaks: the dialog's content TextBlock doesn't wrap (and the
                 // reactor ContentDialog only takes a string), so long lines get clipped.
+                // Two balanced ~60-char lines keep the dialog comfortably wide.
                 .content(format!(
-                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams\n\
-                     without re-encoding — bit-exact SPS/VUI\nediting with the encode's frame \
-                     timing\npreserved exactly.\n\nGPL-3.0",
+                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
+                     re-encoding\n\u{2014} bit-exact SPS/VUI editing, frame timing preserved \
+                     exactly.\n\nGPL-3.0",
                     nvhvc_core::VERSION
                 ))
                 .close_button_text("OK")

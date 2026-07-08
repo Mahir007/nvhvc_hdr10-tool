@@ -119,6 +119,9 @@ pub struct Ui {
     /// repaint their background from theme visual states on hover, so custom-styled buttons
     /// are Borders and track their hover here instead.
     pub hovered_action: Option<&'static str>,
+    /// Like `hovered_action`, but the control the pointer is currently pressed on
+    /// (darker fill + dimmed content while held).
+    pub pressed_action: Option<&'static str>,
     /// The app menu ("…") overlay is showing.
     pub menu_open: bool,
 }
