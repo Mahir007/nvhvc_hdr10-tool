@@ -850,6 +850,8 @@ fn meta_row(vm: &Vm, row: usize, detected: &Hdr10Metadata, effective: &Hdr10Meta
         let path = vm.source.clone();
         let eff = *effective;
         cells.push(
+            // Zero padding: with the default control padding the narrow button clips the glyph
+            // (same as the result screen's play button).
             button("")
                 .icon(Symbol::Edit)
                 .on_click(move || {
@@ -863,7 +865,9 @@ fn meta_row(vm: &Vm, row: usize, detected: &Hdr10Metadata, effective: &Hdr10Meta
                         s
                     });
                 })
+                .padding(0.0)
                 .width(34.0)
+                .height(32.0)
                 .grid_column(3)
                 .with_key("edit")
                 .into(),
