@@ -885,7 +885,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         .label(
             s.output
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|p| uimodel::compact_path(&p.display().to_string()))
                 .unwrap_or_default(),
         )
         .halign(gtk::Align::Start)
@@ -1100,7 +1100,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         .unwrap_or(0);
     let detail = format!(
         "{} · {} · MKV",
-        result.output.display(),
+        uimodel::compact_path(&result.output.display().to_string()),
         uimodel::human_size(size)
     );
     let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
