@@ -119,34 +119,93 @@ pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
     // at the caption-button height: min/max/close hug the top edge of the 48px bar (glyph
     // centres ≈ 16px), so a vertically-centred button sits visibly lower than they do.
     //
-    // The toggle reads LIVE state inside the update: `on_click` closures are wired at mount
+    // A Border-based control (not a stock Button): it needs a persistent "menu is open" tint,
+    // and a Button's visual states repaint custom backgrounds. All fills are Direct greys
+    // (see the menu-item comment). Precedence: pressed (darkest, dimmed glyph) > hover >
+    // open (a touch lighter, full-brightness glyph — signals the menu is open and the button
+    // closes it) > rest.
+    //
+    // The toggle reads LIVE state inside the update: handler closures are wired at mount
     // and never rewired on re-render, so anything captured at render time goes stale. The
     // overlay's click-catcher leaves a notch under this button (see `menu_overlay`) so a
     // click here fires only the toggle — with both firing, close+reopen looked like a no-op.
-    let upd = vm.upd.clone();
-    let menu = button(GLYPH_MORE)
-        .subtle()
-        .on_click(move || {
-            upd.call(|mut s| {
-                s.menu_open = !s.menu_open;
-                s
-            });
-        })
-        .font_family(ICON_FONT)
-        .font_size(14.0)
-        .width(40.0)
-        .height(32.0)
-        .padding(0.0)
-        .vertical_alignment(VerticalAlignment::Top)
-        // The TitleBar's RightHeader slot sits ~12px below the top edge and ~48px left of the
-        // caption buttons; the system buttons hug the corner (glyph centres ≈ 15px), so pull
-        // the button up and right to sit beside minimize like the mockup.
-        .margin(Thickness {
-            left: 0.0,
-            top: -12.0,
-            right: -48.0,
-            bottom: 0.0,
+    let hovered = vm.ui.hovered_action == Some("menu-btn");
+    let pressed = vm.ui.pressed_action == Some("menu-btn");
+    let open = vm.ui.menu_open;
+    let enter = vm.upd.clone();
+    let exit = vm.upd.clone();
+    let press = vm.upd.clone();
+    let release = vm.upd.clone();
+    let menu = border(
+        glyph(GLYPH_MORE, 14.0)
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .vertical_alignment(VerticalAlignment::Center)
+            .opacity(if pressed { 0.6 } else { 1.0 }),
+    )
+    .corner_radius(5.0)
+    .background(match (pressed, hovered, open) {
+        (true, _, _) => Color {
+            a: 20,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, true, _) => Color {
+            a: 34,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, false, true) => Color {
+            a: 26,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, false, false) => Color::transparent(),
+    })
+    .width(40.0)
+    .height(32.0)
+    // The toggle rides PointerReleased, not Tapped: the pressed-state re-render can cancel
+    // the tap GESTURE mid-recognition in the titlebar passthrough context (flaky opens),
+    // while the raw release event always arrives. Releasing after dragging off doesn't fire
+    // here (the release goes to whatever is under the pointer), so cancel semantics hold.
+    .on_pointer_entered(move |_| {
+        enter.call(|mut s| {
+            s.hovered_action = Some("menu-btn");
+            s
         });
+    })
+    .on_pointer_exited(move || {
+        exit.call(|mut s| {
+            s.hovered_action = None;
+            s.pressed_action = None;
+            s
+        });
+    })
+    .on_pointer_pressed(move |_| {
+        press.call(|mut s| {
+            s.pressed_action = Some("menu-btn");
+            s
+        });
+    })
+    .on_pointer_released(move |_| {
+        release.call(|mut s| {
+            s.pressed_action = None;
+            s.menu_open = !s.menu_open;
+            s
+        });
+    })
+    .vertical_alignment(VerticalAlignment::Top)
+    // The TitleBar's RightHeader slot sits ~12px below the top edge and ~48px left of the
+    // caption buttons; the system buttons hug the corner (glyph centres ≈ 15px), so pull
+    // the button up and right to sit beside minimize like the mockup.
+    .margin(Thickness {
+        left: 0.0,
+        top: -12.0,
+        right: -48.0,
+        bottom: 0.0,
+    });
 
     let upd = vm.upd.clone();
     let run_token = vm.ui.run_token;
