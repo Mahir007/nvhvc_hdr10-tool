@@ -5,11 +5,18 @@
 
 #[cfg(target_os = "linux")]
 mod app;
+#[cfg(target_os = "linux")]
+mod css;
+#[cfg(target_os = "linux")]
+mod prefs;
+#[cfg(target_os = "linux")]
+mod stages;
+#[cfg(target_os = "linux")]
+mod state;
 
 #[cfg(target_os = "linux")]
-fn main() -> std::process::ExitCode {
-    let _ = app::run();
-    std::process::ExitCode::SUCCESS
+fn main() -> gtk::glib::ExitCode {
+    app::run()
 }
 
 #[cfg(not(target_os = "linux"))]

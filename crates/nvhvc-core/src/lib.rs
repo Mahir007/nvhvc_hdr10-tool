@@ -23,6 +23,7 @@ pub mod probe;
 pub mod remux;
 pub mod timing;
 pub mod tools;
+pub mod uimodel;
 
 pub use error::{Error, Result};
 

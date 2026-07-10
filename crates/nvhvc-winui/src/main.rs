@@ -1,82 +1,342 @@
 //! WinUI3 GUI (windows-reactor) for the nvhvc HDR10 HEVC patcher.
 //!
-//! Mirrors the CLI/GTK flow: pick a source, an encode and an output, then patch. The pipeline runs
-//! on a background thread via `use_mutation`, so the UI stays responsive. Paths can be typed,
-//! dragged-and-dropped onto a field, or chosen with the Browse buttons.
+//! A three-stage wizard styled after the Fluent design mockup: pick the HDR10 **source**
+//! (with editable detected metadata), pick the **encode** to patch and the output, run the
+//! pipeline with staged progress, and review the **result**. Mica backdrop, `TitleBar` with a
+//! themed app menu, and a Preferences overlay for custom tool paths.
+#![windows_subsystem = "windows"]
+
+mod model;
+mod views;
 
 use windows_reactor::*;
 
-use nvhvc_core::pipeline::{self, PipelineOptions};
-use nvhvc_core::tools::{Overrides, Resolution, Toolset};
+use nvhvc_core::config::Settings;
+use nvhvc_core::pipeline::{self, PipelineOptions, Stage as PipeStage};
+use nvhvc_core::probe;
+use nvhvc_core::tools::{Tool, Toolset};
+
+use model::*;
+
+/// Everything the view functions need: current state plus the setters/triggers to change it.
+pub struct Vm {
+    pub ui: Ui,
+    pub upd: Updater<Ui>,
+    pub source: String,
+    pub set_source: AsyncSetState<String>,
+    pub encode: String,
+    pub set_encode: AsyncSetState<String>,
+    pub output: String,
+    pub set_output: AsyncSetState<String>,
+    pub src_probe: MutationState<FileProbe>,
+    pub src_trigger: MutationTrigger<FileProbe>,
+    pub enc_probe: MutationState<FileProbe>,
+    pub enc_trigger: MutationTrigger<FileProbe>,
+    pub run: MutationState<RunSummary>,
+    pub run_trigger: MutationTrigger<RunSummary>,
+    pub progress: usize,
+    pub set_progress: AsyncSetState<usize>,
+    /// A file is being dragged over the current drop zone (drives its accent tint). One flag
+    /// serves both zones — only one is ever on screen.
+    pub drag_hover: bool,
+    pub set_drag_hover: AsyncSetState<bool>,
+}
 
 fn app(cx: &mut RenderCx) -> Element {
+    let (ui, upd) = cx.use_reducer(initial_ui());
     let (source, set_source) = cx.use_async_state(String::new());
-    let (encoded, set_encoded) = cx.use_async_state(String::new());
+    let (encode, set_encode) = cx.use_async_state(String::new());
     let (output, set_output) = cx.use_async_state(String::new());
-    let (patch_state, patch_trigger) = cx.use_mutation::<String>();
+    let (src_probe, src_trigger) = cx.use_mutation::<FileProbe>();
+    let (enc_probe, enc_trigger) = cx.use_mutation::<FileProbe>();
+    let (run, run_trigger) = cx.use_mutation::<RunSummary>();
+    let (progress, set_progress) = cx.use_async_state(0usize);
+    let (drag_hover, set_drag_hover) = cx.use_async_state(false);
 
-    let on_patch = {
-        let trigger = patch_trigger;
-        let s = source.clone();
-        let e = encoded.clone();
-        let o = output.clone();
-        move || {
-            let (s, e, o) = (s.clone(), e.clone(), o.clone());
-            trigger.fire(move || run_patch(&s, &e, &o));
+    // Mica occasionally fails to attach at window creation (the host swallows the error), and
+    // the persisted theme can't be applied before the window exists — one post-first-render
+    // effect settles both.
+    cx.use_effect((), || {
+        set_backdrop(Some(Backdrop::Mica));
+        views::apply_startup_theme();
+    });
+
+    let vm = Vm {
+        ui,
+        upd,
+        source,
+        set_source,
+        encode,
+        set_encode,
+        output,
+        set_output,
+        src_probe,
+        src_trigger,
+        enc_probe,
+        enc_trigger,
+        run,
+        run_trigger,
+        progress,
+        set_progress,
+        drag_hover,
+        set_drag_hover,
+    };
+
+    // The stage to display: a fresh successful run shows the result screen.
+    let current_summary = match &vm.run {
+        MutationState::Success(s) if s.token == vm.ui.run_token && s.token > vm.ui.ack_token => {
+            Some(s.clone())
+        }
+        _ => None,
+    };
+    let processing = vm.run.is_loading();
+    let shown = if vm.ui.stage == Stage::Encode && current_summary.is_some() {
+        Stage::Result
+    } else {
+        vm.ui.stage
+    };
+
+    let (content, footer): (Element, Element) = match shown {
+        Stage::Source => views::stage_source(&vm),
+        Stage::Encode => {
+            let (c, f) = views::stage_encode(&vm, processing);
+            (c, f.unwrap_or_else(|| text_block("").into()))
+        }
+        Stage::Result => {
+            let summary = current_summary.expect("result stage implies a current summary");
+            views::stage_result(&vm, &summary)
         }
     };
 
-    let status: Element = match &patch_state {
-        MutationState::Idle => text_block("Ready.").into(),
-        MutationState::Loading => ProgressRing::indeterminate().into(),
-        MutationState::Success(path) => text_block(format!("✓ Wrote {path}")).into(),
-        MutationState::Error(e) => text_block(format!("Error: {e}")).into(),
+    // Stage content and footer are keyed per stage so switching stages swaps the whole
+    // subtree instead of morphing one stage's controls into the other's (the reconciler
+    // matches keyed children by identity, not position).
+    let stage_key = match (shown, processing) {
+        (Stage::Encode, true) => "processing",
+        (Stage::Source, _) => "source",
+        (Stage::Encode, _) => "encode",
+        (Stage::Result, _) => "result",
     };
-
-    vstack((
-        text_block("nvhvc — HDR10 patcher").bold().font_size(24.0),
-        text_block("Drag a file onto a field, type a path, or use Browse…").font_size(12.0),
-        file_field("Source (HDR10 master)", source.clone(), set_source, false),
-        file_field("Encode to patch", encoded.clone(), set_encoded, false),
-        file_field("Output (.mkv)", output.clone(), set_output, true),
-        tool_status(),
-        button("Patch HDR10")
-            .enabled(!patch_state.is_loading())
-            .on_click(on_patch),
-        status,
+    let main = grid((
+        views::title_bar(&vm, shown, processing)
+            .grid_row(0)
+            .with_key("titlebar"),
+        views::breadcrumb(shown).grid_row(1).with_key("crumbs"),
+        content.grid_row(2).with_key(format!("content-{stage_key}")),
+        footer.grid_row(3).with_key(format!("footer-{stage_key}")),
     ))
-    .spacing(12.0)
-    .into()
+    .rows([
+        GridLength::Auto,
+        GridLength::Auto,
+        GridLength::Star(1.0),
+        GridLength::Auto,
+    ])
+    .columns([GridLength::Star(1.0)]);
+
+    // Overlay layers stack in the same grid cell (later children render on top). The
+    // always-mounted About ContentDialog is pushed BEFORE any conditional Border overlay:
+    // a ContentDialog isn't a visual child, and removing a keyed Border that sits *before*
+    // it left the Border stuck on screen (the reconciler's child mirror desynced). Keeping
+    // every conditional visual overlay strictly last makes its removal a clean truncation.
+    let mut layers: Vec<Element> = vec![main.with_key("app").into()];
+    // The "…" app-menu toggle sits over the breadcrumb row (client area — the titlebar strip
+    // eats custom controls' input; see views::menu_button). Always mounted.
+    layers.push(views::menu_button(&vm).with_key("menu-btn"));
+    {
+        let upd = vm.upd.clone();
+        layers.push(
+            ContentDialog::new("About nvhvc")
+                .with_key("about")
+                // Manual line breaks: the dialog's content TextBlock doesn't wrap (and the
+                // reactor ContentDialog only takes a string), so long lines get clipped.
+                // Two balanced ~60-char lines keep the dialog comfortably wide.
+                .content(format!(
+                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
+                     re-encoding\n\u{2014} bit-exact SPS/VUI editing, frame timing preserved \
+                     exactly.\n\nGPL-3.0",
+                    nvhvc_core::VERSION
+                ))
+                .close_button_text("OK")
+                .is_open(vm.ui.about_open)
+                .on_closed(move |_| {
+                    upd.call(|mut s| {
+                        s.about_open = false;
+                        s
+                    });
+                })
+                .into(),
+        );
+    }
+    if vm.ui.prefs_open {
+        layers.push(views::prefs_overlay(&vm).with_key("prefs"));
+    }
+    // The overwrite confirmation is a custom smoke overlay (not a ContentDialog) so the
+    // destructive Replace button can be red — reactor's ContentDialog exposes no button
+    // styling. A conditional overlay layer is also crash-safe (unlike unmounting a
+    // ContentDialog from its own Closed callback, which aborts the WinUI backend).
+    if vm.ui.confirm_overwrite {
+        layers.push(views::overwrite_overlay(&vm, launch_run(&vm)).with_key("overwrite"));
+    }
+    // Topmost so it draws over everything, and last so its unmount is a clean truncation.
+    if vm.ui.menu_open {
+        layers.push(views::menu_overlay(&vm).with_key("menu"));
+    }
+    grid(layers).into()
 }
 
-/// A path text box that accepts a typed path, a dragged-and-dropped file, or a Browse… dialog.
-fn file_field(label: &str, value: String, set: AsyncSetState<String>, save: bool) -> Element {
-    let field = text_box(value)
-        .header(label)
-        .on_text_changed({
-            let set = set.clone();
-            move |v: String| set.call(v)
+/// Initial UI state (theme restored from settings).
+fn initial_ui() -> Ui {
+    Ui {
+        theme: ThemeMode::from_setting(Settings::load().ui_theme.as_deref()),
+        ..Ui::default()
+    }
+}
+
+/// Fires an ffprobe of `path` on a worker thread.
+pub fn fire_probe(trigger: &MutationTrigger<FileProbe>, path: String) {
+    trigger.fire(move || {
+        let settings = Settings::load();
+        let tools = Toolset::discover(&settings.tool_overrides);
+        let ffprobe = tools.require(Tool::Ffprobe).map_err(|e| e.to_string())?;
+        let (hdr, info) = probe::probe_media(ffprobe, path.as_ref()).map_err(|e| e.to_string())?;
+        let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Ok(FileProbe {
+            path,
+            size_bytes,
+            info,
+            hdr,
         })
-        .allow_drop(true)
-        .drag_over(accept_files)
-        .drag_drop({
-            let set = set.clone();
-            move |ctx| match ctx.get_storage_items().first() {
-                Some(item) => {
-                    set.call(item.path.clone());
-                    DragOperation::Link
-                }
-                None => DragOperation::None,
-            }
+    });
+}
+
+/// Click handler for picking the source file.
+pub fn pick_source_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let set_source = vm.set_source.clone();
+    let trigger = vm.src_trigger.clone();
+    let upd = vm.upd.clone();
+    move || {
+        if let Some(path) = pick_file(false) {
+            set_source.call(path.clone());
+            // A new source invalidates any edits made against the old one.
+            upd.call(|mut s| {
+                s.overrides = None;
+                s.editing = None;
+                s
+            });
+            fire_probe(&trigger, path);
+        }
+    }
+}
+
+/// Click handler for picking the encode file (also derives the default output path).
+pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let set_encode = vm.set_encode.clone();
+    let set_output = vm.set_output.clone();
+    let trigger = vm.enc_trigger.clone();
+    move || {
+        if let Some(path) = pick_file(false) {
+            set_encode.call(path.clone());
+            set_output.call(default_output(&path));
+            fire_probe(&trigger, path);
+        }
+    }
+}
+
+/// Click handler for choosing the output path (save dialog).
+pub fn pick_output_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let set_output = vm.set_output.clone();
+    let upd = vm.upd.clone();
+    move || {
+        if let Some(path) = pick_file(true) {
+            set_output.call(path.clone());
+            // The Win32 save dialog already warned about an existing file.
+            upd.call(move |mut s| {
+                s.output_chosen_for = Some(path);
+                s
+            });
+        }
+    }
+}
+
+/// Click handler for the Patch button: asks about overwriting an existing output file
+/// the user didn't pick themselves, then launches.
+pub fn run_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let launch = launch_run(vm);
+    let output = vm.output.clone();
+    let user_chosen = vm.ui.output_chosen_for.as_deref() == Some(vm.output.as_str());
+    let upd = vm.upd.clone();
+    move || {
+        if !user_chosen && std::path::Path::new(&output).exists() {
+            upd.call(|mut s| {
+                s.confirm_overwrite = true;
+                s
+            });
+        } else {
+            launch();
+        }
+    }
+}
+
+/// Launches the pipeline on a worker thread with staged progress.
+pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
+    let (source, encode, output) = (vm.source.clone(), vm.encode.clone(), vm.output.clone());
+    let metadata_override = vm.ui.override_for(&vm.source);
+    let token = vm.ui.run_token + 1;
+    let upd = vm.upd.clone();
+    let trigger = vm.run_trigger.clone();
+    let set_progress = vm.set_progress.clone();
+    move || {
+        // Clear the overwrite prompt in the SAME update that starts the run — separate
+        // updater calls in one event don't chain, so setting it in the tap handler and the
+        // run_token here would clobber each other and leave the overlay stuck.
+        upd.call(move |mut s| {
+            s.run_token = token;
+            s.confirm_overwrite = false;
+            s
         });
-    let browse = button("Browse…")
-        .vertical_alignment(VerticalAlignment::Bottom)
-        .on_click(move || {
-            if let Some(path) = pick_file(save) {
-                set.call(path);
-            }
+        set_progress.call(0);
+        let (source, encode, output) = (source.clone(), encode.clone(), output.clone());
+        let set_progress = set_progress.clone();
+        trigger.fire(move || {
+            let settings = Settings::load();
+            let tools = Toolset::discover(&settings.tool_overrides);
+            let opts = PipelineOptions {
+                chroma_loc: settings.default_chroma_loc,
+                keep_intermediates: false,
+                metadata_override,
+            };
+            let report = pipeline::run_with_progress(
+                &tools,
+                source.as_ref(),
+                encode.as_ref(),
+                output.as_ref(),
+                &opts,
+                &mut |stage| set_progress.call(stage_index(stage)),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(RunSummary {
+                token,
+                output: report.output.display().to_string(),
+                sps_patched: report.sps_patched,
+                sei_inserted: report.sei_inserted,
+                frames: report.frames,
+                tracks: report.tracks.as_ref().map(nvhvc_core::uimodel::tracks_line),
+                used_ffmpeg_fallback: report.used_ffmpeg_fallback,
+            })
         });
-    hstack((field, browse)).spacing(8.0).into()
+    }
+}
+
+/// Maps a pipeline stage to the 0..=5 progress index shown in the processing view.
+fn stage_index(stage: PipeStage) -> usize {
+    match stage {
+        PipeStage::Probing => 0,
+        PipeStage::Extracting => 1,
+        PipeStage::Patching => 2,
+        PipeStage::CapturingTiming => 3,
+        PipeStage::Remuxing => 4,
+        PipeStage::Done => 5,
+    }
 }
 
 /// Shows a native Open (or Save) file dialog; returns the chosen path, or `None` if cancelled.
@@ -103,7 +363,7 @@ fn pick_file(save: bool) -> Option<String> {
 }
 
 /// Accept a drag only when it carries file(s).
-fn accept_files(ctx: &mut DragContext) -> DragOperation {
+pub fn accept_files(ctx: &mut DragContext) -> DragOperation {
     if ctx.has_storage_items {
         ctx.caption = Some("Use this file".into());
         DragOperation::Link
@@ -112,59 +372,24 @@ fn accept_files(ctx: &mut DragContext) -> DragOperation {
     }
 }
 
-/// A small group of rows showing each external tool with a coloured status dot.
-fn tool_status() -> Element {
-    let tools = Toolset::discover(&Overrides::default());
-    let rows: Vec<Element> = tools
-        .all()
-        .into_iter()
-        .map(|(tool, resolution)| {
-            let (dot, detail) = match resolution {
-                Resolution::OnPath(p) => (
-                    Color::rgb(51, 209, 122),
-                    format!("on PATH — {}", p.display()),
-                ),
-                Resolution::Override(p) => (
-                    Color::rgb(51, 209, 122),
-                    format!("custom — {}", p.display()),
-                ),
-                Resolution::Fallback(p) => (
-                    Color::rgb(98, 160, 234),
-                    format!("install dir — {}", p.display()),
-                ),
-                Resolution::NotFound => (
-                    Color::rgb(224, 27, 36),
-                    format!("not found — {}", tool.install_hint()),
-                ),
-            };
-            hstack((
-                text_block("●").foreground(dot),
-                text_block(format!("{} · {}", tool.label(), detail)),
-            ))
-            .spacing(8.0)
-            .into()
-        })
-        .collect();
-    vstack(rows).spacing(4.0).into()
+/// Opens a file with its default handler (e.g. plays the output video).
+pub fn open_path(path: &str) {
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
 }
 
-/// Runs the full pipeline; returns the output path on success or an error message.
-fn run_patch(source: &str, encoded: &str, output: &str) -> std::result::Result<String, String> {
-    if source.is_empty() || encoded.is_empty() || output.is_empty() {
-        return Err("Fill in source, encode and output paths.".into());
-    }
-    let tools = Toolset::discover(&Overrides::default());
-    let report = pipeline::run(
-        &tools,
-        source.as_ref(),
-        encoded.as_ref(),
-        output.as_ref(),
-        &PipelineOptions::default(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(report.output.display().to_string())
+/// Opens Explorer with the file selected.
+pub fn reveal_in_folder(path: &str) {
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{path}"))
+        .spawn();
 }
 
 fn main() -> Result<()> {
-    App::new().title("nvhvc — HDR10 patcher").render(app)
+    // Restore the persisted theme before the window shows (queued until the root attaches).
+    views::apply_startup_theme();
+    App::new()
+        .title("HDR10 Patcher")
+        .inner_size(780.0, 760.0)
+        .backdrop(Backdrop::Mica)
+        .render(app)
 }

@@ -11,7 +11,7 @@ use crate::hevc::sei::{ContentLightLevel, MasteringDisplay, build_hdr10_sei_rbsp
 use crate::hevc::sps::{VuiColorEdit, edit_color};
 
 /// The full set of HDR10 signalling to inject.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hdr10Metadata {
     /// VUI colour description written into every SPS.
     pub color: VuiColorEdit,

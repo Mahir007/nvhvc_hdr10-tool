@@ -36,10 +36,75 @@ impl ProbedHdr10 {
             content_light_level: self.content_light_level,
         }
     }
+
+    /// Whether the stream carries *full* HDR10 signalling — i.e. a mastering-display SEI.
+    /// (PQ transfer alone doesn't count: an NVENC encode typically signals PQ in its VUI
+    /// while missing the SEI, and adding that SEI is this tool's whole job.)
+    pub fn has_hdr10(&self) -> bool {
+        self.mastering_display.is_some()
+    }
+}
+
+/// Basic video-stream facts for display in a front-end (file cards and summaries).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoInfo {
+    /// Coded width in pixels.
+    pub width: u32,
+    /// Coded height in pixels.
+    pub height: u32,
+    /// Codec name as reported by ffprobe (e.g. `"hevc"`).
+    pub codec: String,
 }
 
 /// Probes `source` for HDR10 metadata using the given `ffprobe` executable.
 pub fn probe_hdr10(ffprobe: &Path, source: &Path) -> Result<ProbedHdr10> {
+    parse_probe_json(&fetch_probe_json(ffprobe, source)?)
+}
+
+/// Probes `source` for HDR10 metadata *and* basic stream facts in one ffprobe call.
+pub fn probe_media(ffprobe: &Path, source: &Path) -> Result<(ProbedHdr10, VideoInfo)> {
+    let json = fetch_probe_json(ffprobe, source)?;
+    Ok((parse_probe_json(&json)?, parse_video_info(&json)?))
+}
+
+/// Whether the ffmpeg remux fallback can reproduce this encode's timing bit-exactly.
+///
+/// A raw-stream ffmpeg remux stamps frames in decode order, so it only reproduces the original
+/// timing when there's **no B-frame reordering** (`has_b_frames == 0`) **and a constant frame
+/// rate** (`r_frame_rate == avg_frame_rate`). Returns the frame rate to replay at when it's safe,
+/// or `None` when only MKVToolNix will do (B-frames or VFR — ffmpeg would scramble the order).
+pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<String>> {
+    let f = encoded.to_str().ok_or_else(|| Error::Probe {
+        what: "encode path",
+        detail: "path is not valid UTF-8".to_owned(),
+    })?;
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=has_b_frames,r_frame_rate,avg_frame_rate",
+            f,
+        ],
+    )?;
+    let json: Value = serde_json::from_slice(&stdout)?;
+    let stream = &json["streams"][0];
+    // Unknown reorder depth → assume B-frames (don't risk a scrambled remux).
+    let has_b_frames = stream["has_b_frames"].as_u64().unwrap_or(1);
+    let r_rate = stream["r_frame_rate"].as_str().unwrap_or("");
+    let avg_rate = stream["avg_frame_rate"].as_str().unwrap_or("");
+    let safe = has_b_frames == 0 && !r_rate.is_empty() && r_rate != "0/0" && r_rate == avg_rate;
+    Ok(safe.then(|| r_rate.to_owned()))
+}
+
+/// Runs ffprobe on `source` and returns the parsed JSON document.
+fn fetch_probe_json(ffprobe: &Path, source: &Path) -> Result<Value> {
     let src = source.to_str().ok_or_else(|| Error::Probe {
         what: "source path",
         detail: "path is not valid UTF-8".to_owned(),
@@ -61,8 +126,7 @@ pub fn probe_hdr10(ffprobe: &Path, source: &Path) -> Result<ProbedHdr10> {
             src,
         ],
     )?;
-    let json: Value = serde_json::from_slice(&stdout)?;
-    parse_probe_json(&json)
+    Ok(serde_json::from_slice(&stdout)?)
 }
 
 /// Parses an `ffprobe -print_format json` document (separated out for testing).
@@ -105,6 +169,19 @@ fn parse_probe_json(json: &Value) -> Result<ProbedHdr10> {
         mastering_display,
         content_light_level,
         source_chroma_loc,
+    })
+}
+
+/// Parses the video stream's basic facts out of the same ffprobe JSON document.
+fn parse_video_info(json: &Value) -> Result<VideoInfo> {
+    let stream = json["streams"].get(0).ok_or_else(|| Error::Probe {
+        what: "ffprobe JSON",
+        detail: "no video stream found".to_owned(),
+    })?;
+    Ok(VideoInfo {
+        width: stream["width"].as_u64().unwrap_or(0) as u32,
+        height: stream["height"].as_u64().unwrap_or(0) as u32,
+        codec: stream["codec_name"].as_str().unwrap_or("").to_owned(),
     })
 }
 
@@ -237,6 +314,9 @@ mod tests {
     // Shaped exactly like the real `source.mkv` ffprobe output.
     const SAMPLE: &str = r#"{
         "streams": [{
+            "codec_name": "hevc",
+            "width": 3840,
+            "height": 2160,
             "color_range": "tv",
             "color_space": "bt2020nc",
             "color_transfer": "smpte2084",
@@ -301,5 +381,23 @@ mod tests {
         assert_eq!(probed.color.transfer_characteristics, 2);
         assert_eq!(probed.color.matrix_coeffs, 2);
         assert!(probed.mastering_display.is_none());
+    }
+
+    #[test]
+    fn parses_video_info() {
+        let json: Value = serde_json::from_str(SAMPLE).unwrap();
+        let info = parse_video_info(&json).unwrap();
+        assert_eq!(info.width, 3840);
+        assert_eq!(info.height, 2160);
+        assert_eq!(info.codec, "hevc");
+    }
+
+    #[test]
+    fn video_info_tolerates_missing_fields() {
+        let json: Value = serde_json::from_str(r#"{"streams":[{}],"frames":[]}"#).unwrap();
+        let info = parse_video_info(&json).unwrap();
+        assert_eq!(info.width, 0);
+        assert_eq!(info.height, 0);
+        assert_eq!(info.codec, "");
     }
 }

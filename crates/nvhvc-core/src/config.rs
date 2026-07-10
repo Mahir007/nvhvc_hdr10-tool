@@ -20,6 +20,8 @@ pub struct Settings {
     pub default_chroma_loc: Option<u32>,
     /// Preferred output container extension (e.g. "mkv"), when not implied by the output path.
     pub default_container: Option<String>,
+    /// GUI theme preference: `"system"` (follow the OS), `"light"` or `"dark"`.
+    pub ui_theme: Option<String>,
 }
 
 impl Settings {

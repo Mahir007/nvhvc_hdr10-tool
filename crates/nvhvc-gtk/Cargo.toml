@@ -11,8 +11,11 @@ description = "GTK4 + libadwaita GUI for the nvhvc HDR10 HEVC patcher (Linux)."
 nvhvc-core.workspace = true
 
 # GTK and libadwaita are Linux-only here; on other platforms this crate builds a tiny stub so the
-# workspace still compiles. The GUI itself targets Linux (GTK 4.10+, libadwaita 1.4+).
+# workspace still compiles. Targets the GNOME 49 stack (GTK 4.18+, libadwaita 1.8+) so it can use
+# native AdwPreferencesDialog/AdwEntryRow, AdwShortcutsDialog (GtkShortcutsWindow is deprecated at
+# GTK 4.18), AdwButtonContent, AdwSpinner and AdwAboutDialog. Requires libadwaita >= 1.8 at runtime
+# (Ubuntu 25.10+ / Fedora 41+ / current Arch; not Ubuntu 24.04-24.10, which ship adw 1.5-1.6).
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
-adw = { package = "libadwaita", version = "0.9", features = ["v1_4"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
 async-channel = "2"
