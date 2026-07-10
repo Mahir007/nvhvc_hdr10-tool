@@ -114,48 +114,38 @@ fn page(children: Vec<Element>) -> Element {
 
 /// The window title bar: app title, back button, and the "…" app menu.
 pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
-    // The menu itself is a custom overlay layer (see `menu_overlay`) — a native MenuFlyout
-    // can't carry item icons or the theme switcher. This button just toggles it. TOP-aligned
-    // at the caption-button height: min/max/close hug the top edge of the 48px bar (glyph
-    // centres ≈ 16px), so a vertically-centred button sits visibly lower than they do.
-    //
-    // A BARE stock Button, directly in the footer slot: the TitleBar control only excludes
-    // content it recognises as interactive from the window-drag region, and any wrapper
-    // (a tinted Border was tried twice) defeats that — press-and-hold then starts a window
-    // drag, which also kills the pressed visual mid-gesture. The "menu is open" indicator is
-    // a native STYLE swap instead: standard (filled) while open, subtle (transparent) when
-    // closed — native hover/pressed animations stay intact in both.
-    //
-    // The toggle reads LIVE state inside the update: handler closures are wired at mount and
-    // never rewired on re-render, so anything captured at render time goes stale. The
-    // overlay's click-catcher leaves a notch under this button (see `menu_overlay`) so a
-    // click here fires only the toggle — with both firing, close+reopen looked like a no-op.
+    // The "…" app-menu toggle. Hard-won constraints (every alternative was tried and
+    // verified broken by measuring window movement and tracing pointer events):
+    // - It must be a BARE stock Button directly in the footer slot, WITHOUT margins: the
+    //   TitleBar registers interactive regions from recognised children's slot bounds, and
+    //   anything else — custom Border controls, wrapped buttons, margin-shifted visuals,
+    //   even overlay layers drawn above the strip — leaves the area as caption, so
+    //   press-and-hold drags the window and pointer events go dark.
+    // - Its open-state style swap (filled standard vs transparent subtle) only applies on
+    //   MOUNT, so the key flips with `menu_open` to force a remount.
+    // - The toggle reads LIVE state (handler closures are never rewired after mount), and
+    //   the menu overlay's catcher leaves a notch under this corner so only the button
+    //   fires (both firing made close+reopen look like a no-op).
+    let open = vm.ui.menu_open;
     let upd = vm.upd.clone();
-    let mut menu_btn = button(GLYPH_MORE).on_click(move || {
+    let mut menu = button(GLYPH_MORE).on_click(move || {
         upd.call(|mut s| {
             s.menu_open = !s.menu_open;
             s
         });
     });
-    if !vm.ui.menu_open {
-        menu_btn = menu_btn.subtle();
+    if !open {
+        menu = menu.subtle();
     }
-    let menu = menu_btn
+    let menu = menu
         .font_family(ICON_FONT)
         .font_size(14.0)
         .width(40.0)
         .height(32.0)
         .padding(0.0)
+        .horizontal_alignment(HorizontalAlignment::Right)
         .vertical_alignment(VerticalAlignment::Top)
-        // The TitleBar's RightHeader slot sits ~12px below the top edge and ~48px left of the
-        // caption buttons; the system buttons hug the corner (glyph centres ≈ 15px), so pull
-        // the button up and right to sit beside minimize like the mockup.
-        .margin(Thickness {
-            left: 0.0,
-            top: -12.0,
-            right: -48.0,
-            bottom: 0.0,
-        });
+        .with_key(if open { "menu-open" } else { "menu-closed" });
 
     let upd = vm.upd.clone();
     let run_token = vm.ui.run_token;
@@ -1890,12 +1880,13 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Top)
         .height(48.0)
-        // The notch spans the "…" button and the caption buttons (the latter are non-client,
-        // so the catcher never saw their clicks anyway).
+        // The notch spans the "…" button (at its natural footer-slot position, ~212px from
+        // the right edge) and the caption buttons (the latter are non-client, so the catcher
+        // never saw their clicks anyway).
         .margin(Thickness {
             left: 0.0,
             top: 0.0,
-            right: 200.0,
+            right: 280.0,
             bottom: 0.0,
         })
         .on_tapped(move || {
