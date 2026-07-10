@@ -267,7 +267,18 @@ pub fn path_arg(p: &Path) -> Result<&str> {
 
 /// Runs a tool to completion, returning captured stdout. Errors include captured stderr.
 pub fn run_capture(program: &Path, tool: Tool, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new(program).args(args).output()?;
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    // Console children pop up their own console window when the parent is a GUI app — every
+    // pipeline stage flashed a terminal on Windows (and paid the console-creation cost). All
+    // output is piped, so the children never need a console.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output()?;
     if !output.status.success() {
         return Err(Error::CommandFailed {
             tool: tool.label(),
