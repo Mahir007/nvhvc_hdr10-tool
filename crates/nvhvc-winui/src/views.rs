@@ -216,12 +216,13 @@ pub fn menu_button(vm: &Vm) -> Element {
     })
     .horizontal_alignment(HorizontalAlignment::Right)
     .vertical_alignment(VerticalAlignment::Top)
-    // Vertically centred on the breadcrumb row (titlebar 48px + row ≈ 34px), right-aligned
-    // with the row's 24px padding.
+    // Vertically centred on the breadcrumb row: the TitleBar strip renders 32px tall (the
+    // 48px figure was the mockup's), and the row is ~48px (16+20+12), so a 32px button
+    // starts at 40. Right margin matches the menu panel's so their edges align.
     .margin(Thickness {
         left: 0.0,
-        top: 49.0,
-        right: 20.0,
+        top: 40.0,
+        right: 12.0,
         bottom: 0.0,
     })
     .into()
@@ -308,13 +309,12 @@ pub fn breadcrumb(shown: Stage) -> Element {
         bottom: 1.0,
     })
     .border_brush(ThemeRef::DividerStroke)
-    // Tighter than the mockup's 12px top: the 48px TitleBar already reads tall, and the GTK
-    // header sits its step indicator much closer.
+    // Roomier than the mockup's 12px top: the row also hosts the 32px "…" menu button.
     .padding(Thickness {
         left: 24.0,
-        top: 4.0,
+        top: 16.0,
         right: 24.0,
-        bottom: 10.0,
+        bottom: 12.0,
     })
     .into()
 }
@@ -1930,15 +1930,15 @@ pub fn menu_overlay(vm: &Vm) -> Element {
     };
     let catcher_strip: Element = catcher("catch-strip")
         .vertical_alignment(VerticalAlignment::Top)
-        .height(48.0)
+        .height(32.0)
         .into();
     let catcher_row: Element = catcher("catch-row")
         .vertical_alignment(VerticalAlignment::Top)
-        .height(36.0)
+        .height(48.0)
         .margin(Thickness {
             left: 0.0,
-            top: 48.0,
-            right: 90.0, // the notch: the "…" button spans ~20..60px from the right edge
+            top: 32.0,
+            right: 90.0, // the notch: the "…" button spans ~12..52px from the right edge
             bottom: 0.0,
         })
         .into();
@@ -1946,7 +1946,7 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .vertical_alignment(VerticalAlignment::Stretch)
         .margin(Thickness {
             left: 0.0,
-            top: 84.0,
+            top: 80.0,
             right: 0.0,
             bottom: 0.0,
         })
@@ -2218,7 +2218,7 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         // Anchored under the "…" button at the right end of the breadcrumb row.
         .margin(Thickness {
             left: 0.0,
-            top: 84.0,
+            top: 82.0,
             right: 12.0,
             bottom: 0.0,
         })
