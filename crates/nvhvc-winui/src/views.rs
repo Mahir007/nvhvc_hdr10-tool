@@ -114,39 +114,11 @@ fn page(children: Vec<Element>) -> Element {
 
 /// The window title bar: app title, back button, and the "…" app menu.
 pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
-    // The "…" app-menu toggle. Hard-won constraints (every alternative was tried and
-    // verified broken by measuring window movement and tracing pointer events):
-    // - It must be a BARE stock Button directly in the footer slot, WITHOUT margins: the
-    //   TitleBar registers interactive regions from recognised children's slot bounds, and
-    //   anything else — custom Border controls, wrapped buttons, margin-shifted visuals,
-    //   even overlay layers drawn above the strip — leaves the area as caption, so
-    //   press-and-hold drags the window and pointer events go dark.
-    // - Its open-state style swap (filled standard vs transparent subtle) only applies on
-    //   MOUNT, so the key flips with `menu_open` to force a remount.
-    // - The toggle reads LIVE state (handler closures are never rewired after mount), and
-    //   the menu overlay's catcher leaves a notch under this corner so only the button
-    //   fires (both firing made close+reopen look like a no-op).
-    let open = vm.ui.menu_open;
-    let upd = vm.upd.clone();
-    let mut menu = button(GLYPH_MORE).on_click(move || {
-        upd.call(|mut s| {
-            s.menu_open = !s.menu_open;
-            s
-        });
-    });
-    if !open {
-        menu = menu.subtle();
-    }
-    let menu = menu
-        .font_family(ICON_FONT)
-        .font_size(14.0)
-        .width(40.0)
-        .height(32.0)
-        .padding(0.0)
-        .horizontal_alignment(HorizontalAlignment::Right)
-        .vertical_alignment(VerticalAlignment::Top)
-        .with_key(if open { "menu-open" } else { "menu-closed" });
-
+    // The "…" app-menu toggle is NOT in the titlebar: the strip's input is owned by the
+    // window's non-client machinery — custom controls, wrappers, margin-shifted buttons,
+    // overlays above it, and even a WM_NCHITTEST carve-out all end up dragging the window
+    // and/or losing pointer events (each variant measured/traced). The button lives in the
+    // breadcrumb row instead — client area, full custom control — see `menu_button`.
     let upd = vm.upd.clone();
     let run_token = vm.ui.run_token;
     let showing_result = shown == Stage::Result;
@@ -164,8 +136,95 @@ pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
                 s
             });
         })
-        .footer(menu)
         .into()
+}
+
+/// The "…" app-menu toggle: a root overlay positioned over the right end of the breadcrumb
+/// row — CLIENT area, so unlike the titlebar strip it supports a full custom control (the
+/// strip's non-client input routing broke every in-titlebar variant; see `title_bar`).
+/// Fill ladder per the design: hover (brightest) > open (persistent, between) > pressed
+/// (dimmest + dimmed glyph, the "held" look). The toggle reads live state on tap.
+pub fn menu_button(vm: &Vm) -> Element {
+    let hovered = vm.ui.hovered_action == Some("menu-btn");
+    let pressed = vm.ui.pressed_action == Some("menu-btn");
+    let open = vm.ui.menu_open;
+    let toggle = vm.upd.clone();
+    let enter = vm.upd.clone();
+    let exit = vm.upd.clone();
+    let press = vm.upd.clone();
+    let release = vm.upd.clone();
+    border(
+        glyph(GLYPH_MORE, 14.0)
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .vertical_alignment(VerticalAlignment::Center)
+            .opacity(if pressed { 0.55 } else { 1.0 }),
+    )
+    .corner_radius(5.0)
+    .background(match (pressed, hovered, open) {
+        (true, _, _) => Color {
+            a: 16,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, true, _) => Color {
+            a: 40,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, false, true) => Color {
+            a: 26,
+            r: 145,
+            g: 145,
+            b: 145,
+        },
+        (false, false, false) => Color::transparent(),
+    })
+    .width(40.0)
+    .height(32.0)
+    .on_tapped(move || {
+        toggle.call(|mut s| {
+            s.menu_open = !s.menu_open;
+            s
+        });
+    })
+    .on_pointer_entered(move |_| {
+        enter.call(|mut s| {
+            s.hovered_action = Some("menu-btn");
+            s
+        });
+    })
+    .on_pointer_exited(move || {
+        exit.call(|mut s| {
+            s.hovered_action = None;
+            s.pressed_action = None;
+            s
+        });
+    })
+    .on_pointer_pressed(move |_| {
+        press.call(|mut s| {
+            s.pressed_action = Some("menu-btn");
+            s
+        });
+    })
+    .on_pointer_released(move |_| {
+        release.call(|mut s| {
+            s.pressed_action = None;
+            s
+        });
+    })
+    .horizontal_alignment(HorizontalAlignment::Right)
+    .vertical_alignment(VerticalAlignment::Top)
+    // Vertically centred on the breadcrumb row (titlebar 48px + row ≈ 34px), right-aligned
+    // with the row's 24px padding.
+    .margin(Thickness {
+        left: 0.0,
+        top: 49.0,
+        right: 20.0,
+        bottom: 0.0,
+    })
+    .into()
 }
 
 /// Applies the persisted theme at startup (without re-saving it).
@@ -1850,52 +1909,47 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
 /// `MenuFlyout` — flyout items can't carry icons, custom content, or the segmented theme row.
 /// A full-window transparent click-catcher behind the panel dismisses it.
 pub fn menu_overlay(vm: &Vm) -> Element {
-    // Two click-catchers with a notch left uncovered over the "…" titlebar button: a click
-    // there reaches BOTH the catcher and the button (titlebar input routes through the
-    // non-client passthrough), and close-then-toggle nets out to "menu never closes". The
-    // notch lets the button's own toggle be the only handler in its corner.
+    // Click-catchers with a notch left uncovered over the "…" button in the breadcrumb row:
+    // a click there would reach BOTH the catcher and the button, and close-then-toggle nets
+    // out to "menu never closes". The notch lets the button's toggle be the only handler in
+    // its corner. Three pieces: the full titlebar strip, the breadcrumb row minus the notch,
+    // and everything below.
     // Transparent (not None) backgrounds: a null background isn't hit-testable in WinUI.
-    let close_main = vm.upd.clone();
-    let catcher_main: Element = border(text_block(""))
-        .background(Color::transparent())
-        .horizontal_alignment(HorizontalAlignment::Stretch)
-        .vertical_alignment(VerticalAlignment::Stretch)
+    let catcher = |key: &'static str| {
+        let close = vm.upd.clone();
+        border(text_block(""))
+            .background(Color::transparent())
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .on_tapped(move || {
+                close.call(|mut s| {
+                    s.menu_open = false;
+                    s
+                });
+            })
+            .with_key(key)
+    };
+    let catcher_strip: Element = catcher("catch-strip")
+        .vertical_alignment(VerticalAlignment::Top)
+        .height(48.0)
+        .into();
+    let catcher_row: Element = catcher("catch-row")
+        .vertical_alignment(VerticalAlignment::Top)
+        .height(36.0)
         .margin(Thickness {
             left: 0.0,
             top: 48.0,
+            right: 90.0, // the notch: the "…" button spans ~20..60px from the right edge
+            bottom: 0.0,
+        })
+        .into();
+    let catcher_main: Element = catcher("catcher")
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .margin(Thickness {
+            left: 0.0,
+            top: 84.0,
             right: 0.0,
             bottom: 0.0,
         })
-        .on_tapped(move || {
-            close_main.call(|mut s| {
-                s.menu_open = false;
-                s
-            });
-        })
-        .with_key("catcher")
-        .into();
-    let close_top = vm.upd.clone();
-    let catcher_top: Element = border(text_block(""))
-        .background(Color::transparent())
-        .horizontal_alignment(HorizontalAlignment::Stretch)
-        .vertical_alignment(VerticalAlignment::Top)
-        .height(48.0)
-        // The notch spans the "…" button (at its natural footer-slot position, ~212px from
-        // the right edge) and the caption buttons (the latter are non-client, so the catcher
-        // never saw their clicks anyway).
-        .margin(Thickness {
-            left: 0.0,
-            top: 0.0,
-            right: 280.0,
-            bottom: 0.0,
-        })
-        .on_tapped(move || {
-            close_top.call(|mut s| {
-                s.menu_open = false;
-                s
-            });
-        })
-        .with_key("catcher-top")
         .into();
 
     // --- Theme switcher: three equal segments, selected = accent. ---
@@ -2161,16 +2215,17 @@ pub fn menu_overlay(vm: &Vm) -> Element {
         .width(240.0)
         .horizontal_alignment(HorizontalAlignment::Right)
         .vertical_alignment(VerticalAlignment::Top)
+        // Anchored under the "…" button at the right end of the breadcrumb row.
         .margin(Thickness {
             left: 0.0,
-            top: 48.0,
-            right: 8.0,
+            top: 84.0,
+            right: 12.0,
             bottom: 0.0,
         })
         .with_key("panel")
         .into();
 
-    grid(vec![catcher_main, catcher_top, panel]).into()
+    grid(vec![catcher_strip, catcher_row, catcher_main, panel]).into()
 }
 
 /// The overwrite confirmation, as a smoke overlay so the destructive Replace button can be

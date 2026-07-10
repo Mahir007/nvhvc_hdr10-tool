@@ -139,6 +139,9 @@ fn app(cx: &mut RenderCx) -> Element {
     // it left the Border stuck on screen (the reconciler's child mirror desynced). Keeping
     // every conditional visual overlay strictly last makes its removal a clean truncation.
     let mut layers: Vec<Element> = vec![main.with_key("app").into()];
+    // The "…" app-menu toggle sits over the breadcrumb row (client area — the titlebar strip
+    // eats custom controls' input; see views::menu_button). Always mounted.
+    layers.push(views::menu_button(&vm).with_key("menu-btn"));
     {
         let upd = vm.upd.clone();
         layers.push(
