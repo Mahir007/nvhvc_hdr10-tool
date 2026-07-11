@@ -1,5 +1,6 @@
 //! The three wizard stages and the footer bar, rebuilt from state on every render.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -7,7 +8,7 @@ use gtk::{glib, pango};
 
 use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
-use nvhvc_core::pipeline::Stage as PipeStage;
+use nvhvc_core::pipeline::{Container, Stage as PipeStage};
 use nvhvc_core::uimodel::{
     self, Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS, code_label,
 };
@@ -900,28 +901,28 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     choose.set_valign(gtk::Align::Center);
     {
         let ctx = ctx.clone();
+        let container = s.container;
         let initial = s
             .output
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "out.mkv".to_owned());
+            .unwrap_or_else(|| format!("out.{}", container.extension()));
         choose.connect_clicked(move |_| {
-            app::pick_file(
-                &ctx,
-                true,
-                "Choose output file",
-                Some(&initial),
-                |ctx, path| {
-                    {
-                        let mut st = ctx.state.borrow_mut();
-                        st.output = Some(path);
-                        // The save dialog already warned about an existing file.
-                        st.output_user_chosen = true;
-                    }
-                    app::render(ctx);
-                },
-            );
+            app::pick_output(&ctx, Some(&initial), container, |ctx, path| {
+                {
+                    let mut st = ctx.state.borrow_mut();
+                    let (normalized, container, rewritten) =
+                        uimodel::normalize_output_pick(&path.display().to_string(), st.container);
+                    st.output = Some(PathBuf::from(normalized));
+                    st.container = container;
+                    // The save dialog warned about an existing file — but only for the exact
+                    // name the user typed; a rewritten extension may collide unseen, so that
+                    // case keeps our own overwrite confirmation.
+                    st.output_user_chosen = !rewritten;
+                }
+                app::render(ctx);
+            });
         });
     }
     save_row.append(&choose);
@@ -939,14 +940,46 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     c_label.set_hexpand(true);
     c_label.set_halign(gtk::Align::Start);
     container_row.append(&c_label);
-    container_row.append(&dim_label("Matroska (.mkv)"));
+    let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
+    let dd = gtk::DropDown::from_strings(&labels);
+    dd.set_valign(gtk::Align::Center);
+    dd.set_selected(
+        Container::ALL
+            .iter()
+            .position(|&c| c == s.container)
+            .unwrap_or(0) as u32,
+    );
+    {
+        let ctx = ctx.clone();
+        dd.connect_selected_notify(move |dd| {
+            let Some(&container) = Container::ALL.get(dd.selected() as usize) else {
+                return;
+            };
+            {
+                let mut st = ctx.state.borrow_mut();
+                if st.container == container {
+                    return;
+                }
+                st.container = container;
+                // Keep the chosen name, swap its extension to match the new container.
+                if let Some(out) = &st.output {
+                    st.output = Some(out.with_extension(container.extension()));
+                }
+            }
+            app::render(&ctx);
+        });
+    }
+    container_row.append(&dd);
     out_card.append(&card_row(&container_row));
     col.append(&out_card);
 
     col.append(&banner(
         "blue",
         "dialog-information-symbolic",
-        "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nAll audio & subtitle tracks are carried over untouched.",
+        match s.container {
+            Container::Mkv => "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nAll audio & subtitle tracks are carried over untouched.",
+            Container::Mp4 => "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nMP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out.",
+        },
     ));
 
     if let Some(err) = &s.run_error {
@@ -1099,9 +1132,15 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         .map(|m| m.len())
         .unwrap_or(0);
     let detail = format!(
-        "{} · {} · MKV",
+        "{} · {} · {}",
         uimodel::compact_path(&result.output.display().to_string()),
-        uimodel::human_size(size)
+        uimodel::human_size(size),
+        result
+            .output
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_uppercase)
+            .unwrap_or_default()
     );
     let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
     play.set_tooltip_text(Some("Play"));
@@ -1198,6 +1237,20 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
             .unwrap_or_else(|| "audio & subtitles untouched".to_owned()),
     );
     col.append(&summary);
+
+    // MP4 output can't hold every track type; list what was left behind.
+    if !result.dropped_tracks.is_empty() {
+        let warn = banner(
+            "amber",
+            "dialog-warning-symbolic",
+            &format!(
+                "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
+                result.dropped_tracks.join(", ")
+            ),
+        );
+        warn.set_margin_top(16);
+        col.append(&warn);
+    }
 
     // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
     // constant-rate encodes, so timing is still exact). Let the user know it was used.

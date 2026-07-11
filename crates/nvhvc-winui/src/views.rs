@@ -474,7 +474,7 @@ fn drop_zone(
     on_pick: impl Fn() + 'static,
     set_path: AsyncSetState<String>,
     probe: MutationTrigger<FileProbe>,
-    set_output: Option<AsyncSetState<String>>,
+    set_output: Option<(AsyncSetState<String>, Container)>,
     hover: bool,
     set_hover: AsyncSetState<bool>,
 ) -> Element {
@@ -584,8 +584,8 @@ fn drop_zone(
                 Some(item) => {
                     let path = item.path.clone();
                     set_path.call(path.clone());
-                    if let Some(out) = &set_output {
-                        out.call(default_output(&path));
+                    if let Some((out, container)) = &set_output {
+                        out.call(default_output(&path, *container));
                     }
                     fire_probe(&probe, path);
                     DragOperation::Link
@@ -1299,7 +1299,7 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
                 crate::pick_encode_handler(vm),
                 vm.set_encode.clone(),
                 vm.enc_trigger.clone(),
-                Some(vm.set_output.clone()),
+                Some((vm.set_output.clone(), vm.ui.container)),
                 vm.drag_hover,
                 vm.set_drag_hover.clone(),
             )
@@ -1360,13 +1360,16 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
         .with_key("enc-card"),
     );
 
-    // Output card.
+    // Output card. The shown (and patched) path derives its extension from the container
+    // selection at render time — the stored path's own extension is never used directly.
     children.push(section("Output").with_key("out-header"));
+    let container = vm.ui.container;
+    let out_display = effective_output(&vm.output, container);
     let save_row = {
         let mut cells: Vec<Element> = vec![
             vstack((
                 body_strong("Save as"),
-                caption(compact_path(&vm.output)).foreground(ThemeRef::SecondaryText),
+                caption(compact_path(&out_display)).foreground(ThemeRef::SecondaryText),
             ))
             .spacing(1.0)
             .vertical_alignment(VerticalAlignment::Center)
@@ -1378,6 +1381,9 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
                 .icon(Symbol::Save)
                 .on_click(crate::pick_output_handler(vm))
                 .grid_column(1)
+                // `on_click` is wired at mount only; the handler captures the container for
+                // the save dialog's preselected type, so a container switch must remount it.
+                .with_key(format!("out-choose-{}", container.extension()))
                 .into(),
         );
         padded(
@@ -1392,33 +1398,57 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
             },
         )
     };
-    let container_row = padded(
-        grid((
-            body("Container")
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0),
-            text_block("Matroska (.mkv)")
-                .font_size(13.0)
-                .foreground(ThemeRef::SecondaryText)
-                .grid_column(1),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Auto]),
-        Thickness {
-            left: 16.0,
-            top: 13.0,
-            right: 16.0,
-            bottom: 13.0,
-        },
-    );
+    let container_row = {
+        let items: Vec<String> = Container::ALL
+            .iter()
+            .map(|c| c.label().to_owned())
+            .collect();
+        let selected = Container::ALL
+            .iter()
+            .position(|&c| c == container)
+            .unwrap_or(0) as i32;
+        let upd = vm.upd.clone();
+        padded(
+            grid((
+                body("Container")
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .grid_column(0),
+                ComboBox::new(items)
+                    .selected_index(selected)
+                    .on_selection_changed(move |i: i32| {
+                        let Some(&c) = Container::ALL.get(i as usize) else {
+                            return;
+                        };
+                        upd.call(move |mut s| {
+                            s.container = c;
+                            s
+                        });
+                    })
+                    .grid_column(1),
+            ))
+            .columns([GridLength::Star(1.0), GridLength::Auto]),
+            Thickness {
+                left: 16.0,
+                top: 13.0,
+                right: 16.0,
+                bottom: 13.0,
+            },
+        )
+    };
     children
         .push(card(vstack((save_row, divider(), container_row)).spacing(0.0)).with_key("out-card"));
 
     // "No re-encoding" note.
     children.push(
         InfoBar::new("No re-encoding")
-            .message(
-                "Only the SPS VUI and an HDR10 SEI are written. All audio & subtitle tracks are carried over untouched.",
-            )
+            .message(match container {
+                Container::Mkv => {
+                    "Only the SPS VUI and an HDR10 SEI are written. All audio & subtitle tracks are carried over untouched."
+                }
+                Container::Mp4 => {
+                    "Only the SPS VUI and an HDR10 SEI are written. MP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out."
+                }
+            })
             .informational()
             .is_open(true)
             .is_closable(false)
@@ -1572,7 +1602,16 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     // Output file card with a Play button.
     let out = summary.output.clone();
     let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-    let detail = format!("{} · {} · MKV", compact_path(&out), human_size(size));
+    let detail = format!(
+        "{} · {} · {}",
+        compact_path(&out),
+        human_size(size),
+        std::path::Path::new(&out)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_uppercase)
+            .unwrap_or_default()
+    );
     let play = {
         let out = out.clone();
         // Zero padding: with the default control padding the 38px button clips the glyph.
@@ -1687,6 +1726,28 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     );
     children.push(card(vstack(rows).spacing(0.0)).with_key("sum-card"));
 
+    // MP4 output can't hold every track type; list what was left behind (mirrors GTK).
+    if !summary.dropped_tracks.is_empty() {
+        children.push(
+            InfoBar::new("Some tracks were left out")
+                .message(format!(
+                    "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                    summary.dropped_tracks.join(", ")
+                ))
+                .warning()
+                .is_open(true)
+                .is_closable(false)
+                .margin(Thickness {
+                    left: 0.0,
+                    top: 16.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                })
+                .with_key("res-dropped")
+                .into(),
+        );
+    }
+
     // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
     // constant-rate encodes, so timing is still exact). Mirror the GTK banner and note it.
     if summary.used_ffmpeg_fallback {
@@ -1728,6 +1789,8 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
                 run_token: s.run_token,
                 ack_token: s.run_token,
                 tools_rev: s.tools_rev,
+                // A fresh wizard re-reads the persisted default (mirrors GTK's reset).
+                container: Container::from_setting(Settings::load().default_container.as_deref()),
                 ..Ui::default()
             });
         });
@@ -1793,34 +1856,57 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
         right: 16.0,
         bottom: 13.0,
     };
-    let about_card = card(
-        vstack((
-            padded(
-                grid((
-                    body("nvhvc HDR10 patcher").grid_column(0),
-                    text_block(nvhvc_core::VERSION)
-                        .font_size(13.0)
-                        .foreground(ThemeRef::SecondaryText)
-                        .grid_column(1),
+    // Default output container: persisted immediately on change, picked up by the wizard at
+    // its next start ("Patch another" or app launch). Stage 2 overrides per file.
+    let output_card = {
+        let items: Vec<String> = Container::ALL
+            .iter()
+            .map(|c| c.label().to_owned())
+            .collect();
+        let current = Container::from_setting(Settings::load().default_container.as_deref());
+        let selected = Container::ALL
+            .iter()
+            .position(|&c| c == current)
+            .unwrap_or(0) as i32;
+        card(padded(
+            grid((
+                vstack((
+                    body("Default output container"),
+                    caption("Used for new patches; stage 2 can override per file")
+                        .foreground(ThemeRef::SecondaryText),
                 ))
-                .columns([GridLength::Star(1.0), GridLength::Auto]),
-                about_row_pad,
-            ),
-            divider(),
-            padded(
-                grid((
-                    body("Default output container").grid_column(0),
-                    text_block("Matroska (.mkv)")
-                        .font_size(13.0)
-                        .foreground(ThemeRef::SecondaryText)
-                        .grid_column(1),
-                ))
-                .columns([GridLength::Star(1.0), GridLength::Auto]),
-                about_row_pad,
-            ),
+                .spacing(1.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0),
+                ComboBox::new(items)
+                    .selected_index(selected)
+                    .on_selection_changed(move |i: i32| {
+                        let Some(&c) = Container::ALL.get(i as usize) else {
+                            return;
+                        };
+                        let mut settings = Settings::load();
+                        settings.default_container = Some(c.as_setting().to_owned());
+                        let _ = settings.save();
+                    })
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .grid_column(1),
+            ))
+            .columns([GridLength::Star(1.0), GridLength::Auto])
+            .column_spacing(13.0),
+            about_row_pad,
         ))
-        .spacing(0.0),
-    );
+    };
+    let about_card = card(padded(
+        grid((
+            body("nvhvc HDR10 patcher").grid_column(0),
+            text_block(nvhvc_core::VERSION)
+                .font_size(13.0)
+                .foreground(ThemeRef::SecondaryText)
+                .grid_column(1),
+        ))
+        .columns([GridLength::Star(1.0), GridLength::Auto]),
+        about_row_pad,
+    ));
 
     let body_col = vstack((
         body_strong("External tools"),
@@ -1835,6 +1921,8 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             right: 0.0,
             bottom: 0.0,
         }),
+        section("Output"),
+        output_card,
         section("About"),
         about_card,
     ))

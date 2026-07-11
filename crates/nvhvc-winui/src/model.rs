@@ -4,10 +4,26 @@
 use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 
+pub use nvhvc_core::pipeline::Container;
 pub use nvhvc_core::uimodel::{
     Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS, code_label, colour_summary,
-    compact_path, default_output, file_name, human_size, row_overridden, row_value,
+    compact_path, default_output, file_name, human_size, normalize_output_pick, row_overridden,
+    row_value,
 };
+
+/// The output path the pipeline will actually write: the stored (picked or derived) path with
+/// its extension following the wizard's container selection. The stored path's own extension
+/// is never shown or used directly, which keeps container switching free of stale-closure
+/// hazards — everything derives at render/run time.
+pub fn effective_output(output: &str, container: Container) -> String {
+    if output.is_empty() {
+        return String::new();
+    }
+    std::path::Path::new(output)
+        .with_extension(container.extension())
+        .display()
+        .to_string()
+}
 
 /// Which wizard stage is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -75,6 +91,8 @@ pub struct RunSummary {
     pub tracks: Option<String>,
     /// The remux fell back to ffmpeg (MKVToolNix absent); the result screen notes it.
     pub used_ffmpeg_fallback: bool,
+    /// Tracks the output container couldn't hold (MP4 only); the result screen lists them.
+    pub dropped_tracks: Vec<String>,
 }
 
 /// An open metadata-row editor. Tagged with the source path so a drag-dropped
@@ -105,6 +123,9 @@ pub struct Ui {
     /// The output path the user explicitly chose via the save dialog (which already warns
     /// about overwriting). Auto-derived names that already exist get our own confirmation.
     pub output_chosen_for: Option<String>,
+    /// The output container for this wizard run. Starts at the persisted default; the
+    /// stage-2 dropdown and a save-dialog pick with an explicit .mkv/.mp4 both change it.
+    pub container: Container,
     /// An overwrite confirmation dialog is showing for the current run request.
     pub confirm_overwrite: bool,
     pub theme: ThemeMode,

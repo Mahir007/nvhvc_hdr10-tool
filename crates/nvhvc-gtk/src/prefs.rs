@@ -6,6 +6,7 @@
 use adw::prelude::*;
 
 use nvhvc_core::config::Settings;
+use nvhvc_core::pipeline::Container;
 use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
 
 /// Shows the Preferences dialog as a sheet inside `parent`.
@@ -27,10 +28,14 @@ pub fn show(parent: &adw::ApplicationWindow) {
     }
     page.add(&tools_group);
 
+    // --- Output ---
+    let output_group = adw::PreferencesGroup::builder().title("Output").build();
+    output_group.add(&container_row(&settings));
+    page.add(&output_group);
+
     // --- About ---
     let about_group = adw::PreferencesGroup::builder().title("About").build();
     about_group.add(&about_row("nvhvc HDR10 patcher", nvhvc_core::VERSION));
-    about_group.add(&about_row("Default output container", "Matroska (.mkv)"));
     page.add(&about_group);
 
     let dialog = adw::PreferencesDialog::new();
@@ -152,6 +157,34 @@ fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
         Resolution::OverrideMissing(_) | Resolution::NotFound => "red",
     };
     dot.add_css_class(class);
+}
+
+/// The "Default output container" combo row: persisted immediately on change, picked up by
+/// the wizard at its next start ("Patch another" or app launch). The current wizard's own
+/// container choice lives on stage 2.
+fn container_row(settings: &Settings) -> adw::ComboRow {
+    let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
+    let row = adw::ComboRow::builder()
+        .title("Default output container")
+        .subtitle("Used for new patches; stage 2 can override per file")
+        .model(&gtk::StringList::new(&labels))
+        .build();
+    let current = Container::from_setting(settings.default_container.as_deref());
+    row.set_selected(
+        Container::ALL
+            .iter()
+            .position(|&c| c == current)
+            .unwrap_or(0) as u32,
+    );
+    row.connect_selected_notify(|row| {
+        let Some(&container) = Container::ALL.get(row.selected() as usize) else {
+            return;
+        };
+        let mut settings = Settings::load();
+        settings.default_container = Some(container.as_setting().to_owned());
+        let _ = settings.save();
+    });
+    row
 }
 
 /// An "About" row: title on the left, a dim value on the right.
