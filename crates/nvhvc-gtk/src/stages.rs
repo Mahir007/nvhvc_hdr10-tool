@@ -945,6 +945,23 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     col.append(&out_card);
 
+    // A missing external tool blocks the run — say so here, before the user reaches the
+    // (disabled) Patch button, instead of failing mid-run.
+    let missing = app::missing_tools(&s);
+    if !missing.is_empty() {
+        let body = missing
+            .iter()
+            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        col.append(&banner_titled(
+            "red",
+            "dialog-error-symbolic",
+            "Missing tools for this patch",
+            &body,
+        ));
+    }
+
     col.append(&banner_titled(
         "blue",
         "dialog-information-symbolic",
@@ -1278,7 +1295,9 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
 
             let run = icon_button("Patch HDR10", "starred-symbolic", false);
             run.add_css_class("suggested-action");
-            run.set_sensitive(s.encode.is_some() && s.output.is_some());
+            run.set_sensitive(
+                s.encode.is_some() && s.output.is_some() && app::missing_tools(&s).is_empty(),
+            );
             run.set_visible(s.encode.is_some());
             {
                 let ctx = ctx.clone();

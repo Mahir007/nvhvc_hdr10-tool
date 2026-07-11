@@ -882,6 +882,19 @@ pub fn pick_output(
     );
 }
 
+/// The tools the current wizard inputs require that aren't available — surfaced on stage 2
+/// (banner + disabled Patch button) so a missing tool never gets discovered mid-run.
+pub fn missing_tools(s: &AppState) -> Vec<Tool> {
+    let Some(enc) = &s.encode else {
+        return Vec::new();
+    };
+    let toolset = Toolset::discover(&Settings::load().tool_overrides);
+    pipeline::required_tools(&enc.path, s.container)
+        .into_iter()
+        .filter(|t| !toolset.resolution(*t).is_found())
+        .collect()
+}
+
 /// Attaches a file drag-and-drop target to `widget`.
 pub fn attach_file_drop(
     ctx: &Rc<Ctx>,

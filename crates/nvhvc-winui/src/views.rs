@@ -1404,6 +1404,32 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
     };
     children.push(card(save_row).with_key("out-card"));
 
+    // A missing external tool blocks the run — say so here, before the user reaches the
+    // (disabled) Patch button, instead of failing mid-run.
+    let missing = missing_tools(vm);
+    if !missing.is_empty() {
+        let body = missing
+            .iter()
+            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        children.push(
+            InfoBar::new("Missing tools for this patch")
+                .message(body)
+                .error()
+                .is_open(true)
+                .is_closable(false)
+                .margin(Thickness {
+                    left: 0.0,
+                    top: 14.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                })
+                .with_key("missing-tools")
+                .into(),
+        );
+    }
+
     // "No re-encoding" note.
     children.push(
         InfoBar::new("No re-encoding")
@@ -1453,10 +1479,23 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
         "Patch HDR10",
         GLYPH_SPARKLE,
         false,
-        !vm.output.is_empty(),
+        !vm.output.is_empty() && missing.is_empty(),
         crate::run_handler(vm),
     );
     (page(children), Some(footer("", Some(action))))
+}
+
+/// The tools the current wizard inputs require that aren't available (empty until an encode
+/// is picked). Drives the stage-2 warning and the disabled Patch button.
+fn missing_tools(vm: &Vm) -> Vec<Tool> {
+    if vm.encode.is_empty() {
+        return Vec::new();
+    }
+    let toolset = Toolset::discover(&Settings::load().tool_overrides);
+    nvhvc_core::pipeline::required_tools(std::path::Path::new(&vm.encode), vm.ui.container)
+        .into_iter()
+        .filter(|t| !toolset.resolution(*t).is_found())
+        .collect()
 }
 
 /// The centred processing view (spinner, stage label, progress bar).
