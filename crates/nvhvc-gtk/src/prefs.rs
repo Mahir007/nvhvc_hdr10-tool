@@ -1,8 +1,7 @@
-//! The Preferences dialog: a native `AdwPreferencesDialog` listing the external-tool paths and
-//! output defaults as `AdwExpanderRow`s (status-dot prefix, name, "status · path" subtitle).
-//! Expanding a row reveals its inline `AdwEntryRow` editor — mirroring the WinUI inline
-//! editors while staying on the HIG's progressive-disclosure pattern. Applying (the ✓ button
-//! or Enter) saves and collapses the row; an empty value resets to auto-detect / the default.
+//! The Preferences dialog: a native `AdwPreferencesDialog` listing the external-tool paths as
+//! `AdwActionRow`s (status-dot prefix, name, "status · path" subtitle, pencil Edit suffix) and an
+//! About group. Editing opens a small native `AdwAlertDialog` with an entry — so a row is never
+//! "stuck" in an editable state: you click the pencil, set or cancel, and the row reverts.
 
 use adw::prelude::*;
 
@@ -43,13 +42,13 @@ pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Conta
     dialog.present(Some(parent));
 }
 
-/// One external tool as an expander row whose inline entry edits the custom path.
+/// One external tool as a read-only row with a pencil that opens the editor.
 fn tool_row(
-    _window: &adw::ApplicationWindow,
+    window: &adw::ApplicationWindow,
     tool: Tool,
     resolution: &Resolution,
-) -> adw::ExpanderRow {
-    let row = adw::ExpanderRow::builder()
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
         .title(tool.label())
         .subtitle(status_subtitle(tool, resolution))
         .build();
@@ -60,22 +59,64 @@ fn tool_row(
     apply_dot(&dot, resolution);
     row.add_prefix(&dot);
 
+    let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit.add_css_class("flat");
+    edit.set_valign(gtk::Align::Center);
+    edit.set_tooltip_text(Some("Edit path"));
+    row.add_suffix(&edit);
+    // Activating the row (click anywhere / Enter) opens the editor too.
+    row.set_activatable_widget(Some(&edit));
+
+    {
+        let window = window.clone();
+        let row = row.clone();
+        let dot = dot.clone();
+        edit.connect_clicked(move |_| open_editor(&window, tool, &row, &dot));
+    }
+    row
+}
+
+/// Opens a modal editor for a tool's custom path; on "Set" saves and refreshes the row in place.
+fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow, dot: &gtk::Box) {
+    let settings = Settings::load();
+    let toolset = Toolset::discover(&settings.tool_overrides);
     // Prefer the saved custom override so a broken path stays visible/editable; otherwise show
     // where the tool currently resolves (PATH / install dir).
-    let settings = Settings::load();
     let current = tool_override(&settings.tool_overrides, tool)
         .map(|p| p.display().to_string())
-        .or_else(|| resolution.path().map(|p| p.display().to_string()))
+        .or_else(|| {
+            toolset
+                .resolution(tool)
+                .path()
+                .map(|p| p.display().to_string())
+        })
         .unwrap_or_default();
-    let entry = adw::EntryRow::builder()
-        .title("Custom executable path (empty = auto-detect)")
+
+    let entry = gtk::Entry::builder()
         .text(&current)
-        .show_apply_button(true)
+        .placeholder_text("/path/to/executable")
+        .hexpand(true)
+        .activates_default(true)
         .build();
+
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("{} — custom executable", tool.label())),
+        Some("Point at your own build, or leave empty to auto-detect."),
+    );
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Cancel"), ("set", "Set")]);
+    dialog.set_response_appearance("set", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("set"));
+    dialog.set_close_response("cancel");
+
     {
         let row = row.clone();
         let dot = dot.clone();
-        entry.connect_apply(move |entry| {
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "set" {
+                return;
+            }
             let value = entry.text().trim().to_string();
             let mut settings = Settings::load();
             set_tool_override(&mut settings.tool_overrides, tool, &value);
@@ -84,11 +125,10 @@ fn tool_row(
             let res = toolset.resolution(tool);
             row.set_subtitle(&status_subtitle(tool, res));
             apply_dot(&dot, res);
-            row.set_expanded(false);
         });
     }
-    row.add_row(&entry);
-    row
+    dialog.present(Some(window));
+    entry.grab_focus();
 }
 
 /// `"On PATH · /usr/bin/ffmpeg"`-style subtitle for a resolution.
@@ -155,29 +195,48 @@ fn folder_subtitle(settings: &Settings) -> String {
         .unwrap_or_else(|| "Same folder as the encode".to_owned())
 }
 
-/// The "Default output folder" expander row: inline entry (clear it to go back to "same
-/// folder as the encode") plus a native folder-picker suffix button.
-fn folder_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::ExpanderRow {
-    let row = adw::ExpanderRow::builder()
+/// The "Default output folder" row: read-only with a pencil that opens the editor, matching
+/// the tool rows. Auto-named outputs are saved there; empty = next to the encode.
+fn folder_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
         .title("Default output folder")
         .subtitle(folder_subtitle(settings))
         .build();
+    let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit.add_css_class("flat");
+    edit.set_valign(gtk::Align::Center);
+    edit.set_tooltip_text(Some("Edit folder"));
+    row.add_suffix(&edit);
+    row.set_activatable_widget(Some(&edit));
+    {
+        let window = window.clone();
+        let row = row.clone();
+        edit.connect_clicked(move |_| open_folder_editor(&window, &row));
+    }
+    row
+}
 
+/// Modal editor for the default output folder: a text entry (clear it to go back to "same
+/// folder as the encode") plus a native folder picker.
+fn open_folder_editor(window: &adw::ApplicationWindow, row: &adw::ActionRow) {
+    let settings = Settings::load();
     let current = settings
         .default_output_dir
         .as_ref()
         .map(|d| d.display().to_string())
         .unwrap_or_default();
-    let entry = adw::EntryRow::builder()
-        .title("Folder (empty = same folder as the encode)")
+
+    let entry = gtk::Entry::builder()
         .text(&current)
-        .show_apply_button(true)
+        .placeholder_text("Same folder as the encode")
+        .hexpand(true)
+        .activates_default(true)
         .build();
     let browse = gtk::Button::from_icon_name("folder-open-symbolic");
-    browse.add_css_class("flat");
-    browse.set_valign(gtk::Align::Center);
     browse.set_tooltip_text(Some("Browse…"));
-    entry.add_suffix(&browse);
+    let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    box_.append(&entry);
+    box_.append(&browse);
     {
         let entry = entry.clone();
         let window = window.clone();
@@ -193,9 +252,23 @@ fn folder_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::Expa
                 });
         });
     }
+
+    let dialog = adw::AlertDialog::new(
+        Some("Default output folder"),
+        Some("Auto-named outputs are saved here. Leave empty to save next to the encode."),
+    );
+    dialog.set_extra_child(Some(&box_));
+    dialog.add_responses(&[("cancel", "Cancel"), ("set", "Set")]);
+    dialog.set_response_appearance("set", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("set"));
+    dialog.set_close_response("cancel");
     {
         let row = row.clone();
-        entry.connect_apply(move |entry| {
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "set" {
+                return;
+            }
             let value = entry.text().trim().to_string();
             let mut settings = Settings::load();
             settings.default_output_dir = if value.is_empty() {
@@ -205,11 +278,10 @@ fn folder_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::Expa
             };
             let _ = settings.save();
             row.set_subtitle(&folder_subtitle(&settings));
-            row.set_expanded(false);
         });
     }
-    row.add_row(&entry);
-    row
+    dialog.present(Some(window));
+    entry.grab_focus();
 }
 
 /// The saved custom override for a tool, if any.

@@ -430,6 +430,7 @@ mod tests {
             total: 11,
             audio_codecs: vec!["Opus".to_owned()],
             subtitle_count: 9,
+            chapters: 0,
             video: Default::default(),
         };
         assert_eq!(tracks_line(&t), "11 · Opus + 9 subtitles");
@@ -438,6 +439,7 @@ mod tests {
             total: 4,
             audio_codecs: vec!["AAC".to_owned(), "AAC".to_owned()],
             subtitle_count: 1,
+            chapters: 0,
             video: Default::default(),
         };
         assert_eq!(tracks_line(&dual), "4 · 2× AAC + 1 subtitle");
@@ -446,6 +448,7 @@ mod tests {
             total: 1,
             audio_codecs: vec![],
             subtitle_count: 0,
+            chapters: 0,
             video: Default::default(),
         };
         assert_eq!(tracks_line(&bare), "1 track");

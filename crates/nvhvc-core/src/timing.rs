@@ -39,6 +39,8 @@ pub struct MkvTracks {
     pub audio_codecs: Vec<String>,
     /// Number of subtitle tracks.
     pub subtitle_count: usize,
+    /// Total chapter entries in the container (0 = no chapters).
+    pub chapters: usize,
     /// The original video track's carbon-copy properties.
     pub video: VideoProps,
 }
@@ -94,11 +96,21 @@ fn parse_identify_json(json: &Value) -> Result<MkvTracks> {
         .iter()
         .filter(|t| t["type"].as_str() == Some("subtitles"))
         .count();
+    let chapters = json["chapters"]
+        .as_array()
+        .map(|editions| {
+            editions
+                .iter()
+                .filter_map(|e| e["num_entries"].as_u64())
+                .sum::<u64>() as usize
+        })
+        .unwrap_or(0);
     Ok(MkvTracks {
         video_track_id,
         total: tracks.len(),
         audio_codecs,
         subtitle_count,
+        chapters,
         video,
     })
 }
@@ -251,7 +263,8 @@ mod tests {
                 {"id":1,"type":"audio","codec":"Opus"},
                 {"id":2,"type":"subtitles","codec":"HDMV PGS"},
                 {"id":3,"type":"subtitles","codec":"SubRip/SRT"}
-            ]}"#,
+            ],
+            "chapters":[{"num_entries":17}]}"#,
         )
         .unwrap();
         let info = parse_identify_json(&json).unwrap();
@@ -259,6 +272,7 @@ mod tests {
         assert_eq!(info.total, 4);
         assert_eq!(info.audio_codecs, vec!["Opus".to_owned()]);
         assert_eq!(info.subtitle_count, 2);
+        assert_eq!(info.chapters, 17);
         assert_eq!(info.video.language.as_deref(), Some("eng"));
         assert_eq!(info.video.name, None); // empty name treated as absent
         assert_eq!(info.video.default, Some(true));

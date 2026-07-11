@@ -945,6 +945,23 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     col.append(&out_card);
 
+    // A missing external tool blocks the run — say so here, before the user reaches the
+    // (disabled) Patch button, instead of failing mid-run.
+    let missing = app::missing_tools(&s);
+    if !missing.is_empty() {
+        let body = missing
+            .iter()
+            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        col.append(&banner_titled(
+            "red",
+            "dialog-error-symbolic",
+            "Missing tools for this patch",
+            &body,
+        ));
+    }
+
     col.append(&banner_titled(
         "blue",
         "dialog-information-symbolic",
@@ -1227,21 +1244,6 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         col.append(&warn);
     }
 
-    // If MKVToolNix wasn't available, a constant-rate fallback handled the remux (only
-    // permitted for no-B-frame, constant-rate encodes, so timing is still exact).
-    if result.used_ffmpeg_fallback {
-        let warn = banner_titled(
-            "amber",
-            "dialog-warning-symbolic",
-            "Fallback remux used",
-            "mkvmerge wasn't found, so a constant-rate fallback remux was used. Timing was \
-             reproduced exactly (this encode has no B-frames and a constant frame rate). \
-             Install MKVToolNix to use the primary remux path.",
-        );
-        warn.set_margin_top(16);
-        col.append(&warn);
-    }
-
     drop(s);
     page(&col)
 }
@@ -1293,7 +1295,9 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
 
             let run = icon_button("Patch HDR10", "starred-symbolic", false);
             run.add_css_class("suggested-action");
-            run.set_sensitive(s.encode.is_some() && s.output.is_some());
+            run.set_sensitive(
+                s.encode.is_some() && s.output.is_some() && app::missing_tools(&s).is_empty(),
+            );
             run.set_visible(s.encode.is_some());
             {
                 let ctx = ctx.clone();

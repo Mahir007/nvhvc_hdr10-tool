@@ -124,9 +124,6 @@ pub struct PipelineReport {
     pub frames: Option<usize>,
     /// The encode's track inventory that the remux carried over (when known).
     pub tracks: Option<crate::timing::MkvTracks>,
-    /// Whether the remux fell back to ffmpeg (MKVToolNix absent). Only happens for encodes ffmpeg
-    /// re-times exactly (no B-frames + CFR); a front-end should still surface that it was used.
-    pub used_ffmpeg_fallback: bool,
     /// Human-readable descriptions of tracks the output container couldn't hold (MP4 only;
     /// always empty for Matroska). E.g. `["2 PGS subtitles", "1 attachment"]`.
     pub dropped_tracks: Vec<String>,
@@ -190,11 +187,9 @@ pub fn run_with_progress(
     let (patched_bytes, patch_report) = patch_stream(&input, &metadata)?;
     std::fs::write(&patched, &patched_bytes)?;
 
-    // 4. Capture timing and remux into the chosen container. The mkvmerge path reproduces the
-    //    encode's exact per-frame timing (MP4 output assembles with MP4Box from a retimed
-    //    Matroska intermediate). If MKVToolNix is absent there is a constant-rate fallback,
-    //    but only for encodes it re-times exactly (no B-frames + CFR) — otherwise MKVToolNix
-    //    is required.
+    // 4. Capture timing and remux into the chosen container. Only mkvmerge can re-apply the
+    //    captured per-frame timing, so MKVToolNix is a hard requirement (front-ends surface
+    //    missing tools before the run via [`required_tools`]).
     let container = Container::from_path(output).ok_or_else(|| Error::Probe {
         what: "output container",
         detail: format!(
@@ -205,117 +200,78 @@ pub fn run_with_progress(
     // Timing comes from mkvextract for Matroska encodes (bit-exact, validated) and from
     // ffprobe-synthesized packet timestamps for anything else (mkvextract only reads Matroska).
     let matroska_input = timing::is_matroska(encoded);
-    let merge_ready = tools.resolution(Tool::Mkvmerge).is_found()
-        && (!matroska_input || tools.resolution(Tool::Mkvextract).is_found());
-    let (frames, tracks, used_ffmpeg_fallback, dropped_tracks) = if merge_ready {
-        let mkvmerge = tools.require(Tool::Mkvmerge)?;
-        progress(Stage::CapturingTiming);
-        let mkv_tracks = timing::identify_mkv(mkvmerge, encoded)?;
-        if matroska_input {
-            let mkvextract = tools.require(Tool::Mkvextract)?;
-            timing::extract_timestamps_mkv(
-                mkvextract,
-                encoded,
-                mkv_tracks.video_track_id,
-                &timecodes,
-            )?;
-        } else {
-            timing::extract_timestamps_ffprobe(ffprobe, encoded, &timecodes)?;
-        }
-        // One timestamp per frame, plus one: the v2 file ends with the final frame's end
-        // timestamp (so its duration survives the remux). Skip the "# timestamp format
-        // v2" header and blank lines, then subtract that trailing end marker.
-        let frames = std::fs::read_to_string(&timecodes).ok().map(|t| {
-            t.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .count()
-                .saturating_sub(1)
-        });
-        progress(Stage::Remuxing);
-        match container {
-            Container::Mkv => {
-                remux::remux_mkv(
-                    mkvmerge,
-                    &patched,
-                    encoded,
-                    &timecodes,
-                    &mkv_tracks.video,
-                    output,
-                )?;
-                (frames, Some(mkv_tracks), false, Vec::new())
-            }
-            Container::Mp4 => {
-                // mkvmerge is the only muxer that can re-apply the captured per-frame timing,
-                // so the video is retimed into a Matroska intermediate first; MP4Box then
-                // assembles the MP4 from it plus the encode's MP4-compatible tracks. The
-                // intermediate's own start offset is re-applied from the timecode file (MP4Box
-                // rebases every import to zero).
-                let mp4box = tools.require(Tool::Mp4box)?;
-                let retimed = work.join("retimed.mkv");
-                remux::remux_mkv_video_only(mkvmerge, &patched, &timecodes, &retimed)?;
-                let mut plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
-                let spans = crate::probe::stream_spans(ffprobe, encoded)?;
-                let (first_ms, end_ms) = timing::v2_span(&timecodes)?;
-                let items = build_mp4_items(
-                    ffmpeg,
-                    encoded,
-                    &work,
-                    remux::Mp4Source::File(retimed),
-                    Some((first_ms, end_ms - first_ms)),
-                    &mut plan,
-                    &spans,
-                )?;
-                remux::remux_mp4box(mp4box, &items, output)?;
-                apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
-                let carried = plan.tracks_summary(mkv_tracks.video_track_id);
-                (frames, Some(carried), false, plan.dropped)
-            }
-        }
+    let mkvmerge = tools.require(Tool::Mkvmerge)?;
+    progress(Stage::CapturingTiming);
+    let mkv_tracks = timing::identify_mkv(mkvmerge, encoded)?;
+    if matroska_input {
+        let mkvextract = tools.require(Tool::Mkvextract)?;
+        timing::extract_timestamps_mkv(mkvextract, encoded, mkv_tracks.video_track_id, &timecodes)?;
     } else {
-        match crate::probe::ffmpeg_cfr_remuxable(ffprobe, encoded)? {
-            // MKVToolNix missing but the encode has no B-frames and constant frame rate, so a
-            // constant-rate import reproduces its timing exactly.
-            Some(fps) => {
-                progress(Stage::Remuxing);
-                match container {
-                    Container::Mkv => {
-                        let temp_mp4 = work.join("fallback.mp4");
-                        remux::remux_ffmpeg(ffmpeg, &patched, encoded, &fps, &temp_mp4, output)?;
-                        (None, None, true, Vec::new())
-                    }
-                    Container::Mp4 => {
-                        // MP4Box imports the raw patched stream at the constant rate; the
-                        // video's original start offset comes back via its edit list.
-                        let mp4box = tools.require(Tool::Mp4box)?;
-                        let mut plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
-                        let spans = crate::probe::stream_spans(ffprobe, encoded)?;
-                        let video_edit = plan.video_index.and_then(|i| span_edit(&spans, i));
-                        let items = build_mp4_items(
-                            ffmpeg,
-                            encoded,
-                            &work,
-                            remux::Mp4Source::RawCfr {
-                                hevc: patched.clone(),
-                                fps,
-                            },
-                            video_edit,
-                            &mut plan,
-                            &spans,
-                        )?;
-                        remux::remux_mp4box(mp4box, &items, output)?;
-                        apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
-                        let carried = plan.tracks_summary(0);
-                        (None, Some(carried), true, plan.dropped)
-                    }
-                }
+        timing::extract_timestamps_ffprobe(ffprobe, encoded, &timecodes)?;
+    }
+    // One timestamp per frame, plus one: the v2 file ends with the final frame's end
+    // timestamp (so its duration survives the remux). Skip the "# timestamp format
+    // v2" header and blank lines, then subtract that trailing end marker.
+    let frames = std::fs::read_to_string(&timecodes).ok().map(|t| {
+        t.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count()
+            .saturating_sub(1)
+    });
+    progress(Stage::Remuxing);
+    let (tracks, dropped_tracks) = match container {
+        Container::Mkv => {
+            remux::remux_mkv(
+                mkvmerge,
+                &patched,
+                encoded,
+                &timecodes,
+                &mkv_tracks.video,
+                output,
+            )?;
+            (Some(mkv_tracks), Vec::new())
+        }
+        Container::Mp4 => {
+            // mkvmerge is the only muxer that can re-apply the captured per-frame timing,
+            // so the video is retimed into a Matroska intermediate first; MP4Box then
+            // assembles the MP4 from it plus the encode's MP4-compatible tracks. The
+            // intermediate's own start offset is re-applied from the timecode file (MP4Box
+            // rebases every import to zero).
+            let mp4box = tools.require(Tool::Mp4box)?;
+            let retimed = work.join("retimed.mkv");
+            remux::remux_mkv_video_only(mkvmerge, &patched, &timecodes, &retimed)?;
+            let mut plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
+            let spans = crate::probe::stream_spans(ffprobe, encoded)?;
+            let (first_ms, end_ms) = timing::v2_span(&timecodes)?;
+            let items = build_mp4_items(
+                ffmpeg,
+                encoded,
+                &work,
+                remux::Mp4Source::File(retimed),
+                Some((first_ms, end_ms - first_ms)),
+                &mut plan,
+                &spans,
+            )?;
+            let chapters = prepare_mp4_chapters(
+                tools,
+                mp4box,
+                encoded,
+                &work,
+                matroska_input,
+                &mkv_tracks,
+                &mut plan,
+            );
+            remux::remux_mp4box(mp4box, &items, chapters.as_deref(), output)?;
+            // Cosmetic passes never fail the run: cover art, then real (udta) track titles —
+            // the import-time `:name=` only sets the invisible handler name. The finished
+            // file's track IDs are read back first (GPAC's assignment isn't the -add order).
+            apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
+            if let Ok(ids) = crate::probe::mp4_track_ids(ffprobe, output) {
+                let _ = remux::mp4box_set_track_names(mp4box, output, &items, &ids);
             }
-            // B-frames or VFR: only MKVToolNix can remux this losslessly. Surface the missing tool.
-            None => {
-                tools.require(Tool::Mkvmerge)?;
-                tools.require(Tool::Mkvextract)?;
-                unreachable!("merge_ready was false, so one of the required tools is missing");
-            }
+            let carried = plan.tracks_summary(mkv_tracks.video_track_id);
+            (Some(carried), plan.dropped)
         }
     };
 
@@ -331,7 +287,6 @@ pub fn run_with_progress(
         sei_inserted: patch_report.sei_inserted,
         frames,
         tracks,
-        used_ffmpeg_fallback,
         dropped_tracks,
         output: output.to_path_buf(),
     })
@@ -342,6 +297,58 @@ fn make_workdir() -> Result<PathBuf> {
     let base = std::env::temp_dir().join(format!("nvhvc-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
+}
+
+/// The external tools a run with these inputs would need — for front-ends to check (and
+/// surface) *before* the user reaches the patch button, instead of failing mid-run.
+pub fn required_tools(encoded: &Path, container: Container) -> Vec<Tool> {
+    let mut required = vec![Tool::Ffprobe, Tool::Ffmpeg, Tool::Mkvmerge];
+    if timing::is_matroska(encoded) {
+        required.push(Tool::Mkvextract);
+    }
+    if container == Container::Mp4 {
+        required.push(Tool::Mp4box);
+    }
+    required
+}
+
+/// Produces the OGM chapter file for the MP4 assembly, when the encode has chapters. An
+/// explicit file gets written in both flavours (chpl + QT chapter track) and supersedes the
+/// stray chapter track GPAC's Matroska demux would otherwise emit alongside direct audio
+/// imports — deterministic either way. Best-effort: a failed extraction becomes a dropped
+/// note.
+fn prepare_mp4_chapters(
+    tools: &Toolset,
+    mp4box: &Path,
+    encoded: &Path,
+    work: &Path,
+    matroska_input: bool,
+    mkv_tracks: &crate::timing::MkvTracks,
+    plan: &mut crate::probe::Mp4Plan,
+) -> Option<PathBuf> {
+    let chap_file = work.join("chapters.txt");
+    if matroska_input {
+        if mkv_tracks.chapters == 0 {
+            return None;
+        }
+        match tools
+            .require(Tool::Mkvextract)
+            .and_then(|mkvextract| extract::extract_chapters_ogm(mkvextract, encoded, &chap_file))
+        {
+            Ok(()) => Some(chap_file),
+            Err(_) => {
+                plan.dropped.push("chapters".to_owned());
+                None
+            }
+        }
+    } else {
+        // MP4/MOV inputs never carry chapters through track imports; dump whatever exists.
+        let dumped = remux::mp4box_dump_chapters(mp4box, encoded, &chap_file);
+        if !dumped && plan.chapter_candidates > 0 {
+            plan.dropped.push("chapters".to_owned());
+        }
+        dumped.then_some(chap_file)
+    }
 }
 
 /// A track's `(start_ms, media_duration_ms)` edit from its packet span, when it starts late
