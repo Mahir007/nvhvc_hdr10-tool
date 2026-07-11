@@ -424,6 +424,7 @@ mod tests {
             total: 11,
             audio_codecs: vec!["Opus".to_owned()],
             subtitle_count: 9,
+            video: Default::default(),
         };
         assert_eq!(tracks_line(&t), "11 · Opus + 9 subtitles");
         let dual = MkvTracks {
@@ -431,6 +432,7 @@ mod tests {
             total: 4,
             audio_codecs: vec!["AAC".to_owned(), "AAC".to_owned()],
             subtitle_count: 1,
+            video: Default::default(),
         };
         assert_eq!(tracks_line(&dual), "4 · 2× AAC + 1 subtitle");
         let bare = MkvTracks {
@@ -438,6 +440,7 @@ mod tests {
             total: 1,
             audio_codecs: vec![],
             subtitle_count: 0,
+            video: Default::default(),
         };
         assert_eq!(tracks_line(&bare), "1 track");
     }
