@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::hevc::patch::Hdr10Metadata;
 use crate::hevc::sei::{ContentLightLevel, MasteringDisplay};
 use crate::naming;
+use crate::pipeline::Container;
 
 /// The five editable metadata rows of the source stage.
 pub const META_ROWS: [&str; 5] = [
@@ -317,17 +318,38 @@ fn compact_path_impl(path: &str, home: Option<&str>) -> String {
     }
 }
 
-/// Default output path for an encode: `<dir>/<stem> [HDR10].mkv`.
-pub fn default_output(encode: &str) -> String {
+/// Default output path for an encode: `<dir>/<stem> [HDR10].<ext>`.
+pub fn default_output(encode: &str, container: Container) -> String {
     let p = Path::new(encode);
     let stem = p
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".to_owned());
-    let name = format!("{stem} [HDR10].mkv");
+    let name = format!("{stem} [HDR10].{}", container.extension());
     match p.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.join(name).display().to_string(),
         _ => name,
+    }
+}
+
+/// Reconciles a save-dialog pick with the wizard's container selection.
+///
+/// A `.mkv`/`.mp4` pick wins — the container follows the file name. Any other (or missing)
+/// extension keeps the current container and rewrites the extension to match, so the output
+/// is always something the pipeline can write. Returns the normalized path, the possibly
+/// updated container, and whether the path was rewritten (a rewritten path may collide with
+/// an existing file the save dialog never warned about, so the caller should re-confirm
+/// overwrites for it).
+pub fn normalize_output_pick(picked: &str, container: Container) -> (String, Container, bool) {
+    match Container::from_path(Path::new(picked)) {
+        Some(c) => (picked.to_owned(), c, false),
+        None => {
+            let path = Path::new(picked)
+                .with_extension(container.extension())
+                .display()
+                .to_string();
+            (path, container, true)
+        }
     }
 }
 
@@ -422,13 +444,47 @@ mod tests {
 
     #[test]
     fn default_output_derives_from_encode() {
-        let out = default_output("/videos/encode.mkv");
+        let out = default_output("/videos/encode.mkv", Container::Mkv);
         let p = Path::new(&out);
         assert_eq!(
             p.file_name().unwrap().to_str().unwrap(),
             "encode [HDR10].mkv"
         );
         assert_eq!(p.parent().unwrap(), Path::new("/videos"));
+    }
+
+    #[test]
+    fn default_output_follows_container() {
+        let out = default_output("/videos/encode.mkv", Container::Mp4);
+        assert_eq!(
+            Path::new(&out).file_name().unwrap().to_str().unwrap(),
+            "encode [HDR10].mp4"
+        );
+    }
+
+    #[test]
+    fn output_pick_extension_wins() {
+        // A .mp4 pick flips the container; a .mkv pick flips it back.
+        assert_eq!(
+            normalize_output_pick("/v/out.mp4", Container::Mkv),
+            ("/v/out.mp4".to_owned(), Container::Mp4, false)
+        );
+        assert_eq!(
+            normalize_output_pick("/v/out.mkv", Container::Mp4),
+            ("/v/out.mkv".to_owned(), Container::Mkv, false)
+        );
+    }
+
+    #[test]
+    fn output_pick_rewrites_foreign_extensions() {
+        let (path, c, rewritten) = normalize_output_pick("/v/out.avi", Container::Mp4);
+        assert_eq!(Path::new(&path).extension().unwrap(), "mp4");
+        assert_eq!(c, Container::Mp4);
+        assert!(rewritten);
+        let (path, c, rewritten) = normalize_output_pick("/v/out", Container::Mkv);
+        assert_eq!(Path::new(&path).extension().unwrap(), "mkv");
+        assert_eq!(c, Container::Mkv);
+        assert!(rewritten);
     }
 
     #[test]
