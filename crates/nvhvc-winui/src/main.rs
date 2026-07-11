@@ -239,7 +239,13 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     move || {
         if let Some(path) = pick_file() {
             set_encode.call(path.clone());
-            set_output.call(default_output(&path, container));
+            // Settings are re-read here so a default-folder change in Preferences applies
+            // to the very next pick.
+            set_output.call(default_output(
+                &path,
+                container,
+                Settings::load().default_output_dir.as_deref(),
+            ));
             fire_probe(&trigger, path);
         }
     }
@@ -394,6 +400,20 @@ fn pick_save_file(container: Container) -> Option<String> {
         };
         let _ = dialog.SetFileTypeIndex(index);
         let _ = dialog.SetDefaultExtension(ext);
+        show_dialog(&dialog)
+    }
+}
+
+/// Shows a native folder picker; returns the chosen folder, or `None` if cancelled.
+pub fn pick_folder() -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Shell::{FOS_PICKFOLDERS, FileOpenDialog, IFileDialog};
+
+    unsafe {
+        let dialog: IFileDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog.SetOptions(options | FOS_PICKFOLDERS).ok()?;
         show_dialog(&dialog)
     }
 }

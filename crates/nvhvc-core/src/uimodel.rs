@@ -319,16 +319,22 @@ fn compact_path_impl(path: &str, home: Option<&str>) -> String {
 }
 
 /// Default output path for an encode: `<dir>/<stem> [HDR10].<ext>`.
-pub fn default_output(encode: &str, container: Container) -> String {
+///
+/// `out_dir` is the configured default output folder; `None` (or empty) puts the output next
+/// to the encode.
+pub fn default_output(encode: &str, container: Container, out_dir: Option<&Path>) -> String {
     let p = Path::new(encode);
     let stem = p
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".to_owned());
     let name = format!("{stem} [HDR10].{}", container.extension());
-    match p.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir.join(name).display().to_string(),
-        _ => name,
+    let dir = out_dir
+        .filter(|d| !d.as_os_str().is_empty())
+        .or_else(|| p.parent().filter(|d| !d.as_os_str().is_empty()));
+    match dir {
+        Some(dir) => dir.join(name).display().to_string(),
+        None => name,
     }
 }
 
@@ -447,7 +453,7 @@ mod tests {
 
     #[test]
     fn default_output_derives_from_encode() {
-        let out = default_output("/videos/encode.mkv", Container::Mkv);
+        let out = default_output("/videos/encode.mkv", Container::Mkv, None);
         let p = Path::new(&out);
         assert_eq!(
             p.file_name().unwrap().to_str().unwrap(),
@@ -458,11 +464,29 @@ mod tests {
 
     #[test]
     fn default_output_follows_container() {
-        let out = default_output("/videos/encode.mkv", Container::Mp4);
+        let out = default_output("/videos/encode.mkv", Container::Mp4, None);
         assert_eq!(
             Path::new(&out).file_name().unwrap().to_str().unwrap(),
             "encode [HDR10].mp4"
         );
+    }
+
+    #[test]
+    fn default_output_honours_configured_folder() {
+        let out = default_output(
+            "/videos/encode.mkv",
+            Container::Mkv,
+            Some(Path::new("/patched")),
+        );
+        let p = Path::new(&out);
+        assert_eq!(p.parent().unwrap(), Path::new("/patched"));
+        assert_eq!(
+            p.file_name().unwrap().to_str().unwrap(),
+            "encode [HDR10].mkv"
+        );
+        // An empty configured folder means "next to the encode".
+        let out = default_output("/videos/encode.mkv", Container::Mkv, Some(Path::new("")));
+        assert_eq!(Path::new(&out).parent().unwrap(), Path::new("/videos"));
     }
 
     #[test]

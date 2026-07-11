@@ -585,7 +585,11 @@ fn drop_zone(
                     let path = item.path.clone();
                     set_path.call(path.clone());
                     if let Some((out, container)) = &set_output {
-                        out.call(default_output(&path, *container));
+                        out.call(default_output(
+                            &path,
+                            *container,
+                            Settings::load().default_output_dir.as_deref(),
+                        ));
                     }
                     fire_probe(&probe, path);
                     DragOperation::Link
@@ -1815,7 +1819,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
     // Default output container: persisted immediately on change, and applied to the run in
     // progress too — unless the user already picked an output file explicitly (their pick
     // wins). Per-file switching happens in the Save as dialog instead.
-    let output_card = {
+    let container_pref_row = {
         let items: Vec<String> = Container::ALL
             .iter()
             .map(|c| c.label().to_owned())
@@ -1826,7 +1830,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             .position(|&c| c == current)
             .unwrap_or(0) as i32;
         let upd = vm.upd.clone();
-        card(padded(
+        padded(
             grid((
                 vstack((
                     body("Default output container"),
@@ -1863,7 +1867,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
                 right: 16.0,
                 bottom: 13.0,
             },
-        ))
+        )
     };
 
     let body_col = vstack((
@@ -1880,7 +1884,14 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             bottom: 0.0,
         }),
         section("Output"),
-        output_card,
+        card(
+            vstack((
+                container_pref_row.with_key("out-container"),
+                divider().with_key("out-div"),
+                folder_row(vm).with_key("out-folder"),
+            ))
+            .spacing(0.0),
+        ),
     ))
     .spacing(3.0);
 
@@ -1891,6 +1902,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             upd.call(|mut s| {
                 s.prefs_open = false;
                 s.tool_edit = None;
+                s.folder_edit = None;
                 s
             });
         })
@@ -2386,6 +2398,128 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Stretch)
         .into()
+}
+
+/// The "Default output folder" row in Preferences — or its inline editor when open. Auto-named
+/// outputs are saved there; clearing the field resets to "same folder as the encode". Both
+/// branches return a vstack so the reconciler never sees the row swap element type.
+fn folder_row(vm: &Vm) -> Element {
+    if let Some(draft) = &vm.ui.folder_edit {
+        let upd = vm.upd.clone();
+        let input = text_box(draft.clone())
+            .placeholder_text("Same folder as the encode")
+            .on_text_changed(move |v: String| {
+                upd.call(move |mut s| {
+                    if let Some(d) = s.folder_edit.as_mut() {
+                        *d = v;
+                    }
+                    s
+                });
+            });
+        let upd = vm.upd.clone();
+        let browse = button("Browse\u{2026}").on_click(move || {
+            if let Some(path) = crate::pick_folder() {
+                upd.call(move |mut s| {
+                    if let Some(d) = s.folder_edit.as_mut() {
+                        *d = path;
+                    }
+                    s
+                });
+            }
+        });
+        let upd = vm.upd.clone();
+        let cancel = button("Cancel").on_click(move || {
+            upd.call(|mut s| {
+                s.folder_edit = None;
+                s
+            });
+        });
+        let upd = vm.upd.clone();
+        let draft_now = draft.clone();
+        let set = button("Set").accent().on_click(move || {
+            let value = draft_now.trim().to_owned();
+            let mut settings = Settings::load();
+            settings.default_output_dir = if value.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(value))
+            };
+            let _ = settings.save();
+            upd.call(|mut s| {
+                s.folder_edit = None;
+                s
+            });
+        });
+        let editor = border(
+            vstack((
+                caption("Default output folder (leave empty to save next to the encode)")
+                    .semibold(),
+                grid((
+                    input.grid_column(0),
+                    browse.grid_column(1),
+                    cancel.grid_column(2),
+                    set.grid_column(3),
+                ))
+                .columns([
+                    GridLength::Star(1.0),
+                    GridLength::Auto,
+                    GridLength::Auto,
+                    GridLength::Auto,
+                ])
+                .column_spacing(8.0),
+            ))
+            .spacing(8.0),
+        )
+        .background(ThemeRef::SystemAttentionBackground)
+        .padding(Thickness {
+            left: 15.0,
+            top: 14.0,
+            right: 15.0,
+            bottom: 14.0,
+        });
+        return vstack(vec![Element::from(editor.with_key("folder-edit"))])
+            .spacing(0.0)
+            .into();
+    }
+
+    let settings = Settings::load();
+    let current = settings
+        .default_output_dir
+        .as_ref()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.display().to_string());
+    let detail = current
+        .clone()
+        .unwrap_or_else(|| "Same folder as the encode".to_owned());
+    let upd = vm.upd.clone();
+    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
+        let current = current.clone().unwrap_or_default();
+        upd.call(move |mut s| {
+            s.folder_edit = Some(current);
+            s
+        });
+    });
+    let row = padded(
+        grid((
+            vstack((
+                body("Default output folder"),
+                caption(detail).foreground(ThemeRef::SecondaryText),
+            ))
+            .spacing(1.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .grid_column(0),
+            edit.grid_column(1),
+        ))
+        .columns([GridLength::Star(1.0), GridLength::Auto])
+        .column_spacing(13.0),
+        Thickness {
+            left: 16.0,
+            top: 13.0,
+            right: 16.0,
+            bottom: 13.0,
+        },
+    );
+    vstack(vec![Element::from(row)]).spacing(0.0).into()
 }
 
 /// One tool row in Preferences: status dot, name + resolution detail, Edit button —
