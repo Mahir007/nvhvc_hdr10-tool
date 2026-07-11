@@ -453,9 +453,14 @@ pub fn open_path(path: &str) {
 }
 
 /// Opens Explorer with the file selected.
+///
+/// The argument must be passed raw: std quotes an argument containing spaces as one token
+/// (`"/select,C:\out dir\x.mp4"`), which Explorer misparses and silently falls back to
+/// opening the Documents folder. The path itself is quoted, the `/select,` switch is not.
 pub fn reveal_in_folder(path: &str) {
+    use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
+        .raw_arg(format!("/select,\"{path}\""))
         .spawn();
 }
 
