@@ -299,6 +299,19 @@ fn make_workdir() -> Result<PathBuf> {
     Ok(base)
 }
 
+/// The external tools a run with these inputs would need — for front-ends to check (and
+/// surface) *before* the user reaches the patch button, instead of failing mid-run.
+pub fn required_tools(encoded: &Path, container: Container) -> Vec<Tool> {
+    let mut required = vec![Tool::Ffprobe, Tool::Ffmpeg, Tool::Mkvmerge];
+    if timing::is_matroska(encoded) {
+        required.push(Tool::Mkvextract);
+    }
+    if container == Container::Mp4 {
+        required.push(Tool::Mp4box);
+    }
+    required
+}
+
 /// Produces the OGM chapter file for the MP4 assembly, when the encode has chapters. An
 /// explicit file gets written in both flavours (chpl + QT chapter track) and supersedes the
 /// stray chapter track GPAC's Matroska demux would otherwise emit alongside direct audio
