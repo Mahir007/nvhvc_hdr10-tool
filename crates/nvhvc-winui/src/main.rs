@@ -359,14 +359,22 @@ fn stage_index(stage: PipeStage) -> usize {
     }
 }
 
-/// Shows a native Open file dialog; returns the chosen path, or `None` if cancelled.
+/// Shows a native Open file dialog (source/encode picks), showing only the video files the
+/// pipeline reads (one generic filter, not a per-container choice). Returns the chosen path,
+/// or `None` if cancelled.
 fn pick_file() -> Option<String> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-    use windows::Win32::UI::Shell::{FileOpenDialog, IFileDialog};
+    use windows::Win32::UI::Shell::{Common::COMDLG_FILTERSPEC, FileOpenDialog, IFileDialog};
+    use windows::core::w;
 
     unsafe {
         let dialog: IFileDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let types = [COMDLG_FILTERSPEC {
+            pszName: w!("Video files"),
+            pszSpec: w!("*.mkv;*.mp4"),
+        }];
+        let _ = dialog.SetFileTypes(&types);
         show_dialog(&dialog)
     }
 }
@@ -453,9 +461,14 @@ pub fn open_path(path: &str) {
 }
 
 /// Opens Explorer with the file selected.
+///
+/// The argument must be passed raw: std quotes an argument containing spaces as one token
+/// (`"/select,C:\out dir\x.mp4"`), which Explorer misparses and silently falls back to
+/// opening the Documents folder. The path itself is quoted, the `/select,` switch is not.
 pub fn reveal_in_folder(path: &str) {
+    use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
+        .raw_arg(format!("/select,\"{path}\""))
         .spawn();
 }
 

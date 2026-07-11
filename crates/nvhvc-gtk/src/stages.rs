@@ -72,9 +72,18 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with an icon and a (plain-text) label.
-fn banner(kind: &str, icon: &str, text: &str) -> gtk::Box {
-    banner_markup(kind, icon, &gtk::glib::markup_escape_text(text))
+/// Tinted rounded banner with a bold title line above the body — matching the WinUI
+/// `InfoBar`s, which always carry a title.
+fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
+    banner_markup(
+        kind,
+        icon,
+        &format!(
+            "<b>{}</b>\n{}",
+            gtk::glib::markup_escape_text(title),
+            gtk::glib::markup_escape_text(body)
+        ),
+    )
 }
 
 /// Like [`banner`], but the text is Pango markup (caller escapes dynamic pieces).
@@ -384,10 +393,11 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
 
     if let Some(err) = &s.src_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Probe failed — {err}"),
+            "Probe failed",
+            err,
         ));
         let retry = gtk::Button::with_label("Choose another file");
         retry.set_halign(gtk::Align::Start);
@@ -460,22 +470,25 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     // Status banner.
     let b = if any_override {
-        banner(
+        banner_titled(
             "amber",
             "dialog-warning-symbolic",
-            "Manual overrides active — these values will be written instead of the detected ones.",
+            "Manual overrides active",
+            "These values will be written instead of the detected ones.",
         )
     } else if info.hdr.has_hdr10() {
-        banner(
+        banner_titled(
             "green",
             "object-select-symbolic",
-            "Valid HDR10 found — ready to copy into your encode.",
+            "Valid HDR10 found",
+            "Ready to copy into your encode.",
         )
     } else {
-        banner(
+        banner_titled(
             "amber",
             "dialog-warning-symbolic",
-            "No HDR10 mastering-display metadata detected — the values above can still be edited.",
+            "No HDR10 signalling detected",
+            "No mastering-display metadata found — the values above can still be edited.",
         )
     };
     col.append(&b);
@@ -786,10 +799,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     let s = ctx.state.borrow();
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // "Copying from …" banner (bold accent filename, per the mockup).
+    // "Copying from …" banner: bold title line + colour summary below, mirroring the WinUI
+    // InfoBar (title/message) — no separator dot between the file name and the metadata.
     if let (Some(src), Some(meta)) = (&s.source, s.effective()) {
         let markup = format!(
-            "Copying from <b>{}</b> · {}",
+            "<b>Copying from {}</b>\n{}",
             gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
             gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
@@ -820,10 +834,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
 
     if let Some(err) = &s.enc_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Probe failed — {err}"),
+            "Probe failed",
+            err,
         ));
         drop(s);
         return page(&col);
@@ -930,20 +945,22 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     col.append(&out_card);
 
-    col.append(&banner(
+    col.append(&banner_titled(
         "blue",
         "dialog-information-symbolic",
+        "No re-encoding",
         match s.container {
-            Container::Mkv => "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nAll audio & subtitle tracks are carried over untouched.",
-            Container::Mp4 => "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nMP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out.",
+            Container::Mkv => "Only the SPS VUI and an HDR10 SEI are written. All audio & subtitle tracks are carried over untouched.",
+            Container::Mp4 => "Only the SPS VUI and an HDR10 SEI are written. MP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out.",
         },
     ));
 
     if let Some(err) = &s.run_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Patch failed — {err}"),
+            "Patch failed",
+            err,
         ));
     }
 
@@ -1197,11 +1214,12 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     // MP4 output can't hold every track type; list what was left behind.
     if !result.dropped_tracks.is_empty() {
-        let warn = banner(
+        let warn = banner_titled(
             "amber",
             "dialog-warning-symbolic",
+            "Some tracks were left out",
             &format!(
-                "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
+                "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
                 result.dropped_tracks.join(", ")
             ),
         );
@@ -1209,12 +1227,13 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         col.append(&warn);
     }
 
-    // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
-    // constant-rate encodes, so timing is still exact). Let the user know it was used.
+    // If MKVToolNix wasn't available, a constant-rate fallback handled the remux (only
+    // permitted for no-B-frame, constant-rate encodes, so timing is still exact).
     if result.used_ffmpeg_fallback {
-        let warn = banner(
+        let warn = banner_titled(
             "amber",
             "dialog-warning-symbolic",
+            "Fallback remux used",
             "mkvmerge wasn't found, so a constant-rate fallback remux was used. Timing was \
              reproduced exactly (this encode has no B-frames and a constant frame rate). \
              Install MKVToolNix to use the primary remux path.",

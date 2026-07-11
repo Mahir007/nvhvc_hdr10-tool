@@ -813,9 +813,22 @@ pub fn pick_and_probe(ctx: &Rc<Ctx>, is_source: bool) {
     });
 }
 
-/// Opens a native file-open dialog; `on_pick` receives the chosen path.
+/// Opens a native file-open dialog (source/encode picks), showing only the video files the
+/// pipeline reads (one generic filter, not a per-container choice); `on_pick` receives the
+/// chosen path.
 pub fn pick_file(ctx: &Rc<Ctx>, title: &str, on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static) {
-    let dialog = gtk::FileDialog::builder().title(title).build();
+    let videos = gtk::FileFilter::new();
+    videos.set_name(Some("Video files (*.mkv, *.mp4)"));
+    for c in Container::ALL {
+        videos.add_suffix(c.extension());
+    }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&videos);
+    let dialog = gtk::FileDialog::builder()
+        .title(title)
+        .filters(&filters)
+        .default_filter(&videos)
+        .build();
     let ctx = ctx.clone();
     dialog.open(
         Some(&ctx.window.clone()),
