@@ -359,14 +359,22 @@ fn stage_index(stage: PipeStage) -> usize {
     }
 }
 
-/// Shows a native Open file dialog; returns the chosen path, or `None` if cancelled.
+/// Shows a native Open file dialog (source/encode picks), showing only the video files the
+/// pipeline reads (one generic filter, not a per-container choice). Returns the chosen path,
+/// or `None` if cancelled.
 fn pick_file() -> Option<String> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-    use windows::Win32::UI::Shell::{FileOpenDialog, IFileDialog};
+    use windows::Win32::UI::Shell::{Common::COMDLG_FILTERSPEC, FileOpenDialog, IFileDialog};
+    use windows::core::w;
 
     unsafe {
         let dialog: IFileDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let types = [COMDLG_FILTERSPEC {
+            pszName: w!("Video files"),
+            pszSpec: w!("*.mkv;*.mp4"),
+        }];
+        let _ = dialog.SetFileTypes(&types);
         show_dialog(&dialog)
     }
 }
