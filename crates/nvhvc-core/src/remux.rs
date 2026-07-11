@@ -65,9 +65,9 @@ pub fn remux_mkv(
 
 /// Muxes only the patched video into a Matroska file, timed from `timestamps` — the
 /// intermediate step for MP4 output. mkvmerge is the only muxer that can re-apply a captured
-/// per-frame timecode file, so the video is retimed here first; ffmpeg then does the final MP4
-/// join (which needs its track-compatibility handling anyway). Matroska's 1 ms timestamps read
-/// back exactly as written, so nothing is lost in the round-trip.
+/// per-frame timecode file, so the video is retimed here first; MP4Box then assembles the
+/// final MP4 from it. Matroska's 1 ms timestamps read back exactly as written, so nothing is
+/// lost in the round-trip.
 pub fn remux_mkv_video_only(
     mkvmerge: &Path,
     patched_hevc: &Path,
@@ -110,19 +110,23 @@ pub enum Mp4Source {
     File(PathBuf),
     /// Track `num` (1-based; ffprobe stream index + 1) imported straight from a container.
     Track { file: PathBuf, num: u64 },
-    /// Raw Annex B HEVC imported at a constant frame rate — the no-MKVToolNix fallback
-    /// (only correct for no-B-frame CFR encodes; the caller must gate on
-    /// [`crate::probe::ffmpeg_cfr_remuxable`]).
-    RawCfr { hevc: PathBuf, fps: String },
 }
 
-/// Assembles the final `.mp4` with MP4Box from the prepared `items` (video first).
+/// Assembles the final `.mp4` with MP4Box from the prepared `items` (video first), plus the
+/// original's chapters when the caller extracted them to an OGM file.
 ///
 /// The movie timescale is forced to 1000 so the hand-written edit lists are millisecond-exact.
 /// MP4Box writes `hvc1` sample entries by default (what Apple players require), keeps the
-/// in-band HDR10 SEI, converts SRT to native tx3g, and carries Matroska chapters over as a
-/// chapter track when audio is imported straight from the original.
-pub fn remux_mp4box(mp4box: &Path, items: &[Mp4Add], out: &Path) -> Result<()> {
+/// in-band HDR10 SEI, and converts SRT to native tx3g. Chapters are written in both flavours —
+/// `chpl` (`-chap`, what ffmpeg/VLC read) and a QT chapter track (`-chapqt`, what Apple
+/// players read); an explicit chapter file also supersedes the stray chapter track GPAC's
+/// Matroska demux would otherwise emit alongside direct audio imports.
+pub fn remux_mp4box(
+    mp4box: &Path,
+    items: &[Mp4Add],
+    chapters: Option<&Path>,
+    out: &Path,
+) -> Result<()> {
     let mut args: Vec<String> = vec!["-timescale".to_owned(), "1000".to_owned()];
     let mut edits: Vec<String> = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -146,6 +150,12 @@ pub fn remux_mp4box(mp4box: &Path, items: &[Mp4Add], out: &Path) -> Result<()> {
         args.push("-edits".to_owned());
         args.push(e.clone());
     }
+    if let Some(chap) = chapters {
+        args.push("-chap".to_owned());
+        args.push(path_arg(chap)?.to_owned());
+        args.push("-chapqt".to_owned());
+        args.push(path_arg(chap)?.to_owned());
+    }
     args.push("-new".to_owned());
     args.push(path_arg(out)?.to_owned());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -158,12 +168,54 @@ pub fn mp4box_set_cover(mp4box: &Path, file: &Path, image: &Path) -> Result<()> 
     tools::run(mp4box, Tool::Mp4box, &["-itags", &tag, path_arg(file)?])
 }
 
-/// Renders one `-add` argument: `path[#N][:fps=F][:lang=L][:name=S]`.
+/// Writes each named track's title into its `udta` `name` box (what players and ffprobe read
+/// as the track name — the import-time `:name=` only sets the invisible handler name), in
+/// place. `track_ids` are the finished file's real track IDs aligned with `items` — GPAC's
+/// ID assignment is NOT the `-add` order (the first text import can get ID 65535), so the
+/// caller reads them back from the output.
+pub fn mp4box_set_track_names(
+    mp4box: &Path,
+    file: &Path,
+    items: &[Mp4Add],
+    track_ids: &[u64],
+) -> Result<()> {
+    let mut args: Vec<String> = Vec::new();
+    for (item, id) in items.iter().zip(track_ids) {
+        if let Some(name) = &item.name {
+            args.push("-udta".to_owned());
+            args.push(format!("{id}:type=name:str={}", sanitize_opt(name)));
+        }
+    }
+    if args.is_empty() {
+        return Ok(());
+    }
+    args.push(path_arg(file)?.to_owned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    tools::run(mp4box, Tool::Mp4box, &refs)
+}
+
+/// Dumps `input`'s chapters to an OGM chapter file for re-import via `-chap`. Best-effort:
+/// returns whether a non-empty chapter file appeared (MP4/MOV inputs don't auto-carry
+/// chapters the way Matroska imports do).
+pub fn mp4box_dump_chapters(mp4box: &Path, input: &Path, out_txt: &Path) -> bool {
+    let (Ok(input), Ok(out)) = (path_arg(input), path_arg(out_txt)) else {
+        return false;
+    };
+    let _ = tools::run(
+        mp4box,
+        Tool::Mp4box,
+        &["-dump-chap-ogg", "-out", out, input],
+    );
+    std::fs::metadata(out_txt)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// Renders one `-add` argument: `path[#N][:lang=L][:name=S]`.
 fn format_add(item: &Mp4Add) -> Result<String> {
     let mut arg = match &item.source {
         Mp4Source::File(p) => path_arg(p)?.to_owned(),
         Mp4Source::Track { file, num } => format!("{}#{num}", path_arg(file)?),
-        Mp4Source::RawCfr { hevc, fps } => format!("{}:fps={fps}", path_arg(hevc)?),
     };
     if let Some(lang) = item
         .lang
@@ -173,87 +225,22 @@ fn format_add(item: &Mp4Add) -> Result<String> {
         arg.push_str(&format!(":lang={lang}"));
     }
     if let Some(name) = &item.name {
-        // ':' and '=' would be parsed as option separators; '#' as a track selector.
-        let safe: String = name
-            .chars()
-            .map(|c| if matches!(c, ':' | '=' | '#') { ' ' } else { c })
-            .collect();
-        arg.push_str(&format!(":name={safe}"));
+        arg.push_str(&format!(":name={}", sanitize_opt(name)));
     }
     Ok(arg)
+}
+
+/// Strips the characters MP4Box's colon-separated option parser would trip on.
+fn sanitize_opt(s: &str) -> String {
+    s.chars()
+        .map(|c| if matches!(c, ':' | '=' | '#') { ' ' } else { c })
+        .collect()
 }
 
 /// Milliseconds as a trimmed seconds string for `-edits` ("1084 → "1.084", 500 → "0.5").
 fn fmt_seconds(ms: f64) -> String {
     let s = format!("{:.3}", ms / 1000.0);
     s.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
-/// Wraps the raw patched stream into an MP4 at a constant `fps` — step one of the ffmpeg
-/// fallback (only correct for no-B-frame CFR encodes; the caller must gate on
-/// [`crate::probe::ffmpeg_cfr_remuxable`]). The MP4 muxer accepts a raw Annex B stream's
-/// generated timestamps (matroska's rejects them) and the round-trip keeps the in-band SEI.
-pub fn ffmpeg_wrap_cfr(ffmpeg: &Path, patched_hevc: &Path, fps: &str, out: &Path) -> Result<()> {
-    tools::run(
-        ffmpeg,
-        Tool::Ffmpeg,
-        &[
-            "-y",
-            "-loglevel",
-            "error",
-            "-r",
-            fps,
-            "-i",
-            path_arg(patched_hevc)?,
-            "-c",
-            "copy",
-            path_arg(out)?,
-        ],
-    )
-}
-
-/// Remuxes the patched HEVC into Matroska with ffmpeg, the fallback when MKVToolNix is absent.
-///
-/// Only correct for encodes ffmpeg can re-time exactly — no B-frames and a constant frame rate
-/// (see [`crate::probe::ffmpeg_cfr_remuxable`]); the caller must gate on that. It goes through a
-/// temporary MP4 because the matroska muxer rejects a raw Annex B stream's generated timestamps
-/// while the MP4 muxer accepts them — and the round-trip keeps the in-band HDR10 SEI intact. The
-/// resulting video is then joined with every non-video track and the chapters of `original`.
-pub fn remux_ffmpeg(
-    ffmpeg: &Path,
-    patched_hevc: &Path,
-    original: &Path,
-    fps: &str,
-    temp_mp4: &Path,
-    out: &Path,
-) -> Result<()> {
-    // 1. Raw patched stream → MP4, stamping constant-rate timing at `fps`.
-    ffmpeg_wrap_cfr(ffmpeg, patched_hevc, fps, temp_mp4)?;
-    // 2. That video + everything-but-video (audio/subs/attachments) + chapters from the original.
-    tools::run(
-        ffmpeg,
-        Tool::Ffmpeg,
-        &[
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            path_arg(temp_mp4)?,
-            "-i",
-            path_arg(original)?,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1",
-            "-map",
-            "-1:v",
-            "-map_chapters",
-            "1",
-            "-c",
-            "copy",
-            path_arg(out)?,
-        ],
-    )
 }
 
 #[cfg(test)]
@@ -275,16 +262,13 @@ mod tests {
             format_add(&item).unwrap(),
             "C:/x/encode.mkv#2:lang=eng:name=Original  6-Track  Mix"
         );
-        let raw = Mp4Add {
-            source: Mp4Source::RawCfr {
-                hevc: PathBuf::from("/w/patched.hevc"),
-                fps: "24000/1001".to_owned(),
-            },
+        let file = Mp4Add {
+            source: Mp4Source::File(PathBuf::from("/w/sub_2.srt")),
             lang: None,
             name: None,
             edit: None,
         };
-        assert_eq!(format_add(&raw).unwrap(), "/w/patched.hevc:fps=24000/1001");
+        assert_eq!(format_add(&file).unwrap(), "/w/sub_2.srt");
     }
 
     #[test]

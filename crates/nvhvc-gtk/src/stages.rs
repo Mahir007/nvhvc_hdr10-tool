@@ -1227,21 +1227,6 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         col.append(&warn);
     }
 
-    // If MKVToolNix wasn't available, a constant-rate fallback handled the remux (only
-    // permitted for no-B-frame, constant-rate encodes, so timing is still exact).
-    if result.used_ffmpeg_fallback {
-        let warn = banner_titled(
-            "amber",
-            "dialog-warning-symbolic",
-            "Fallback remux used",
-            "mkvmerge wasn't found, so a constant-rate fallback remux was used. Timing was \
-             reproduced exactly (this encode has no B-frames and a constant frame rate). \
-             Install MKVToolNix to use the primary remux path.",
-        );
-        warn.set_margin_top(16);
-        col.append(&warn);
-    }
-
     drop(s);
     page(&col)
 }

@@ -67,42 +67,6 @@ pub fn probe_media(ffprobe: &Path, source: &Path) -> Result<(ProbedHdr10, VideoI
     Ok((parse_probe_json(&json)?, parse_video_info(&json)?))
 }
 
-/// Whether the ffmpeg remux fallback can reproduce this encode's timing bit-exactly.
-///
-/// A raw-stream ffmpeg remux stamps frames in decode order, so it only reproduces the original
-/// timing when there's **no B-frame reordering** (`has_b_frames == 0`) **and a constant frame
-/// rate** (`r_frame_rate == avg_frame_rate`). Returns the frame rate to replay at when it's safe,
-/// or `None` when only MKVToolNix will do (B-frames or VFR — ffmpeg would scramble the order).
-pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<String>> {
-    let f = encoded.to_str().ok_or_else(|| Error::Probe {
-        what: "encode path",
-        detail: "path is not valid UTF-8".to_owned(),
-    })?;
-    let stdout = tools::run_capture(
-        ffprobe,
-        Tool::Ffprobe,
-        &[
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=has_b_frames,r_frame_rate,avg_frame_rate",
-            f,
-        ],
-    )?;
-    let json: Value = serde_json::from_slice(&stdout)?;
-    let stream = &json["streams"][0];
-    // Unknown reorder depth → assume B-frames (don't risk a scrambled remux).
-    let has_b_frames = stream["has_b_frames"].as_u64().unwrap_or(1);
-    let r_rate = stream["r_frame_rate"].as_str().unwrap_or("");
-    let avg_rate = stream["avg_frame_rate"].as_str().unwrap_or("");
-    let safe = has_b_frames == 0 && !r_rate.is_empty() && r_rate != "0/0" && r_rate == avg_rate;
-    Ok(safe.then(|| r_rate.to_owned()))
-}
-
 /// How a carried track gets into the MP4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mp4Import {
@@ -149,6 +113,9 @@ pub struct Mp4Plan {
     pub tracks: Vec<Mp4Track>,
     /// Stream index + file extension of an image attachment to carry as MP4 cover art.
     pub cover: Option<(u64, &'static str)>,
+    /// Number of chapter-style text data streams seen (MP4/MOV inputs expose their chapter
+    /// track this way). Not listed in `dropped` — chapters are carried via a chapter dump.
+    pub chapter_candidates: usize,
     /// Human-readable notes on what the MP4 doesn't carry, e.g. `["2 PGS subtitles"]`.
     pub dropped: Vec<String>,
 }
@@ -171,6 +138,7 @@ impl Mp4Plan {
                 .iter()
                 .filter(|t| t.import == Mp4Import::TextSub)
                 .count(),
+            chapters: 0,
             video: Default::default(),
         }
     }
@@ -325,6 +293,11 @@ fn parse_mp4_plan(json: &Value) -> Result<Mp4Plan> {
             "subtitle" if mp4_text_subtitle(codec) => {
                 plan.tracks.push(track(Mp4Import::TextSub, "tx3g"));
             }
+            // MP4/MOV inputs expose their chapter track as a text-ish data stream; chapters
+            // are carried via a chapter dump instead of a track copy, so don't report it.
+            "data" if matches!(codec, "bin_data" | "mov_text" | "text") => {
+                plan.chapter_candidates += 1;
+            }
             _ => dropped.push(dropped_description(codec_type, codec)),
         }
     }
@@ -347,6 +320,43 @@ fn parse_mp4_plan(json: &Value) -> Result<Mp4Plan> {
         })
         .collect();
     Ok(plan)
+}
+
+/// The finished MP4's real track IDs for its video/audio/subtitle streams, in stream order —
+/// aligned with the assembly's `-add` order. Chapter/data tracks are skipped. Needed because
+/// GPAC's track-ID assignment is not the `-add` order.
+pub fn mp4_track_ids(ffprobe: &Path, file: &Path) -> Result<Vec<u64>> {
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=index,id,codec_type",
+            crate::tools::path_arg(file)?,
+        ],
+    )?;
+    let json: Value = serde_json::from_slice(&stdout)?;
+    let streams = json["streams"].as_array().ok_or(Error::Probe {
+        what: "ffprobe streams",
+        detail: "no streams array".to_owned(),
+    })?;
+    Ok(streams
+        .iter()
+        .filter(|s| {
+            matches!(
+                s["codec_type"].as_str(),
+                Some("video") | Some("audio") | Some("subtitle")
+            )
+        })
+        .filter_map(|s| {
+            let id = s["id"].as_str()?;
+            u64::from_str_radix(id.trim_start_matches("0x"), 16).ok()
+        })
+        .collect())
 }
 
 /// The first/last presentation extent of every stream in `file`, in milliseconds.

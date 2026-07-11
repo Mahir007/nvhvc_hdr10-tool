@@ -762,7 +762,6 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 sei_inserted: r.sei_inserted,
                 frames: r.frames,
                 tracks: r.tracks,
-                used_ffmpeg_fallback: r.used_ffmpeg_fallback,
                 dropped_tracks: r.dropped_tracks,
             })
             .map_err(|e| e.to_string());

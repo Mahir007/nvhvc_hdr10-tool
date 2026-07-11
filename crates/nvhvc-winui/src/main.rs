@@ -340,7 +340,6 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
                 sei_inserted: report.sei_inserted,
                 frames: report.frames,
                 tracks: report.tracks.as_ref().map(nvhvc_core::uimodel::tracks_line),
-                used_ffmpeg_fallback: report.used_ffmpeg_fallback,
                 dropped_tracks: report.dropped_tracks,
             })
         });

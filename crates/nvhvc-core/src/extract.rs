@@ -85,6 +85,16 @@ pub fn extract_dts_core(ffmpeg: &Path, input: &Path, index: u64, out_dts: &Path)
     )
 }
 
+/// Extracts a Matroska file's chapters in OGM ("simple") format — exactly what MP4Box's
+/// `-chap` option consumes.
+pub fn extract_chapters_ogm(mkvextract: &Path, input: &Path, out_txt: &Path) -> Result<()> {
+    tools::run(
+        mkvextract,
+        crate::tools::Tool::Mkvextract,
+        &[path_arg(input)?, "chapters", "--simple", path_arg(out_txt)?],
+    )
+}
+
 /// Extracts an image attachment / attached picture at stream `index` to `out_img` (for MP4
 /// cover art). Tries the attachment dump first (Matroska attachments aren't packet streams),
 /// then a one-frame stream copy (attached-picture streams). Returns whether a file appeared —
