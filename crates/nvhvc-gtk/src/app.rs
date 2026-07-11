@@ -319,7 +319,24 @@ fn install_actions(app: &adw::Application, ctx: &Rc<Ctx>) {
         add(
             "preferences",
             &["<Control>comma"],
-            Box::new(move || prefs::show(&ctx.window)),
+            Box::new(move || {
+                let ctx2 = ctx.clone();
+                prefs::show(&ctx.window, move |container| {
+                    {
+                        let mut st = ctx2.state.borrow_mut();
+                        // A new default also applies to the run in progress — unless the user
+                        // already picked an output file explicitly (their pick wins).
+                        if st.output_user_chosen || st.container == container {
+                            return;
+                        }
+                        st.container = container;
+                        if let Some(out) = &st.output {
+                            st.output = Some(out.with_extension(container.extension()));
+                        }
+                    }
+                    render(&ctx2);
+                });
+            }),
         );
     }
     {
@@ -716,9 +733,10 @@ pub fn start_run(ctx: &Rc<Ctx>) {
     }
     render(ctx);
 
+    // The outcome is boxed so the enum stays small (Progress is sent per pipeline stage).
     enum Msg {
         Progress(PipeStage),
-        Done(Result<RunOutcome, String>),
+        Done(Box<Result<RunOutcome, String>>),
     }
 
     let (tx, rx) = async_channel::unbounded::<Msg>();
@@ -745,7 +763,7 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 dropped_tracks: r.dropped_tracks,
             })
             .map_err(|e| e.to_string());
-        let _ = tx.send_blocking(Msg::Done(result));
+        let _ = tx.send_blocking(Msg::Done(Box::new(result)));
     });
 
     let ctx = ctx.clone();
@@ -758,15 +776,15 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                         s.processing = Some(stage);
                         false
                     }
-                    Msg::Done(Ok(outcome)) => {
+                    Msg::Done(result) => {
                         s.processing = None;
-                        s.result = Some(outcome);
-                        s.stage = 3;
-                        true
-                    }
-                    Msg::Done(Err(e)) => {
-                        s.processing = None;
-                        s.run_error = Some(e);
+                        match *result {
+                            Ok(outcome) => {
+                                s.result = Some(outcome);
+                                s.stage = 3;
+                            }
+                            Err(e) => s.run_error = Some(e),
+                        }
                         true
                     }
                 }

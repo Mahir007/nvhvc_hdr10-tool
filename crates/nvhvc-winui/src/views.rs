@@ -1398,45 +1398,7 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
             },
         )
     };
-    let container_row = {
-        let items: Vec<String> = Container::ALL
-            .iter()
-            .map(|c| c.label().to_owned())
-            .collect();
-        let selected = Container::ALL
-            .iter()
-            .position(|&c| c == container)
-            .unwrap_or(0) as i32;
-        let upd = vm.upd.clone();
-        padded(
-            grid((
-                body("Container")
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_column(0),
-                ComboBox::new(items)
-                    .selected_index(selected)
-                    .on_selection_changed(move |i: i32| {
-                        let Some(&c) = Container::ALL.get(i as usize) else {
-                            return;
-                        };
-                        upd.call(move |mut s| {
-                            s.container = c;
-                            s
-                        });
-                    })
-                    .grid_column(1),
-            ))
-            .columns([GridLength::Star(1.0), GridLength::Auto]),
-            Thickness {
-                left: 16.0,
-                top: 13.0,
-                right: 16.0,
-                bottom: 13.0,
-            },
-        )
-    };
-    children
-        .push(card(vstack((save_row, divider(), container_row)).spacing(0.0)).with_key("out-card"));
+    children.push(card(save_row).with_key("out-card"));
 
     // "No re-encoding" note.
     children.push(
@@ -1752,9 +1714,9 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     // constant-rate encodes, so timing is still exact). Mirror the GTK banner and note it.
     if summary.used_ffmpeg_fallback {
         children.push(
-            InfoBar::new("Remuxed with ffmpeg")
+            InfoBar::new("Fallback remux used")
                 .message(
-                    "mkvmerge wasn't found, so ffmpeg remuxed this file. Timing was reproduced exactly (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use the primary remux path.",
+                    "mkvmerge wasn't found, so a constant-rate fallback remux was used. Timing was reproduced exactly (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use the primary remux path.",
                 )
                 .warning()
                 .is_open(true)
@@ -1850,14 +1812,9 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
         rows.push(tool_row(vm, i, tool, resolution).with_key(format!("tool-{i}")));
     }
 
-    let about_row_pad = Thickness {
-        left: 16.0,
-        top: 13.0,
-        right: 16.0,
-        bottom: 13.0,
-    };
-    // Default output container: persisted immediately on change, picked up by the wizard at
-    // its next start ("Patch another" or app launch). Stage 2 overrides per file.
+    // Default output container: persisted immediately on change, and applied to the run in
+    // progress too — unless the user already picked an output file explicitly (their pick
+    // wins). Per-file switching happens in the Save as dialog instead.
     let output_card = {
         let items: Vec<String> = Container::ALL
             .iter()
@@ -1868,11 +1825,12 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             .iter()
             .position(|&c| c == current)
             .unwrap_or(0) as i32;
+        let upd = vm.upd.clone();
         card(padded(
             grid((
                 vstack((
                     body("Default output container"),
-                    caption("Used for new patches; stage 2 can override per file")
+                    caption("Save as can still switch it per file (.mkv / .mp4)")
                         .foreground(ThemeRef::SecondaryText),
                 ))
                 .spacing(1.0)
@@ -1887,26 +1845,26 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
                         let mut settings = Settings::load();
                         settings.default_container = Some(c.as_setting().to_owned());
                         let _ = settings.save();
+                        upd.call(move |mut s| {
+                            if s.output_chosen_for.is_none() {
+                                s.container = c;
+                            }
+                            s
+                        });
                     })
                     .vertical_alignment(VerticalAlignment::Center)
                     .grid_column(1),
             ))
             .columns([GridLength::Star(1.0), GridLength::Auto])
             .column_spacing(13.0),
-            about_row_pad,
+            Thickness {
+                left: 16.0,
+                top: 13.0,
+                right: 16.0,
+                bottom: 13.0,
+            },
         ))
     };
-    let about_card = card(padded(
-        grid((
-            body("nvhvc HDR10 patcher").grid_column(0),
-            text_block(nvhvc_core::VERSION)
-                .font_size(13.0)
-                .foreground(ThemeRef::SecondaryText)
-                .grid_column(1),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Auto]),
-        about_row_pad,
-    ));
 
     let body_col = vstack((
         body_strong("External tools"),
@@ -1923,8 +1881,6 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
         }),
         section("Output"),
         output_card,
-        section("About"),
-        about_card,
     ))
     .spacing(3.0);
 
