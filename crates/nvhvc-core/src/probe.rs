@@ -103,6 +103,152 @@ pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<Str
     Ok(safe.then(|| r_rate.to_owned()))
 }
 
+/// Which of an encode's streams MP4 can carry, and what gets left behind.
+///
+/// MP4 holds far fewer track types than Matroska: image subtitles (PGS/VobSub), TrueHD/PCM
+/// audio, and font attachments have no MP4 mapping. The plan lists the streams to carry
+/// (audio stream-copied, text subtitles converted to `mov_text`) and describes the rest so
+/// front-ends can tell the user what was left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mp4Plan {
+    /// Absolute ffmpeg stream indices of audio tracks to stream-copy.
+    pub audio: Vec<u64>,
+    /// Friendly codec names of the kept audio tracks, in order (e.g. `["Opus"]`).
+    pub audio_codecs: Vec<String>,
+    /// Absolute ffmpeg stream indices of text subtitle tracks (converted to `mov_text`).
+    pub subtitles: Vec<u64>,
+    /// Human-readable descriptions of tracks MP4 can't hold, e.g. `["2 PGS subtitles"]`.
+    pub dropped: Vec<String>,
+}
+
+impl Mp4Plan {
+    /// Summary of what the MP4 remux carries over, shaped like the Matroska track report so
+    /// front-end result screens work unchanged.
+    pub fn tracks(&self, video_track_id: u64) -> crate::timing::MkvTracks {
+        crate::timing::MkvTracks {
+            video_track_id,
+            total: 1 + self.audio.len() + self.subtitles.len(),
+            audio_codecs: self.audio_codecs.clone(),
+            subtitle_count: self.subtitles.len(),
+        }
+    }
+}
+
+/// Classifies `file`'s streams for an MP4 remux (see [`Mp4Plan`]).
+pub fn mp4_stream_plan(ffprobe: &Path, file: &Path) -> Result<Mp4Plan> {
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=index,codec_type,codec_name",
+            crate::tools::path_arg(file)?,
+        ],
+    )?;
+    parse_mp4_plan(&serde_json::from_slice(&stdout)?)
+}
+
+/// Audio codecs ffmpeg can stream-copy into MP4, with their friendly display names.
+fn mp4_audio_name(codec: &str) -> Option<&'static str> {
+    match codec {
+        "aac" => Some("AAC"),
+        "ac3" => Some("AC-3"),
+        "eac3" => Some("E-AC-3"),
+        "mp2" => Some("MP2"),
+        "mp3" => Some("MP3"),
+        "opus" => Some("Opus"),
+        "flac" => Some("FLAC"),
+        "alac" => Some("ALAC"),
+        "dts" => Some("DTS"),
+        _ => None,
+    }
+}
+
+/// Text subtitle codecs ffmpeg can convert to `mov_text` for MP4.
+fn mp4_text_subtitle(codec: &str) -> bool {
+    matches!(
+        codec,
+        "subrip" | "srt" | "ass" | "ssa" | "mov_text" | "text" | "webvtt"
+    )
+}
+
+/// A singular description for a stream MP4 can't hold ("PGS subtitle", "TrueHD audio track").
+fn dropped_description(codec_type: &str, codec: &str) -> String {
+    match (codec_type, codec) {
+        ("subtitle", "hdmv_pgs_subtitle") => "PGS subtitle".to_owned(),
+        ("subtitle", "dvd_subtitle") => "VobSub subtitle".to_owned(),
+        ("subtitle", "dvb_subtitle") => "DVB subtitle".to_owned(),
+        ("subtitle", c) => format!("{c} subtitle"),
+        ("audio", "truehd") => "TrueHD audio track".to_owned(),
+        ("audio", c) if c.starts_with("pcm_") => "PCM audio track".to_owned(),
+        ("audio", c) => format!("{} audio track", mkvish_name(c)),
+        ("attachment", _) => "attachment".to_owned(),
+        ("video", _) => "extra video track".to_owned(),
+        (_, c) => format!("{c} data track"),
+    }
+}
+
+/// Capitalized-ish codec name for descriptions ("vorbis" → "Vorbis").
+fn mkvish_name(codec: &str) -> String {
+    let mut chars = codec.chars();
+    match chars.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+        None => codec.to_owned(),
+    }
+}
+
+/// Parses an ffprobe all-streams document into an [`Mp4Plan`] (separated out for testing).
+fn parse_mp4_plan(json: &Value) -> Result<Mp4Plan> {
+    let streams = json["streams"].as_array().ok_or(Error::Probe {
+        what: "ffprobe streams",
+        detail: "no streams array".to_owned(),
+    })?;
+    let mut plan = Mp4Plan::default();
+    let mut dropped: Vec<String> = Vec::new(); // singular descriptions, one per stream
+    let mut video_seen = false;
+    for s in streams {
+        let index = s["index"].as_u64().unwrap_or(u64::MAX);
+        let codec_type = s["codec_type"].as_str().unwrap_or("");
+        let codec = s["codec_name"].as_str().unwrap_or("");
+        match codec_type {
+            // The first video stream is replaced by the patched one; extras have no slot.
+            "video" if !video_seen => video_seen = true,
+            "audio" => match mp4_audio_name(codec) {
+                Some(name) => {
+                    plan.audio.push(index);
+                    plan.audio_codecs.push(name.to_owned());
+                }
+                None => dropped.push(dropped_description(codec_type, codec)),
+            },
+            "subtitle" if mp4_text_subtitle(codec) => plan.subtitles.push(index),
+            _ => dropped.push(dropped_description(codec_type, codec)),
+        }
+    }
+    // Collapse repeats: ["PGS subtitle", "PGS subtitle"] → "2 PGS subtitles".
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for d in dropped {
+        match counted.iter_mut().find(|(desc, _)| *desc == d) {
+            Some((_, n)) => *n += 1,
+            None => counted.push((d, 1)),
+        }
+    }
+    plan.dropped = counted
+        .into_iter()
+        .map(|(desc, n)| {
+            if n > 1 {
+                format!("{n} {desc}s")
+            } else {
+                format!("1 {desc}")
+            }
+        })
+        .collect();
+    Ok(plan)
+}
+
 /// Runs ffprobe on `source` and returns the parsed JSON document.
 fn fetch_probe_json(ffprobe: &Path, source: &Path) -> Result<Value> {
     let src = source.to_str().ok_or_else(|| Error::Probe {
@@ -390,6 +536,53 @@ mod tests {
         assert_eq!(info.width, 3840);
         assert_eq!(info.height, 2160);
         assert_eq!(info.codec, "hevc");
+    }
+
+    #[test]
+    fn mp4_plan_classifies_streams() {
+        // Mirrors the user's real encode shape: HEVC + Opus + text and image subs + a font.
+        let json: Value = serde_json::from_str(
+            r#"{"streams":[
+                {"index":0,"codec_type":"video","codec_name":"hevc"},
+                {"index":1,"codec_type":"audio","codec_name":"opus"},
+                {"index":2,"codec_type":"subtitle","codec_name":"subrip"},
+                {"index":3,"codec_type":"subtitle","codec_name":"ass"},
+                {"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"},
+                {"index":5,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"},
+                {"index":6,"codec_type":"audio","codec_name":"truehd"},
+                {"index":7,"codec_type":"attachment","codec_name":"ttf"}
+            ]}"#,
+        )
+        .unwrap();
+        let plan = parse_mp4_plan(&json).unwrap();
+        assert_eq!(plan.audio, vec![1]);
+        assert_eq!(plan.audio_codecs, vec!["Opus".to_owned()]);
+        assert_eq!(plan.subtitles, vec![2, 3]);
+        assert_eq!(
+            plan.dropped,
+            vec![
+                "2 PGS subtitles".to_owned(),
+                "1 TrueHD audio track".to_owned(),
+                "1 attachment".to_owned(),
+            ]
+        );
+        let tracks = plan.tracks(0);
+        assert_eq!(tracks.total, 4); // patched video + Opus + 2 text subs
+        assert_eq!(tracks.subtitle_count, 2);
+    }
+
+    #[test]
+    fn mp4_plan_keeps_first_video_only() {
+        let json: Value = serde_json::from_str(
+            r#"{"streams":[
+                {"index":0,"codec_type":"video","codec_name":"hevc"},
+                {"index":1,"codec_type":"video","codec_name":"mjpeg"}
+            ]}"#,
+        )
+        .unwrap();
+        let plan = parse_mp4_plan(&json).unwrap();
+        assert!(plan.audio.is_empty());
+        assert_eq!(plan.dropped, vec!["1 extra video track".to_owned()]);
     }
 
     #[test]
