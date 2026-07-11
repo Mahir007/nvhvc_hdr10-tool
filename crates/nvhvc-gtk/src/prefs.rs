@@ -9,8 +9,10 @@ use nvhvc_core::config::Settings;
 use nvhvc_core::pipeline::Container;
 use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
 
-/// Shows the Preferences dialog as a sheet inside `parent`.
-pub fn show(parent: &adw::ApplicationWindow) {
+/// Shows the Preferences dialog as a sheet inside `parent`. `on_default_container` fires when
+/// the default-container combo changes (the wizard applies it to the current run too, unless
+/// the user already picked an output file explicitly).
+pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Container) + 'static) {
     let page = adw::PreferencesPage::new();
 
     // --- External tools ---
@@ -30,13 +32,8 @@ pub fn show(parent: &adw::ApplicationWindow) {
 
     // --- Output ---
     let output_group = adw::PreferencesGroup::builder().title("Output").build();
-    output_group.add(&container_row(&settings));
+    output_group.add(&container_row(&settings, on_default_container));
     page.add(&output_group);
-
-    // --- About ---
-    let about_group = adw::PreferencesGroup::builder().title("About").build();
-    about_group.add(&about_row("nvhvc HDR10 patcher", nvhvc_core::VERSION));
-    page.add(&about_group);
 
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Preferences");
@@ -159,14 +156,13 @@ fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
     dot.add_css_class(class);
 }
 
-/// The "Default output container" combo row: persisted immediately on change, picked up by
-/// the wizard at its next start ("Patch another" or app launch). The current wizard's own
-/// container choice lives on stage 2.
-fn container_row(settings: &Settings) -> adw::ComboRow {
+/// The "Default output container" combo row: persisted immediately on change and reported to
+/// the wizard via the callback. Per-file switching happens in the Save as dialog instead.
+fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -> adw::ComboRow {
     let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
         .title("Default output container")
-        .subtitle("Used for new patches; stage 2 can override per file")
+        .subtitle("Save as can still switch it per file (.mkv / .mp4)")
         .model(&gtk::StringList::new(&labels))
         .build();
     let current = Container::from_setting(settings.default_container.as_deref());
@@ -176,24 +172,15 @@ fn container_row(settings: &Settings) -> adw::ComboRow {
             .position(|&c| c == current)
             .unwrap_or(0) as u32,
     );
-    row.connect_selected_notify(|row| {
+    row.connect_selected_notify(move |row| {
         let Some(&container) = Container::ALL.get(row.selected() as usize) else {
             return;
         };
         let mut settings = Settings::load();
         settings.default_container = Some(container.as_setting().to_owned());
         let _ = settings.save();
+        on_change(container);
     });
-    row
-}
-
-/// An "About" row: title on the left, a dim value on the right.
-fn about_row(title: &str, value: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    let v = gtk::Label::new(Some(value));
-    v.add_css_class("dim-label");
-    v.set_valign(gtk::Align::Center);
-    row.add_suffix(&v);
     row
 }
 

@@ -928,49 +928,6 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     save_row.append(&choose);
     out_card.append(&card_row(&save_row));
 
-    let container_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(16)
-        .margin_top(13)
-        .margin_bottom(13)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
-    let c_label = gtk::Label::new(Some("Container"));
-    c_label.set_hexpand(true);
-    c_label.set_halign(gtk::Align::Start);
-    container_row.append(&c_label);
-    let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
-    let dd = gtk::DropDown::from_strings(&labels);
-    dd.set_valign(gtk::Align::Center);
-    dd.set_selected(
-        Container::ALL
-            .iter()
-            .position(|&c| c == s.container)
-            .unwrap_or(0) as u32,
-    );
-    {
-        let ctx = ctx.clone();
-        dd.connect_selected_notify(move |dd| {
-            let Some(&container) = Container::ALL.get(dd.selected() as usize) else {
-                return;
-            };
-            {
-                let mut st = ctx.state.borrow_mut();
-                if st.container == container {
-                    return;
-                }
-                st.container = container;
-                // Keep the chosen name, swap its extension to match the new container.
-                if let Some(out) = &st.output {
-                    st.output = Some(out.with_extension(container.extension()));
-                }
-            }
-            app::render(&ctx);
-        });
-    }
-    container_row.append(&dd);
-    out_card.append(&card_row(&container_row));
     col.append(&out_card);
 
     col.append(&banner(
@@ -1258,9 +1215,9 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         let warn = banner(
             "amber",
             "dialog-warning-symbolic",
-            "mkvmerge wasn't found, so ffmpeg remuxed this file. Timing was reproduced exactly \
-             (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use \
-             the primary remux path.",
+            "mkvmerge wasn't found, so a constant-rate fallback remux was used. Timing was \
+             reproduced exactly (this encode has no B-frames and a constant frame rate). \
+             Install MKVToolNix to use the primary remux path.",
         );
         warn.set_margin_top(16);
         col.append(&warn);

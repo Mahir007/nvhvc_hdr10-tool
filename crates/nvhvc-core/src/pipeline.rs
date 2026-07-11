@@ -191,8 +191,10 @@ pub fn run_with_progress(
     std::fs::write(&patched, &patched_bytes)?;
 
     // 4. Capture timing and remux into the chosen container. The mkvmerge path reproduces the
-    //    encode's exact per-frame timing. If MKVToolNix is absent we fall back to ffmpeg, but only
-    //    for encodes it can re-time exactly (no B-frames + CFR) — otherwise MKVToolNix is required.
+    //    encode's exact per-frame timing (MP4 output assembles with MP4Box from a retimed
+    //    Matroska intermediate). If MKVToolNix is absent there is a constant-rate fallback,
+    //    but only for encodes it re-times exactly (no B-frames + CFR) — otherwise MKVToolNix
+    //    is required.
     let container = Container::from_path(output).ok_or_else(|| Error::Probe {
         what: "output container",
         detail: format!(
@@ -233,38 +235,77 @@ pub fn run_with_progress(
         progress(Stage::Remuxing);
         match container {
             Container::Mkv => {
-                remux::remux_mkv(mkvmerge, &patched, encoded, &timecodes, output)?;
+                remux::remux_mkv(
+                    mkvmerge,
+                    &patched,
+                    encoded,
+                    &timecodes,
+                    &mkv_tracks.video,
+                    output,
+                )?;
                 (frames, Some(mkv_tracks), false, Vec::new())
             }
             Container::Mp4 => {
                 // mkvmerge is the only muxer that can re-apply the captured per-frame timing,
-                // so the retimed video goes through a Matroska intermediate; ffmpeg then joins
-                // it with the encode's MP4-compatible tracks (stream copy, exact timestamps).
+                // so the video is retimed into a Matroska intermediate first; MP4Box then
+                // assembles the MP4 from it plus the encode's MP4-compatible tracks. The
+                // intermediate's own start offset is re-applied from the timecode file (MP4Box
+                // rebases every import to zero).
+                let mp4box = tools.require(Tool::Mp4box)?;
                 let retimed = work.join("retimed.mkv");
                 remux::remux_mkv_video_only(mkvmerge, &patched, &timecodes, &retimed)?;
-                let plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
-                remux::remux_mp4(ffmpeg, &retimed, encoded, &plan, output)?;
-                let carried = plan.tracks(mkv_tracks.video_track_id);
+                let mut plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
+                let spans = crate::probe::stream_spans(ffprobe, encoded)?;
+                let (first_ms, end_ms) = timing::v2_span(&timecodes)?;
+                let items = build_mp4_items(
+                    ffmpeg,
+                    encoded,
+                    &work,
+                    remux::Mp4Source::File(retimed),
+                    Some((first_ms, end_ms - first_ms)),
+                    &mut plan,
+                    &spans,
+                )?;
+                remux::remux_mp4box(mp4box, &items, output)?;
+                apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
+                let carried = plan.tracks_summary(mkv_tracks.video_track_id);
                 (frames, Some(carried), false, plan.dropped)
             }
         }
     } else {
         match crate::probe::ffmpeg_cfr_remuxable(ffprobe, encoded)? {
-            // MKVToolNix missing but the encode has no B-frames and constant frame rate, so an
-            // ffmpeg remux reproduces its timing exactly.
+            // MKVToolNix missing but the encode has no B-frames and constant frame rate, so a
+            // constant-rate import reproduces its timing exactly.
             Some(fps) => {
-                let temp_mp4 = work.join("fallback.mp4");
                 progress(Stage::Remuxing);
                 match container {
                     Container::Mkv => {
+                        let temp_mp4 = work.join("fallback.mp4");
                         remux::remux_ffmpeg(ffmpeg, &patched, encoded, &fps, &temp_mp4, output)?;
                         (None, None, true, Vec::new())
                     }
                     Container::Mp4 => {
-                        remux::ffmpeg_wrap_cfr(ffmpeg, &patched, &fps, &temp_mp4)?;
-                        let plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
-                        remux::remux_mp4(ffmpeg, &temp_mp4, encoded, &plan, output)?;
-                        let carried = plan.tracks(0);
+                        // MP4Box imports the raw patched stream at the constant rate; the
+                        // video's original start offset comes back via its edit list.
+                        let mp4box = tools.require(Tool::Mp4box)?;
+                        let mut plan = crate::probe::mp4_stream_plan(ffprobe, encoded)?;
+                        let spans = crate::probe::stream_spans(ffprobe, encoded)?;
+                        let video_edit = plan.video_index.and_then(|i| span_edit(&spans, i));
+                        let items = build_mp4_items(
+                            ffmpeg,
+                            encoded,
+                            &work,
+                            remux::Mp4Source::RawCfr {
+                                hevc: patched.clone(),
+                                fps,
+                            },
+                            video_edit,
+                            &mut plan,
+                            &spans,
+                        )?;
+                        remux::remux_mp4box(mp4box, &items, output)?;
+                        apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
+                        let carried = plan.tracks_summary(0);
                         (None, Some(carried), true, plan.dropped)
                     }
                 }
@@ -301,6 +342,102 @@ fn make_workdir() -> Result<PathBuf> {
     let base = std::env::temp_dir().join(format!("nvhvc-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
+}
+
+/// A track's `(start_ms, media_duration_ms)` edit from its packet span, when it starts late
+/// enough to matter (MP4Box rebases imports to zero; sub-ms starts are treated as zero).
+fn span_edit(spans: &[crate::probe::StreamSpan], index: u64) -> Option<(f64, f64)> {
+    let span = spans.iter().find(|s| s.index == index)?;
+    let start = span.start_ms.max(0.0);
+    (start >= 1.0).then_some((start, span.end_ms - start))
+}
+
+/// Prepares the MP4Box `-add` items: the patched video first, then every carried track from
+/// the plan. Direct audio imports come straight from the original (bit-exact); DTS cores and
+/// SRT subtitles are extracted into `work` first. A piece that fails to extract degrades to a
+/// dropped-track note instead of failing the whole run.
+fn build_mp4_items(
+    ffmpeg: &Path,
+    encoded: &Path,
+    work: &Path,
+    video_source: remux::Mp4Source,
+    video_edit: Option<(f64, f64)>,
+    plan: &mut crate::probe::Mp4Plan,
+    spans: &[crate::probe::StreamSpan],
+) -> Result<Vec<remux::Mp4Add>> {
+    use crate::probe::Mp4Import;
+    let mut items = vec![remux::Mp4Add {
+        source: video_source,
+        lang: plan.video_lang.clone(),
+        name: plan.video_name.clone(),
+        edit: video_edit,
+    }];
+    // Disjoint borrows: the loop reads `tracks` while extraction failures append to `dropped`.
+    let crate::probe::Mp4Plan {
+        tracks, dropped, ..
+    } = plan;
+    for track in tracks.iter() {
+        let source = match track.import {
+            Mp4Import::AudioDirect => Some(remux::Mp4Source::Track {
+                file: encoded.to_path_buf(),
+                num: track.index + 1,
+            }),
+            Mp4Import::AudioDtsCore => {
+                let out = work.join(format!("core_{}.dts", track.index));
+                match extract::extract_dts_core(ffmpeg, encoded, track.index, &out) {
+                    Ok(()) => Some(remux::Mp4Source::File(out)),
+                    Err(_) => {
+                        dropped.push("1 DTS audio track (core extraction failed)".to_owned());
+                        None
+                    }
+                }
+            }
+            Mp4Import::TextSub => {
+                let out = work.join(format!("sub_{}.srt", track.index));
+                match extract::extract_srt(ffmpeg, encoded, track.index, &out) {
+                    Ok(()) => Some(remux::Mp4Source::File(out)),
+                    Err(_) => {
+                        dropped.push("1 subtitle (extraction failed)".to_owned());
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(source) = source {
+            // SRT cue times are absolute, so subtitles need no edit; audio gets its original
+            // container start offset back.
+            let edit = match track.import {
+                Mp4Import::TextSub => None,
+                _ => span_edit(spans, track.index),
+            };
+            items.push(remux::Mp4Add {
+                source,
+                lang: track.lang.clone(),
+                name: track.name.clone(),
+                edit,
+            });
+        }
+    }
+    Ok(items)
+}
+
+/// Carries the plan's image attachment into the finished MP4 as cover art. Best-effort: cover
+/// art is cosmetic, so extraction or tagging failures never fail the pipeline.
+fn apply_mp4_cover(
+    ffmpeg: &Path,
+    mp4box: &Path,
+    encoded: &Path,
+    work: &Path,
+    plan: &crate::probe::Mp4Plan,
+    output: &Path,
+) {
+    let Some((index, ext)) = plan.cover else {
+        return;
+    };
+    let img = work.join(format!("cover.{ext}"));
+    if extract::extract_cover(ffmpeg, encoded, index, &img) {
+        let _ = remux::mp4box_set_cover(mp4box, output, &img);
+    }
 }
 
 #[cfg(test)]

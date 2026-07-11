@@ -11,6 +11,22 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::tools::{self, Tool, path_arg};
 
+/// The original video track's container-level properties, re-applied to the patched video so
+/// the remux stays a carbon copy of the encode (raw HEVC carries none of these).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoProps {
+    /// ISO 639 language (`und` and empty are treated as absent).
+    pub language: Option<String>,
+    /// Track name/title.
+    pub name: Option<String>,
+    /// Default-track flag.
+    pub default: Option<bool>,
+    /// Forced-display flag.
+    pub forced: Option<bool>,
+    /// Display dimensions like `"1920x1038"` (carries anamorphic/display aspect).
+    pub display_dimensions: Option<String>,
+}
+
 /// What `mkvmerge -J` reports about a Matroska file's tracks: the video track to re-time,
 /// plus a summary of everything a remux carries over (for the front-ends' result screens).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +39,8 @@ pub struct MkvTracks {
     pub audio_codecs: Vec<String>,
     /// Number of subtitle tracks.
     pub subtitle_count: usize,
+    /// The original video track's carbon-copy properties.
+    pub video: VideoProps,
 }
 
 /// Identifies a file's tracks via `mkvmerge -J` (mkvmerge reads MP4/MOV and more, not just
@@ -39,14 +57,34 @@ fn parse_identify_json(json: &Value) -> Result<MkvTracks> {
         what: "mkvmerge -J",
         detail: "no tracks array".to_owned(),
     })?;
-    let video_track_id = tracks
+    let video_track = tracks
         .iter()
         .find(|t| t["type"].as_str() == Some("video"))
-        .and_then(|t| t["id"].as_u64())
         .ok_or(Error::Probe {
             what: "mkvmerge -J",
             detail: "no video track found".to_owned(),
         })?;
+    let video_track_id = video_track["id"].as_u64().ok_or(Error::Probe {
+        what: "mkvmerge -J",
+        detail: "video track has no id".to_owned(),
+    })?;
+    let props = &video_track["properties"];
+    let video = VideoProps {
+        language: props["language"]
+            .as_str()
+            .filter(|l| !l.is_empty() && *l != "und")
+            .map(str::to_owned),
+        name: props["track_name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned),
+        default: props["default_track"].as_bool(),
+        forced: props["forced_track"].as_bool(),
+        display_dimensions: props["display_dimensions"]
+            .as_str()
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned),
+    };
     let audio_codecs = tracks
         .iter()
         .filter(|t| t["type"].as_str() == Some("audio"))
@@ -61,6 +99,7 @@ fn parse_identify_json(json: &Value) -> Result<MkvTracks> {
         total: tracks.len(),
         audio_codecs,
         subtitle_count,
+        video,
     })
 }
 
@@ -157,6 +196,26 @@ fn timestamps_v2_from_packets(json: &Value) -> Result<String> {
     Ok(body)
 }
 
+/// The first timestamp and final end marker of a v2 timecode file, in milliseconds.
+///
+/// The MP4 mux needs these to rebuild the video's start offset (MP4Box rebases imported
+/// tracks to zero) and to size its edit list: `first` is the empty-edit duration, `end -
+/// first` the media duration presented.
+pub fn v2_span(timecodes: &Path) -> Result<(f64, f64)> {
+    let text = std::fs::read_to_string(timecodes)?;
+    let mut values = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.parse::<f64>().ok());
+    let first = values.next().ok_or(Error::Probe {
+        what: "timecode file",
+        detail: "no timestamps found".to_owned(),
+    })?;
+    let end = values.next_back().unwrap_or(first);
+    Ok((first, end))
+}
+
 /// Writes the exact per-frame timestamps of `track_id` in `file` to a v2 timecode file at `out`.
 ///
 /// mkvextract emits a **v2** file (timestamps in display/presentation order), which is exactly what
@@ -186,7 +245,9 @@ mod tests {
     fn parses_identify_json() {
         let json: Value = serde_json::from_str(
             r#"{"tracks":[
-                {"id":0,"type":"video","codec":"HEVC/H.265/MPEG-H"},
+                {"id":0,"type":"video","codec":"HEVC/H.265/MPEG-H","properties":{
+                    "language":"eng","track_name":"","default_track":true,
+                    "forced_track":false,"display_dimensions":"1920x1038"}},
                 {"id":1,"type":"audio","codec":"Opus"},
                 {"id":2,"type":"subtitles","codec":"HDMV PGS"},
                 {"id":3,"type":"subtitles","codec":"SubRip/SRT"}
@@ -198,6 +259,21 @@ mod tests {
         assert_eq!(info.total, 4);
         assert_eq!(info.audio_codecs, vec!["Opus".to_owned()]);
         assert_eq!(info.subtitle_count, 2);
+        assert_eq!(info.video.language.as_deref(), Some("eng"));
+        assert_eq!(info.video.name, None); // empty name treated as absent
+        assert_eq!(info.video.default, Some(true));
+        assert_eq!(info.video.forced, Some(false));
+        assert_eq!(info.video.display_dimensions.as_deref(), Some("1920x1038"));
+    }
+
+    #[test]
+    fn v2_span_reads_first_and_end() {
+        let dir = std::env::temp_dir().join(format!("nvhvc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("span.txt");
+        std::fs::write(&path, "# timestamp format v2\n1084\n1126\n1167\n1208\n").unwrap();
+        assert_eq!(v2_span(&path).unwrap(), (1084.0, 1208.0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
