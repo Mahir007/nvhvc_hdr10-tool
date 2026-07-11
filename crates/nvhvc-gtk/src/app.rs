@@ -655,9 +655,12 @@ pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
             s.enc_probing = true;
             s.enc_error = None;
             s.encode = None;
+            // Settings are re-read here so a default-folder change in Preferences applies to
+            // the very next pick.
             s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
                 &path.display().to_string(),
                 s.container,
+                Settings::load().default_output_dir.as_deref(),
             )));
             s.output_user_chosen = false;
         }

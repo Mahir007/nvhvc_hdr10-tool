@@ -120,6 +120,8 @@ pub struct Ui {
     pub about_open: bool,
     /// Preferences: tool row being edited (index into `Toolset::all()`) and its draft text.
     pub tool_edit: Option<(usize, String)>,
+    /// Preferences: draft text of the default-output-folder editor, when open.
+    pub folder_edit: Option<String>,
     /// The output path the user explicitly chose via the save dialog (which already warns
     /// about overwriting). Auto-derived names that already exist get our own confirmation.
     pub output_chosen_for: Option<String>,
