@@ -44,7 +44,7 @@ impl FileInfo {
 pub struct RunOutcome {
     pub output: PathBuf,
     pub sps_patched: usize,
-    pub sei_inserted: bool,
+    pub sei_insertions: usize,
     pub frames: Option<usize>,
     pub tracks: Option<nvhvc_core::timing::MkvTracks>,
     /// Tracks the output container couldn't hold (MP4 only); the result screen lists them.

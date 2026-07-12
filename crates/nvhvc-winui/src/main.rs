@@ -337,7 +337,7 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
                 token,
                 output: report.output.display().to_string(),
                 sps_patched: report.sps_patched,
-                sei_inserted: report.sei_inserted,
+                sei_insertions: report.sei_insertions,
                 frames: report.frames,
                 tracks: report.tracks.as_ref().map(nvhvc_core::uimodel::tracks_line),
                 dropped_tracks: report.dropped_tracks,

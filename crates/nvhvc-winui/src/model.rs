@@ -85,7 +85,7 @@ pub struct RunSummary {
     pub token: u32,
     pub output: String,
     pub sps_patched: usize,
-    pub sei_inserted: bool,
+    pub sei_insertions: usize,
     pub frames: Option<usize>,
     /// Preformatted `"11 · Opus + 9 subtitles"` line, when the container was inspected.
     pub tracks: Option<String>,

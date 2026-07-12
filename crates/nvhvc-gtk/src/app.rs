@@ -759,7 +759,7 @@ pub fn start_run(ctx: &Rc<Ctx>) {
             .map(|r| RunOutcome {
                 output: r.output,
                 sps_patched: r.sps_patched,
-                sei_inserted: r.sei_inserted,
+                sei_insertions: r.sei_insertions,
                 frames: r.frames,
                 tracks: r.tracks,
                 dropped_tracks: r.dropped_tracks,
