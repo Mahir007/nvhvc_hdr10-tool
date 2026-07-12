@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
+use crate::hevc::sei::{ContentLightLevel, MasteringDisplay};
 use crate::timing::VideoProps;
 use crate::tools::{self, Tool, path_arg};
 
@@ -113,18 +114,23 @@ pub enum Mp4Source {
 }
 
 /// Assembles the final `.mp4` with MP4Box from the prepared `items` (video first), plus the
-/// original's chapters when the caller extracted them to an OGM file.
+/// original's chapters (when the caller extracted them to an OGM file) and, optionally,
+/// container-level HDR10 boxes (when the caller wrote a GPAC HDR descriptor via
+/// [`write_hdr_xml`]).
 ///
 /// The movie timescale is forced to 1000 so the hand-written edit lists are millisecond-exact.
 /// MP4Box writes `hvc1` sample entries by default (what Apple players require), keeps the
 /// in-band HDR10 SEI, and converts SRT to native tx3g. Chapters are written in both flavours —
 /// `chpl` (`-chap`, what ffmpeg/VLC read) and a QT chapter track (`-chapqt`, what Apple
 /// players read); an explicit chapter file also supersedes the stray chapter track GPAC's
-/// Matroska demux would otherwise emit alongside direct audio imports.
+/// Matroska demux would otherwise emit alongside direct audio imports. `-hdr` stamps the
+/// `mdcv`/`clli` sample-entry boxes during this write (the option is a no-op unless the file
+/// is being rewritten, which `-new` always does).
 pub fn remux_mp4box(
     mp4box: &Path,
     items: &[Mp4Add],
     chapters: Option<&Path>,
+    hdr_xml: Option<&Path>,
     out: &Path,
 ) -> Result<()> {
     let mut args: Vec<String> = vec!["-timescale".to_owned(), "1000".to_owned()];
@@ -156,10 +162,55 @@ pub fn remux_mp4box(
         args.push("-chapqt".to_owned());
         args.push(path_arg(chap)?.to_owned());
     }
+    if let Some(xml) = hdr_xml {
+        args.push("-hdr".to_owned());
+        args.push(path_arg(xml)?.to_owned());
+    }
     args.push("-new".to_owned());
     args.push(path_arg(out)?.to_owned());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     tools::run(mp4box, Tool::Mp4box, &refs)
+}
+
+/// Writes a GPAC `-hdr` XML descriptor for the HDR10 static metadata to `out`, so MP4Box can
+/// stamp container-level `mdcv` (mastering display) and, when present, `clli` (content light
+/// level) sample-entry boxes. Apple players and some tools read HDR10 from these boxes rather
+/// than the in-band SEI. The integer units match the SEI exactly (chromaticity in 0.00002,
+/// luminance in 0.0001 cd/m²), so the values pass straight through.
+pub fn write_hdr_xml(
+    md: &MasteringDisplay,
+    cll: Option<&ContentLightLevel>,
+    out: &Path,
+) -> Result<()> {
+    // GPAC's -hdr parser wants <HDR><Track>… with lowercase <mdcv>/<clli> boxes; the display
+    // primaries are in green, blue, red order (index 0..2) — the same order as the SEI.
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<HDR>\n <Track>\n");
+    xml.push_str(&format!(
+        "  <mdcv display_primaries_0_x=\"{}\" display_primaries_0_y=\"{}\" \
+         display_primaries_1_x=\"{}\" display_primaries_1_y=\"{}\" \
+         display_primaries_2_x=\"{}\" display_primaries_2_y=\"{}\" \
+         white_point_x=\"{}\" white_point_y=\"{}\" \
+         max_display_mastering_luminance=\"{}\" min_display_mastering_luminance=\"{}\"/>\n",
+        md.primaries_x[0],
+        md.primaries_y[0],
+        md.primaries_x[1],
+        md.primaries_y[1],
+        md.primaries_x[2],
+        md.primaries_y[2],
+        md.white_point_x,
+        md.white_point_y,
+        md.max_luminance,
+        md.min_luminance,
+    ));
+    if let Some(cll) = cll {
+        xml.push_str(&format!(
+            "  <clli max_content_light_level=\"{}\" max_pic_average_light_level=\"{}\"/>\n",
+            cll.max_cll, cll.max_fall,
+        ));
+    }
+    xml.push_str(" </Track>\n</HDR>\n");
+    std::fs::write(out, xml)?;
+    Ok(())
 }
 
 /// Tags `file` with `image` as its cover art (iTunes-style `covr`), in place.
@@ -277,5 +328,49 @@ mod tests {
         assert_eq!(fmt_seconds(500.0), "0.5");
         assert_eq!(fmt_seconds(59142.0), "59.142");
         assert_eq!(fmt_seconds(60000.0), "60");
+    }
+
+    #[test]
+    fn hdr_xml_maps_sei_values() {
+        let md = MasteringDisplay {
+            primaries_x: [13250, 7500, 34000], // G, B, R
+            primaries_y: [34500, 3000, 16000],
+            white_point_x: 15635,
+            white_point_y: 16450,
+            max_luminance: 40_000_000,
+            min_luminance: 50,
+        };
+        let dir = std::env::temp_dir().join(format!("nvhvc-hdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Mastering display only: GPAC's green/blue/red primary indices map straight through,
+        // and no <clli> element is emitted.
+        let p = dir.join("md.xml");
+        write_hdr_xml(&md, None, &p).unwrap();
+        let xml = std::fs::read_to_string(&p).unwrap();
+        assert!(xml.contains("<HDR>") && xml.contains("<Track>") && xml.contains("<mdcv "));
+        assert!(xml.contains("display_primaries_0_x=\"13250\""));
+        assert!(xml.contains("display_primaries_2_y=\"16000\""));
+        assert!(xml.contains("white_point_x=\"15635\""));
+        assert!(xml.contains("max_display_mastering_luminance=\"40000000\""));
+        assert!(xml.contains("min_display_mastering_luminance=\"50\""));
+        assert!(!xml.contains("<clli"));
+
+        // With content light level, the <clli> box is added.
+        let p2 = dir.join("both.xml");
+        write_hdr_xml(
+            &md,
+            Some(&ContentLightLevel {
+                max_cll: 1000,
+                max_fall: 400,
+            }),
+            &p2,
+        )
+        .unwrap();
+        let xml2 = std::fs::read_to_string(&p2).unwrap();
+        assert!(xml2.contains("max_content_light_level=\"1000\""));
+        assert!(xml2.contains("max_pic_average_light_level=\"400\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

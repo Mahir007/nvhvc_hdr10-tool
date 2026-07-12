@@ -264,7 +264,18 @@ pub fn run_with_progress(
                 &mkv_tracks,
                 &mut plan,
             );
-            remux::remux_mp4box(mp4box, &items, chapters.as_deref(), output)?;
+            // Container-level HDR10 boxes (mdcv/clli) for players that read them instead of
+            // the in-band SEI (Apple/QuickTime). Written from the injected metadata during the
+            // assembly write; when there's no mastering display there's nothing to stamp.
+            let hdr_xml = match &metadata.mastering_display {
+                Some(md) => {
+                    let xml = work.join("hdr.xml");
+                    remux::write_hdr_xml(md, metadata.content_light_level.as_ref(), &xml)?;
+                    Some(xml)
+                }
+                None => None,
+            };
+            remux::remux_mp4box(mp4box, &items, chapters.as_deref(), hdr_xml.as_deref(), output)?;
             // Cosmetic passes never fail the run: cover art, then real (udta) track titles —
             // the import-time `:name=` only sets the invisible handler name. The finished
             // file's track IDs are read back first (GPAC's assignment isn't the -add order).
