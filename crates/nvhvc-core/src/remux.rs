@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
+use crate::hevc::patch::Hdr10Metadata;
 use crate::hevc::sei::{ContentLightLevel, MasteringDisplay};
 use crate::timing::VideoProps;
 use crate::tools::{self, Tool, path_arg};
@@ -19,14 +20,17 @@ use crate::tools::{self, Tool, path_arg};
 /// The patched video gets its timing from `timestamps` (a v2 timecode file captured from the
 /// original) and the original video track's container properties from `video` — reproducing
 /// CFR/VFR exactly and keeping the output a carbon copy of the encode with the video swapped.
-/// Every non-video track from `original` (audio, subtitles, chapters, attachments) is carried
-/// over, so the result is complete and in sync.
+/// The injected `hdr` metadata is also written into the Matroska `Colour` (+ `MasteringMetadata`)
+/// track element, so players that read HDR10 from the container rather than parsing the in-band
+/// stream still see it. Every non-video track from `original` (audio, subtitles, chapters,
+/// attachments) is carried over, so the result is complete and in sync.
 pub fn remux_mkv(
     mkvmerge: &Path,
     patched_hevc: &Path,
     original: &Path,
     timestamps: &Path,
     video: &VideoProps,
+    hdr: &Hdr10Metadata,
     out: &Path,
 ) -> Result<()> {
     let mut args: Vec<String> = vec![
@@ -56,12 +60,62 @@ pub fn remux_mkv(
         args.push("--display-dimensions".to_owned());
         args.push(format!("0:{dims}"));
     }
+    args.extend(mkv_colour_args(hdr));
+    args.extend(mkv_colour_args(hdr));
     args.push(path_arg(patched_hevc)?.to_owned());
     // Everything except video from the original encode.
     args.push("--no-video".to_owned());
     args.push(path_arg(original)?.to_owned());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     tools::run(mkvmerge, Tool::Mkvmerge, &refs)
+}
+
+/// mkvmerge track-0 options that write the HDR10 signalling into the Matroska `Colour` element
+/// (plus its `MasteringMetadata` sub-element when a mastering display is present), so container-
+/// reading players trigger HDR10 without parsing the in-band stream. Primaries/transfer/matrix
+/// use the same H.273 codes as the VUI; chromaticity and white point are CIE 1931 coordinates
+/// (SEI value × 0.00002) and luminance is cd/m² (SEI value × 0.0001), the units mkvmerge wants.
+fn mkv_colour_args(hdr: &Hdr10Metadata) -> Vec<String> {
+    let c = &hdr.color;
+    let mut a = vec![
+        "--colour-matrix-coefficients".to_owned(),
+        format!("0:{}", c.matrix_coeffs),
+        "--colour-primaries".to_owned(),
+        format!("0:{}", c.colour_primaries),
+        "--colour-transfer-characteristics".to_owned(),
+        format!("0:{}", c.transfer_characteristics),
+        // mkvmerge colour range: 1 = broadcast/limited, 2 = full.
+        "--colour-range".to_owned(),
+        format!("0:{}", if c.video_full_range { 2 } else { 1 }),
+    ];
+    if let Some(md) = &hdr.mastering_display {
+        // The SEI primary order is green(0), blue(1), red(2); mkvmerge wants red, green, blue.
+        let xy = |v: u16| (f64::from(v) / 50_000.0).to_string();
+        let lum = |v: u32| (f64::from(v) / 10_000.0).to_string();
+        a.push("--chromaticity-coordinates".to_owned());
+        a.push(format!(
+            "0:{},{},{},{},{},{}",
+            xy(md.primaries_x[2]),
+            xy(md.primaries_y[2]),
+            xy(md.primaries_x[0]),
+            xy(md.primaries_y[0]),
+            xy(md.primaries_x[1]),
+            xy(md.primaries_y[1]),
+        ));
+        a.push("--white-colour-coordinates".to_owned());
+        a.push(format!("0:{},{}", xy(md.white_point_x), xy(md.white_point_y)));
+        a.push("--max-luminance".to_owned());
+        a.push(format!("0:{}", lum(md.max_luminance)));
+        a.push("--min-luminance".to_owned());
+        a.push(format!("0:{}", lum(md.min_luminance)));
+    }
+    if let Some(cll) = &hdr.content_light_level {
+        a.push("--max-content-light".to_owned());
+        a.push(format!("0:{}", cll.max_cll));
+        a.push("--max-frame-light".to_owned());
+        a.push(format!("0:{}", cll.max_fall));
+    }
+    a
 }
 
 /// Muxes only the patched video into a Matroska file, timed from `timestamps` — the
@@ -328,6 +382,46 @@ mod tests {
         assert_eq!(fmt_seconds(500.0), "0.5");
         assert_eq!(fmt_seconds(59142.0), "59.142");
         assert_eq!(fmt_seconds(60000.0), "60");
+    }
+
+    #[test]
+    fn mkv_colour_args_map_hdr10() {
+        use crate::hevc::sps::VuiColorEdit;
+        let hdr = Hdr10Metadata {
+            color: VuiColorEdit {
+                video_format: 5,
+                video_full_range: false,
+                colour_primaries: 9,
+                transfer_characteristics: 16,
+                matrix_coeffs: 9,
+                chroma_loc: None,
+            },
+            mastering_display: Some(MasteringDisplay {
+                primaries_x: [13250, 7500, 34000], // G, B, R
+                primaries_y: [34500, 3000, 16000],
+                white_point_x: 15635,
+                white_point_y: 16450,
+                max_luminance: 40_000_000,
+                min_luminance: 50,
+            }),
+            content_light_level: Some(ContentLightLevel {
+                max_cll: 1000,
+                max_fall: 400,
+            }),
+        };
+        let a = mkv_colour_args(&hdr);
+        let joined = a.join(" ");
+        assert!(joined.contains("--colour-primaries 0:9"));
+        assert!(joined.contains("--colour-transfer-characteristics 0:16"));
+        assert!(joined.contains("--colour-matrix-coefficients 0:9"));
+        assert!(joined.contains("--colour-range 0:1")); // limited
+        // Chromaticity reordered to red,green,blue and scaled to CIE 1931 units.
+        assert!(joined.contains("--chromaticity-coordinates 0:0.68,0.32,0.265,0.69,0.15,0.06"));
+        assert!(joined.contains("--white-colour-coordinates 0:0.3127,0.329"));
+        assert!(joined.contains("--max-luminance 0:4000")); // 40000000 * 0.0001
+        assert!(joined.contains("--min-luminance 0:0.005"));
+        assert!(joined.contains("--max-content-light 0:1000"));
+        assert!(joined.contains("--max-frame-light 0:400"));
     }
 
     #[test]

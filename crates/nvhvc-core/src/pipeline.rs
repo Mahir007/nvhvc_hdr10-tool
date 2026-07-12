@@ -230,6 +230,7 @@ pub fn run_with_progress(
                 encoded,
                 &timecodes,
                 &mkv_tracks.video,
+                &metadata,
                 output,
             )?;
             (Some(mkv_tracks), Vec::new())
