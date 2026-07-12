@@ -56,7 +56,7 @@ enum Command {
         source: PathBuf,
         /// Encoded file (missing HDR10) to patch.
         encoded: PathBuf,
-        /// Output file; the container is chosen from its extension (.mkv supported).
+        /// Output file; the container is chosen from its extension (.mkv or .mp4).
         output: PathBuf,
         /// Force a chroma sample location (0..=5) instead of preserving the encode's.
         #[arg(long, value_name = "0-5")]
@@ -124,7 +124,18 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
             println!();
             println!("wrote {}", report.output.display());
             println!("  SPS patched : {}", report.sps_patched);
-            println!("  SEI inserted: {}", report.sei_inserted);
+            println!(
+                "  SEI inserted: {} (at {} random-access point{})",
+                report.sei_insertions > 0,
+                report.sei_insertions,
+                if report.sei_insertions == 1 { "" } else { "s" }
+            );
+            if !report.dropped_tracks.is_empty() {
+                println!(
+                    "  note        : not carried into MP4 — {}",
+                    report.dropped_tracks.join(", ")
+                );
+            }
             print_metadata(&report.probed);
             Ok(())
         }

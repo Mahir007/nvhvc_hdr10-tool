@@ -13,9 +13,9 @@
 //! [`add_emulation_prevention`]: crate::hevc::nal::add_emulation_prevention
 
 /// `payloadType` for mastering display colour volume.
-const SEI_MASTERING_DISPLAY: u8 = 137;
+pub const SEI_MASTERING_DISPLAY: u8 = 137;
 /// `payloadType` for content light level information.
-const SEI_CONTENT_LIGHT_LEVEL: u8 = 144;
+pub const SEI_CONTENT_LIGHT_LEVEL: u8 = 144;
 
 /// Mastering display colour volume metadata, in the SEI's own integer units.
 ///
@@ -87,6 +87,56 @@ pub fn build_hdr10_sei_rbsp(
     // this is a single 0x80 byte. (The original Python tool wrote 0x00 here, which is invalid.)
     nal.push(0x80);
     Some(nal)
+}
+
+/// Whether a prefix-SEI NAL's RBSP already carries an SEI message of `payload_type`. Used to
+/// avoid inserting a duplicate at an access unit that already signals HDR10 — which keeps the
+/// patch idempotent (re-running it inserts nothing new). Callers pass whichever payload type
+/// they're about to write ([`SEI_MASTERING_DISPLAY`], or [`SEI_CONTENT_LIGHT_LEVEL`] for a
+/// content-light-only configuration).
+///
+/// `rbsp` is the emulation-prevention-removed NAL, including its 2-byte header. Parses the
+/// `sei_message()` loop of H.265 §7.3.5, stopping at `rbsp_trailing_bits`.
+pub fn rbsp_has_sei_payload(rbsp: &[u8], payload_type: u8) -> bool {
+    let mut i = 2usize; // skip the 2-byte NAL header
+    loop {
+        // more_rbsp_data() is false once only rbsp_trailing_bits remain (a `0x80` byte-aligned
+        // stop bit followed by zero padding).
+        match rbsp.get(i) {
+            None => break,
+            Some(&0x80) if rbsp[i + 1..].iter().all(|&b| b == 0) => break,
+            _ => {}
+        }
+        // payload_type and payload_size are each coded as 0xFF-extended byte runs.
+        let Some(this_type) = read_ff_extended(rbsp, &mut i) else {
+            break;
+        };
+        let Some(payload_size) = read_ff_extended(rbsp, &mut i) else {
+            break;
+        };
+        if this_type == u32::from(payload_type) {
+            return true;
+        }
+        i = i.saturating_add(payload_size as usize);
+        if i > rbsp.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// Reads one 0xFF-extended value (`floor(v/255)` bytes of `0xFF` then a final `< 255` byte),
+/// advancing `i`. Returns `None` if the buffer ends mid-value. Saturates rather than
+/// overflowing on a pathologically long `0xFF` run in corrupt input.
+fn read_ff_extended(buf: &[u8], i: &mut usize) -> Option<u32> {
+    let mut value = 0u32;
+    while buf.get(*i) == Some(&0xFF) {
+        value = value.saturating_add(255);
+        *i += 1;
+    }
+    let last = *buf.get(*i)?;
+    *i += 1;
+    Some(value.saturating_add(u32::from(last)))
 }
 
 /// Appends one `sei_message()`: payload type, payload size (both 0xFF-extended), then the payload.
@@ -172,5 +222,27 @@ mod tests {
         // No forbidden start-code emulation remains.
         assert!(!wire.windows(3).any(|w| w == [0x00, 0x00, 0x01]));
         assert_eq!(remove_emulation_prevention(&wire), nal);
+    }
+
+    #[test]
+    fn detects_sei_payload_type() {
+        let cll = ContentLightLevel {
+            max_cll: 1000,
+            max_fall: 400,
+        };
+        let md_only = build_hdr10_sei_rbsp(Some(&sample_md()), None).unwrap();
+        let both = build_hdr10_sei_rbsp(Some(&sample_md()), Some(&cll)).unwrap();
+        let cll_only = build_hdr10_sei_rbsp(None, Some(&cll)).unwrap();
+
+        // Mastering-display (137) present alone and alongside CLL; absent in the CLL-only NAL.
+        assert!(rbsp_has_sei_payload(&md_only, SEI_MASTERING_DISPLAY));
+        assert!(rbsp_has_sei_payload(&both, SEI_MASTERING_DISPLAY));
+        assert!(!rbsp_has_sei_payload(&cll_only, SEI_MASTERING_DISPLAY));
+        // Content-light-level (144) — the second message — is found in both and cll-only.
+        assert!(rbsp_has_sei_payload(&both, SEI_CONTENT_LIGHT_LEVEL));
+        assert!(rbsp_has_sei_payload(&cll_only, SEI_CONTENT_LIGHT_LEVEL));
+        assert!(!rbsp_has_sei_payload(&md_only, SEI_CONTENT_LIGHT_LEVEL));
+        // A bare prefix-SEI header with only trailing bits has no messages.
+        assert!(!rbsp_has_sei_payload(&[0x4E, 0x01, 0x80], SEI_MASTERING_DISPLAY));
     }
 }

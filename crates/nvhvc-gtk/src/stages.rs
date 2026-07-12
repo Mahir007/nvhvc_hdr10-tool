@@ -1,5 +1,6 @@
 //! The three wizard stages and the footer bar, rebuilt from state on every render.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -7,7 +8,7 @@ use gtk::{glib, pango};
 
 use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
-use nvhvc_core::pipeline::Stage as PipeStage;
+use nvhvc_core::pipeline::{Container, Stage as PipeStage};
 use nvhvc_core::uimodel::{
     self, Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS, code_label,
 };
@@ -71,9 +72,18 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with an icon and a (plain-text) label.
-fn banner(kind: &str, icon: &str, text: &str) -> gtk::Box {
-    banner_markup(kind, icon, &gtk::glib::markup_escape_text(text))
+/// Tinted rounded banner with a bold title line above the body — matching the WinUI
+/// `InfoBar`s, which always carry a title.
+fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
+    banner_markup(
+        kind,
+        icon,
+        &format!(
+            "<b>{}</b>\n{}",
+            gtk::glib::markup_escape_text(title),
+            gtk::glib::markup_escape_text(body)
+        ),
+    )
 }
 
 /// Like [`banner`], but the text is Pango markup (caller escapes dynamic pieces).
@@ -383,10 +393,11 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
 
     if let Some(err) = &s.src_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Probe failed — {err}"),
+            "Probe failed",
+            err,
         ));
         let retry = gtk::Button::with_label("Choose another file");
         retry.set_halign(gtk::Align::Start);
@@ -459,22 +470,25 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     // Status banner.
     let b = if any_override {
-        banner(
+        banner_titled(
             "amber",
             "dialog-warning-symbolic",
-            "Manual overrides active — these values will be written instead of the detected ones.",
+            "Manual overrides active",
+            "These values will be written instead of the detected ones.",
         )
     } else if info.hdr.has_hdr10() {
-        banner(
+        banner_titled(
             "green",
             "object-select-symbolic",
-            "Valid HDR10 found — ready to copy into your encode.",
+            "Valid HDR10 found",
+            "Ready to copy into your encode.",
         )
     } else {
-        banner(
+        banner_titled(
             "amber",
             "dialog-warning-symbolic",
-            "No HDR10 mastering-display metadata detected — the values above can still be edited.",
+            "No HDR10 signalling detected",
+            "No mastering-display metadata found — the values above can still be edited.",
         )
     };
     col.append(&b);
@@ -785,10 +799,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     let s = ctx.state.borrow();
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // "Copying from …" banner (bold accent filename, per the mockup).
+    // "Copying from …" banner: bold title line + colour summary below, mirroring the WinUI
+    // InfoBar (title/message) — no separator dot between the file name and the metadata.
     if let (Some(src), Some(meta)) = (&s.source, s.effective()) {
         let markup = format!(
-            "Copying from <b>{}</b> · {}",
+            "<b>Copying from {}</b>\n{}",
             gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
             gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
@@ -819,10 +834,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
 
     if let Some(err) = &s.enc_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Probe failed — {err}"),
+            "Probe failed",
+            err,
         ));
         drop(s);
         return page(&col);
@@ -900,60 +916,68 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     choose.set_valign(gtk::Align::Center);
     {
         let ctx = ctx.clone();
+        let container = s.container;
         let initial = s
             .output
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "out.mkv".to_owned());
+            .unwrap_or_else(|| format!("out.{}", container.extension()));
         choose.connect_clicked(move |_| {
-            app::pick_file(
-                &ctx,
-                true,
-                "Choose output file",
-                Some(&initial),
-                |ctx, path| {
-                    {
-                        let mut st = ctx.state.borrow_mut();
-                        st.output = Some(path);
-                        // The save dialog already warned about an existing file.
-                        st.output_user_chosen = true;
-                    }
-                    app::render(ctx);
-                },
-            );
+            app::pick_output(&ctx, Some(&initial), container, |ctx, path| {
+                {
+                    let mut st = ctx.state.borrow_mut();
+                    let (normalized, container, rewritten) =
+                        uimodel::normalize_output_pick(&path.display().to_string(), st.container);
+                    st.output = Some(PathBuf::from(normalized));
+                    st.container = container;
+                    // The save dialog warned about an existing file — but only for the exact
+                    // name the user typed; a rewritten extension may collide unseen, so that
+                    // case keeps our own overwrite confirmation.
+                    st.output_user_chosen = !rewritten;
+                }
+                app::render(ctx);
+            });
         });
     }
     save_row.append(&choose);
     out_card.append(&card_row(&save_row));
 
-    let container_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(16)
-        .margin_top(13)
-        .margin_bottom(13)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
-    let c_label = gtk::Label::new(Some("Container"));
-    c_label.set_hexpand(true);
-    c_label.set_halign(gtk::Align::Start);
-    container_row.append(&c_label);
-    container_row.append(&dim_label("Matroska (.mkv)"));
-    out_card.append(&card_row(&container_row));
     col.append(&out_card);
 
-    col.append(&banner(
+    // A missing external tool blocks the run — say so here, before the user reaches the
+    // (disabled) Patch button, instead of failing mid-run.
+    let missing = app::missing_tools(&s);
+    if !missing.is_empty() {
+        let body = missing
+            .iter()
+            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        col.append(&banner_titled(
+            "red",
+            "dialog-error-symbolic",
+            "Missing tools for this patch",
+            &body,
+        ));
+    }
+
+    col.append(&banner_titled(
         "blue",
         "dialog-information-symbolic",
-        "No re-encoding — only the SPS VUI and an HDR10 SEI are written.\nAll audio & subtitle tracks are carried over untouched.",
+        "No re-encoding",
+        match s.container {
+            Container::Mkv => "Only the SPS VUI and an HDR10 SEI are written. All audio & subtitle tracks are carried over untouched.",
+            Container::Mp4 => "Only the SPS VUI and an HDR10 SEI are written. MP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out.",
+        },
     ));
 
     if let Some(err) = &s.run_error {
-        col.append(&banner(
+        col.append(&banner_titled(
             "red",
             "dialog-error-symbolic",
-            &format!("Patch failed — {err}"),
+            "Patch failed",
+            err,
         ));
     }
 
@@ -1099,9 +1123,15 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         .map(|m| m.len())
         .unwrap_or(0);
     let detail = format!(
-        "{} · {} · MKV",
+        "{} · {} · {}",
         uimodel::compact_path(&result.output.display().to_string()),
-        uimodel::human_size(size)
+        uimodel::human_size(size),
+        result
+            .output
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_uppercase)
+            .unwrap_or_default()
     );
     let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
     play.set_tooltip_text(Some("Play"));
@@ -1158,10 +1188,10 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         "object-select-symbolic",
         true,
         "HDR10 SEI inserted",
-        if result.sei_inserted {
-            "ST 2086 + MaxCLL/FALL"
-        } else {
-            "already present"
+        &match result.sei_insertions {
+            0 => "already present".to_owned(),
+            1 => "ST 2086 + MaxCLL/FALL".to_owned(),
+            n => format!("ST 2086 + MaxCLL/FALL · {n} IRAPs"),
         },
     );
     add_row(
@@ -1199,15 +1229,16 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     );
     col.append(&summary);
 
-    // If MKVToolNix wasn't available, ffmpeg handled the remux (only permitted for no-B-frame,
-    // constant-rate encodes, so timing is still exact). Let the user know it was used.
-    if result.used_ffmpeg_fallback {
-        let warn = banner(
+    // MP4 output can't hold every track type; list what was left behind.
+    if !result.dropped_tracks.is_empty() {
+        let warn = banner_titled(
             "amber",
             "dialog-warning-symbolic",
-            "mkvmerge wasn't found, so ffmpeg remuxed this file. Timing was reproduced exactly \
-             (this encode has no B-frames and a constant frame rate). Install MKVToolNix to use \
-             the primary remux path.",
+            "Some tracks were left out",
+            &format!(
+                "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                result.dropped_tracks.join(", ")
+            ),
         );
         warn.set_margin_top(16);
         col.append(&warn);
@@ -1264,7 +1295,9 @@ pub fn build_footer(ctx: &Rc<Ctx>, footer: &gtk::Box) {
 
             let run = icon_button("Patch HDR10", "starred-symbolic", false);
             run.add_css_class("suggested-action");
-            run.set_sensitive(s.encode.is_some() && s.output.is_some());
+            run.set_sensitive(
+                s.encode.is_some() && s.output.is_some() && app::missing_tools(&s).is_empty(),
+            );
             run.set_visible(s.encode.is_some());
             {
                 let ctx = ctx.clone();

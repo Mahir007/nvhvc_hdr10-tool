@@ -6,10 +6,13 @@
 use adw::prelude::*;
 
 use nvhvc_core::config::Settings;
+use nvhvc_core::pipeline::Container;
 use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
 
-/// Shows the Preferences dialog as a sheet inside `parent`.
-pub fn show(parent: &adw::ApplicationWindow) {
+/// Shows the Preferences dialog as a sheet inside `parent`. `on_default_container` fires when
+/// the default-container combo changes (the wizard applies it to the current run too, unless
+/// the user already picked an output file explicitly).
+pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Container) + 'static) {
     let page = adw::PreferencesPage::new();
 
     // --- External tools ---
@@ -27,11 +30,11 @@ pub fn show(parent: &adw::ApplicationWindow) {
     }
     page.add(&tools_group);
 
-    // --- About ---
-    let about_group = adw::PreferencesGroup::builder().title("About").build();
-    about_group.add(&about_row("nvhvc HDR10 patcher", nvhvc_core::VERSION));
-    about_group.add(&about_row("Default output container", "Matroska (.mkv)"));
-    page.add(&about_group);
+    // --- Output ---
+    let output_group = adw::PreferencesGroup::builder().title("Output").build();
+    output_group.add(&container_row(&settings, on_default_container));
+    output_group.add(&folder_row(parent, &settings));
+    page.add(&output_group);
 
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Preferences");
@@ -154,14 +157,131 @@ fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
     dot.add_css_class(class);
 }
 
-/// An "About" row: title on the left, a dim value on the right.
-fn about_row(title: &str, value: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    let v = gtk::Label::new(Some(value));
-    v.add_css_class("dim-label");
-    v.set_valign(gtk::Align::Center);
-    row.add_suffix(&v);
+/// The "Default output container" combo row: persisted immediately on change and reported to
+/// the wizard via the callback. Per-file switching happens in the Save as dialog instead.
+fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -> adw::ComboRow {
+    let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
+    let row = adw::ComboRow::builder()
+        .title("Default output container")
+        .subtitle("Save as can still switch it per file (.mkv / .mp4)")
+        .model(&gtk::StringList::new(&labels))
+        .build();
+    let current = Container::from_setting(settings.default_container.as_deref());
+    row.set_selected(
+        Container::ALL
+            .iter()
+            .position(|&c| c == current)
+            .unwrap_or(0) as u32,
+    );
+    row.connect_selected_notify(move |row| {
+        let Some(&container) = Container::ALL.get(row.selected() as usize) else {
+            return;
+        };
+        let mut settings = Settings::load();
+        settings.default_container = Some(container.as_setting().to_owned());
+        let _ = settings.save();
+        on_change(container);
+    });
     row
+}
+
+/// Subtitle for the default-output-folder row.
+fn folder_subtitle(settings: &Settings) -> String {
+    settings
+        .default_output_dir
+        .as_ref()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|| "Same folder as the encode".to_owned())
+}
+
+/// The "Default output folder" row: read-only with a pencil that opens the editor, matching
+/// the tool rows. Auto-named outputs are saved there; empty = next to the encode.
+fn folder_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title("Default output folder")
+        .subtitle(folder_subtitle(settings))
+        .build();
+    let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit.add_css_class("flat");
+    edit.set_valign(gtk::Align::Center);
+    edit.set_tooltip_text(Some("Edit folder"));
+    row.add_suffix(&edit);
+    row.set_activatable_widget(Some(&edit));
+    {
+        let window = window.clone();
+        let row = row.clone();
+        edit.connect_clicked(move |_| open_folder_editor(&window, &row));
+    }
+    row
+}
+
+/// Modal editor for the default output folder: a text entry (clear it to go back to "same
+/// folder as the encode") plus a native folder picker.
+fn open_folder_editor(window: &adw::ApplicationWindow, row: &adw::ActionRow) {
+    let settings = Settings::load();
+    let current = settings
+        .default_output_dir
+        .as_ref()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+
+    let entry = gtk::Entry::builder()
+        .text(&current)
+        .placeholder_text("Same folder as the encode")
+        .hexpand(true)
+        .activates_default(true)
+        .build();
+    let browse = gtk::Button::from_icon_name("folder-open-symbolic");
+    browse.set_tooltip_text(Some("Browse…"));
+    let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    box_.append(&entry);
+    box_.append(&browse);
+    {
+        let entry = entry.clone();
+        let window = window.clone();
+        browse.connect_clicked(move |_| {
+            let entry = entry.clone();
+            gtk::FileDialog::builder()
+                .title("Choose the default output folder")
+                .build()
+                .select_folder(Some(&window), gtk::gio::Cancellable::NONE, move |result| {
+                    if let Some(path) = result.ok().and_then(|f| f.path()) {
+                        entry.set_text(&path.display().to_string());
+                    }
+                });
+        });
+    }
+
+    let dialog = adw::AlertDialog::new(
+        Some("Default output folder"),
+        Some("Auto-named outputs are saved here. Leave empty to save next to the encode."),
+    );
+    dialog.set_extra_child(Some(&box_));
+    dialog.add_responses(&[("cancel", "Cancel"), ("set", "Set")]);
+    dialog.set_response_appearance("set", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("set"));
+    dialog.set_close_response("cancel");
+    {
+        let row = row.clone();
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "set" {
+                return;
+            }
+            let value = entry.text().trim().to_string();
+            let mut settings = Settings::load();
+            settings.default_output_dir = if value.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(value))
+            };
+            let _ = settings.save();
+            row.set_subtitle(&folder_subtitle(&settings));
+        });
+    }
+    dialog.present(Some(window));
+    entry.grab_focus();
 }
 
 /// The saved custom override for a tool, if any.

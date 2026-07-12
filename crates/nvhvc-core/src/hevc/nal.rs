@@ -20,6 +20,13 @@ pub const NAL_PREFIX_SEI: u8 = 39;
 /// `nal_unit_type` for a suffix SEI.
 pub const NAL_SUFFIX_SEI: u8 = 40;
 
+/// First IRAP (Intra Random Access Point) VCL `nal_unit_type` — `BLA_W_LP`.
+pub const NAL_IRAP_FIRST: u8 = 16;
+/// Last IRAP VCL `nal_unit_type` — `RSV_IRAP_VCL23` (the reserved upper bound; H.265 defines
+/// an IRAP picture as any VCL NAL in `BLA_W_LP..=RSV_IRAP_VCL23`, i.e. all BLA/IDR/CRA plus
+/// the reserved IRAP range).
+pub const NAL_IRAP_LAST: u8 = 23;
+
 /// A NAL unit located within an Annex B buffer. All offsets index the original buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Nal {
@@ -37,6 +44,20 @@ impl Nal {
     /// Video Coding Layer NALs (slice data) have types 0..=31.
     pub fn is_vcl(&self) -> bool {
         self.nal_type <= 31
+    }
+
+    /// Whether this is an IRAP (Intra Random Access Point) VCL NAL — the pictures a decoder
+    /// can begin decoding from, each of which starts a new coded (layer-wise) video sequence.
+    pub fn is_irap(&self) -> bool {
+        (NAL_IRAP_FIRST..=NAL_IRAP_LAST).contains(&self.nal_type)
+    }
+
+    /// Whether this VCL NAL is the first slice segment of its picture, i.e. it begins a new
+    /// coded picture. Reads `first_slice_segment_in_pic_flag`, the top bit of the slice
+    /// segment header (the byte right after the 2-byte NAL header). A VCL NAL header never
+    /// starts with `00 00`, so that byte is never an emulation-prevention artefact.
+    pub fn is_first_slice(&self, buf: &[u8]) -> bool {
+        self.is_vcl() && buf.get(self.header + 2).is_some_and(|b| b & 0x80 != 0)
     }
 
     /// The on-wire bytes of this NAL: the 2-byte header plus payload, excluding the start code.

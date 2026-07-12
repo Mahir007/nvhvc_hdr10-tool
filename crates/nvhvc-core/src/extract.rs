@@ -1,4 +1,6 @@
-//! Extracting a raw Annex B HEVC elementary stream from a container, via ffmpeg.
+//! Extracting streams from a container via ffmpeg: the raw Annex B HEVC to patch, plus the
+//! per-track pieces the MP4 assembly needs (SRT subtitles, DTS cores, a cover image).
+//! ffmpeg is used here purely as an extractor/converter — MP4Box does all MP4 muxing.
 
 use std::path::Path;
 
@@ -30,4 +32,111 @@ pub fn extract_hevc(ffmpeg: &Path, encoded: &Path, out_hevc: &Path) -> Result<()
             path_arg(out_hevc)?,
         ],
     )
+}
+
+/// Extracts text subtitle stream `index` to an SRT file (cue times are carried exactly; ASS/SSA
+/// styling is reduced to text). MP4Box then imports the SRT natively as tx3g.
+pub fn extract_srt(ffmpeg: &Path, input: &Path, index: u64, out_srt: &Path) -> Result<()> {
+    let map = format!("0:{index}");
+    tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            path_arg(input)?,
+            "-map",
+            &map,
+            "-c:s",
+            "srt",
+            "-f",
+            "srt",
+            path_arg(out_srt)?,
+        ],
+    )
+}
+
+/// Extracts audio stream `index` through the `dca_core` bitstream filter to a raw DTS file —
+/// a lossless passthrough for plain DTS, and the core substream (the only part MP4 can hold)
+/// for DTS-HD MA/HRA.
+pub fn extract_dts_core(ffmpeg: &Path, input: &Path, index: u64, out_dts: &Path) -> Result<()> {
+    let map = format!("0:{index}");
+    tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            path_arg(input)?,
+            "-map",
+            &map,
+            "-c:a",
+            "copy",
+            "-bsf:a",
+            "dca_core",
+            "-f",
+            "dts",
+            path_arg(out_dts)?,
+        ],
+    )
+}
+
+/// Extracts a Matroska file's chapters in OGM ("simple") format — exactly what MP4Box's
+/// `-chap` option consumes.
+pub fn extract_chapters_ogm(mkvextract: &Path, input: &Path, out_txt: &Path) -> Result<()> {
+    tools::run(
+        mkvextract,
+        crate::tools::Tool::Mkvextract,
+        &[path_arg(input)?, "chapters", "--simple", path_arg(out_txt)?],
+    )
+}
+
+/// Extracts an image attachment / attached picture at stream `index` to `out_img` (for MP4
+/// cover art). Tries the attachment dump first (Matroska attachments aren't packet streams),
+/// then a one-frame stream copy (attached-picture streams). Returns whether a file appeared —
+/// cover art is best-effort and never fails the pipeline.
+pub fn extract_cover(ffmpeg: &Path, input: &Path, index: u64, out_img: &Path) -> bool {
+    let dump = format!("-dump_attachment:{index}");
+    // ffmpeg exits non-zero after dumping (no output file was specified) — check the file.
+    let _ = tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            &dump,
+            &out_img.display().to_string(),
+            "-i",
+            &input.display().to_string(),
+        ],
+    );
+    if out_img.exists() {
+        return true;
+    }
+    let map = format!("0:{index}");
+    tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            &input.display().to_string(),
+            "-map",
+            &map,
+            "-frames:v",
+            "1",
+            "-c",
+            "copy",
+            &out_img.display().to_string(),
+        ],
+    )
+    .is_ok()
+        && out_img.exists()
 }

@@ -20,6 +20,8 @@ pub struct Settings {
     pub default_chroma_loc: Option<u32>,
     /// Preferred output container extension (e.g. "mkv"), when not implied by the output path.
     pub default_container: Option<String>,
+    /// Folder auto-named outputs are saved to. `None` (or empty) = next to the encode.
+    pub default_output_dir: Option<PathBuf>,
     /// GUI theme preference: `"system"` (follow the OS), `"light"` or `"dark"`.
     pub ui_theme: Option<String>,
 }

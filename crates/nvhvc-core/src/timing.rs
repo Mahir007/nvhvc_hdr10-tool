@@ -11,6 +11,22 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::tools::{self, Tool, path_arg};
 
+/// The original video track's container-level properties, re-applied to the patched video so
+/// the remux stays a carbon copy of the encode (raw HEVC carries none of these).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoProps {
+    /// ISO 639 language (`und` and empty are treated as absent).
+    pub language: Option<String>,
+    /// Track name/title.
+    pub name: Option<String>,
+    /// Default-track flag.
+    pub default: Option<bool>,
+    /// Forced-display flag.
+    pub forced: Option<bool>,
+    /// Display dimensions like `"1920x1038"` (carries anamorphic/display aspect).
+    pub display_dimensions: Option<String>,
+}
+
 /// What `mkvmerge -J` reports about a Matroska file's tracks: the video track to re-time,
 /// plus a summary of everything a remux carries over (for the front-ends' result screens).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,9 +39,14 @@ pub struct MkvTracks {
     pub audio_codecs: Vec<String>,
     /// Number of subtitle tracks.
     pub subtitle_count: usize,
+    /// Total chapter entries in the container (0 = no chapters).
+    pub chapters: usize,
+    /// The original video track's carbon-copy properties.
+    pub video: VideoProps,
 }
 
-/// Identifies a Matroska file's tracks via `mkvmerge -J`.
+/// Identifies a file's tracks via `mkvmerge -J` (mkvmerge reads MP4/MOV and more, not just
+/// Matroska, so this works for any encode the remux can carry tracks from).
 pub fn identify_mkv(mkvmerge: &Path, file: &Path) -> Result<MkvTracks> {
     let stdout = tools::run_capture(mkvmerge, Tool::Mkvmerge, &["-J", path_arg(file)?])?;
     let json: Value = serde_json::from_slice(&stdout)?;
@@ -38,14 +59,34 @@ fn parse_identify_json(json: &Value) -> Result<MkvTracks> {
         what: "mkvmerge -J",
         detail: "no tracks array".to_owned(),
     })?;
-    let video_track_id = tracks
+    let video_track = tracks
         .iter()
         .find(|t| t["type"].as_str() == Some("video"))
-        .and_then(|t| t["id"].as_u64())
         .ok_or(Error::Probe {
             what: "mkvmerge -J",
             detail: "no video track found".to_owned(),
         })?;
+    let video_track_id = video_track["id"].as_u64().ok_or(Error::Probe {
+        what: "mkvmerge -J",
+        detail: "video track has no id".to_owned(),
+    })?;
+    let props = &video_track["properties"];
+    let video = VideoProps {
+        language: props["language"]
+            .as_str()
+            .filter(|l| !l.is_empty() && *l != "und")
+            .map(str::to_owned),
+        name: props["track_name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned),
+        default: props["default_track"].as_bool(),
+        forced: props["forced_track"].as_bool(),
+        display_dimensions: props["display_dimensions"]
+            .as_str()
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned),
+    };
     let audio_codecs = tracks
         .iter()
         .filter(|t| t["type"].as_str() == Some("audio"))
@@ -55,11 +96,22 @@ fn parse_identify_json(json: &Value) -> Result<MkvTracks> {
         .iter()
         .filter(|t| t["type"].as_str() == Some("subtitles"))
         .count();
+    let chapters = json["chapters"]
+        .as_array()
+        .map(|editions| {
+            editions
+                .iter()
+                .filter_map(|e| e["num_entries"].as_u64())
+                .sum::<u64>() as usize
+        })
+        .unwrap_or(0);
     Ok(MkvTracks {
         video_track_id,
         total: tracks.len(),
         audio_codecs,
         subtitle_count,
+        chapters,
+        video,
     })
 }
 
@@ -68,34 +120,112 @@ pub fn video_track_id(mkvmerge: &Path, file: &Path) -> Result<u64> {
     Ok(identify_mkv(mkvmerge, file)?.video_track_id)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Whether `file` is (by extension) a Matroska container — i.e. whether mkvextract can read it.
+pub fn is_matroska(file: &Path) -> bool {
+    matches!(
+        file.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("mkv" | "mka" | "mks" | "mk3d" | "webm")
+    )
+}
 
-    #[test]
-    fn parses_identify_json() {
-        let json: Value = serde_json::from_str(
-            r#"{"tracks":[
-                {"id":0,"type":"video","codec":"HEVC/H.265/MPEG-H"},
-                {"id":1,"type":"audio","codec":"Opus"},
-                {"id":2,"type":"subtitles","codec":"HDMV PGS"},
-                {"id":3,"type":"subtitles","codec":"SubRip/SRT"}
-            ]}"#,
-        )
-        .unwrap();
-        let info = parse_identify_json(&json).unwrap();
-        assert_eq!(info.video_track_id, 0);
-        assert_eq!(info.total, 4);
-        assert_eq!(info.audio_codecs, vec!["Opus".to_owned()]);
-        assert_eq!(info.subtitle_count, 2);
-    }
+/// Writes the exact per-frame timestamps of `file`'s first video stream to a v2 timecode file,
+/// synthesized from `ffprobe` packet timestamps — the capture path for encodes that aren't
+/// Matroska (mkvextract only reads Matroska).
+///
+/// Packets arrive in decode order while a v2 file wants presentation order, so the PTS values
+/// are sorted. Millisecond values keep their fractional (sub-ms) precision, though mkvmerge
+/// quantizes to its 1 ms timestamp scale at mux — the same granularity every Matroska encode
+/// has natively. A trailing end marker mirrors mkvextract's output so the final frame's
+/// duration survives the remux (and frame counting stays uniform across both capture paths).
+pub fn extract_timestamps_ffprobe(ffprobe: &Path, file: &Path, out: &Path) -> Result<()> {
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time",
+            path_arg(file)?,
+        ],
+    )?;
+    let json: Value = serde_json::from_slice(&stdout)?;
+    std::fs::write(out, timestamps_v2_from_packets(&json)?)?;
+    Ok(())
+}
 
-    #[test]
-    fn errors_without_video_track() {
-        let json: Value =
-            serde_json::from_str(r#"{"tracks":[{"id":0,"type":"audio","codec":"AAC"}]}"#).unwrap();
-        assert!(parse_identify_json(&json).is_err());
+/// Builds the v2 timecode file body from an ffprobe `-show_entries packet=pts_time` document
+/// (separated out for testing).
+fn timestamps_v2_from_packets(json: &Value) -> Result<String> {
+    let packets = json["packets"].as_array().ok_or(Error::Probe {
+        what: "ffprobe packets",
+        detail: "no packets array".to_owned(),
+    })?;
+    let mut pts_ms: Vec<f64> = packets
+        .iter()
+        .filter_map(|p| p["pts_time"].as_str()?.parse::<f64>().ok())
+        .map(|s| s * 1000.0)
+        .collect();
+    if pts_ms.is_empty() {
+        return Err(Error::Probe {
+            what: "ffprobe packets",
+            detail: "no video packet timestamps found".to_owned(),
+        });
     }
+    if pts_ms.len() != packets.len() {
+        // A frame without a PTS can't be re-timed; bail rather than silently desync.
+        return Err(Error::Probe {
+            what: "ffprobe packets",
+            detail: format!(
+                "{} of {} video packets have no pts_time",
+                packets.len() - pts_ms.len(),
+                packets.len()
+            ),
+        });
+    }
+    pts_ms.sort_by(f64::total_cmp);
+    // End marker: the final frame's end timestamp, estimated from the last frame interval
+    // (a lone frame gets a nominal 40 ms).
+    let end = match pts_ms.len() {
+        1 => pts_ms[0] + 40.0,
+        n => pts_ms[n - 1] + (pts_ms[n - 1] - pts_ms[n - 2]),
+    };
+    let mut body = String::from("# timestamp format v2\n");
+    for t in pts_ms.iter().chain(std::iter::once(&end)) {
+        // Sub-ms precision, trimmed so plain-ms inputs stay plain ("1084" not "1084.000000").
+        let s = format!("{t:.6}");
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        body.push_str(s);
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+/// The first timestamp and final end marker of a v2 timecode file, in milliseconds.
+///
+/// The MP4 mux needs these to rebuild the video's start offset (MP4Box rebases imported
+/// tracks to zero) and to size its edit list: `first` is the empty-edit duration, `end -
+/// first` the media duration presented.
+pub fn v2_span(timecodes: &Path) -> Result<(f64, f64)> {
+    let text = std::fs::read_to_string(timecodes)?;
+    let mut values = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.parse::<f64>().ok());
+    let first = values.next().ok_or(Error::Probe {
+        what: "timecode file",
+        detail: "no timestamps found".to_owned(),
+    })?;
+    let end = values.next_back().unwrap_or(first);
+    Ok((first, end))
 }
 
 /// Writes the exact per-frame timestamps of `track_id` in `file` to a v2 timecode file at `out`.
@@ -117,4 +247,97 @@ pub fn extract_timestamps_mkv(
         Tool::Mkvextract,
         &["timestamps_v2", path_arg(file)?, &spec],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_identify_json() {
+        let json: Value = serde_json::from_str(
+            r#"{"tracks":[
+                {"id":0,"type":"video","codec":"HEVC/H.265/MPEG-H","properties":{
+                    "language":"eng","track_name":"","default_track":true,
+                    "forced_track":false,"display_dimensions":"1920x1038"}},
+                {"id":1,"type":"audio","codec":"Opus"},
+                {"id":2,"type":"subtitles","codec":"HDMV PGS"},
+                {"id":3,"type":"subtitles","codec":"SubRip/SRT"}
+            ],
+            "chapters":[{"num_entries":17}]}"#,
+        )
+        .unwrap();
+        let info = parse_identify_json(&json).unwrap();
+        assert_eq!(info.video_track_id, 0);
+        assert_eq!(info.total, 4);
+        assert_eq!(info.audio_codecs, vec!["Opus".to_owned()]);
+        assert_eq!(info.subtitle_count, 2);
+        assert_eq!(info.chapters, 17);
+        assert_eq!(info.video.language.as_deref(), Some("eng"));
+        assert_eq!(info.video.name, None); // empty name treated as absent
+        assert_eq!(info.video.default, Some(true));
+        assert_eq!(info.video.forced, Some(false));
+        assert_eq!(info.video.display_dimensions.as_deref(), Some("1920x1038"));
+    }
+
+    #[test]
+    fn v2_span_reads_first_and_end() {
+        let dir = std::env::temp_dir().join(format!("nvhvc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("span.txt");
+        std::fs::write(&path, "# timestamp format v2\n1084\n1126\n1167\n1208\n").unwrap();
+        assert_eq!(v2_span(&path).unwrap(), (1084.0, 1208.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn errors_without_video_track() {
+        let json: Value =
+            serde_json::from_str(r#"{"tracks":[{"id":0,"type":"audio","codec":"AAC"}]}"#).unwrap();
+        assert!(parse_identify_json(&json).is_err());
+    }
+
+    #[test]
+    fn matroska_by_extension() {
+        assert!(is_matroska(Path::new("/x/encode.mkv")));
+        assert!(is_matroska(Path::new(r"C:\x\ENCODE.MKV")));
+        assert!(is_matroska(Path::new("/x/a.webm")));
+        assert!(!is_matroska(Path::new("/x/encode.mp4")));
+        assert!(!is_matroska(Path::new("/x/encode")));
+    }
+
+    #[test]
+    fn synthesizes_v2_from_packets() {
+        // Decode order with a B-frame reorder (85 before 43); ms-quantized like a real NVENC MKV.
+        let json: Value = serde_json::from_str(
+            r#"{"packets":[
+                {"pts_time":"1.084000"},
+                {"pts_time":"1.167000"},
+                {"pts_time":"1.126000"}
+            ]}"#,
+        )
+        .unwrap();
+        let body = timestamps_v2_from_packets(&json).unwrap();
+        // Sorted to presentation order, plus an end marker one frame interval after the last.
+        assert_eq!(body, "# timestamp format v2\n1084\n1126\n1167\n1208\n");
+    }
+
+    #[test]
+    fn v2_keeps_sub_ms_precision() {
+        // 24000/1001 fps MP4 timestamps aren't ms-aligned; the fractional part must survive.
+        let json: Value = serde_json::from_str(
+            r#"{"packets":[{"pts_time":"0.000000"},{"pts_time":"0.041708"}]}"#,
+        )
+        .unwrap();
+        let body = timestamps_v2_from_packets(&json).unwrap();
+        assert_eq!(body, "# timestamp format v2\n0\n41.708\n83.416\n");
+    }
+
+    #[test]
+    fn v2_rejects_missing_pts() {
+        let json: Value = serde_json::from_str(r#"{"packets":[{"pts_time":"0.0"},{}]}"#).unwrap();
+        assert!(timestamps_v2_from_packets(&json).is_err());
+        let empty: Value = serde_json::from_str(r#"{"packets":[]}"#).unwrap();
+        assert!(timestamps_v2_from_packets(&empty).is_err());
+    }
 }

@@ -3,8 +3,9 @@
 
 use std::path::PathBuf;
 
+use nvhvc_core::config::Settings;
 use nvhvc_core::hevc::patch::Hdr10Metadata;
-use nvhvc_core::pipeline::Stage as PipeStage;
+use nvhvc_core::pipeline::{Container, Stage as PipeStage};
 use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 use nvhvc_core::uimodel::Draft;
 
@@ -43,11 +44,11 @@ impl FileInfo {
 pub struct RunOutcome {
     pub output: PathBuf,
     pub sps_patched: usize,
-    pub sei_inserted: bool,
+    pub sei_insertions: usize,
     pub frames: Option<usize>,
     pub tracks: Option<nvhvc_core::timing::MkvTracks>,
-    /// The remux fell back to ffmpeg (MKVToolNix absent); the result screen notes it.
-    pub used_ffmpeg_fallback: bool,
+    /// Tracks the output container couldn't hold (MP4 only); the result screen lists them.
+    pub dropped_tracks: Vec<String>,
 }
 
 /// The whole wizard state.
@@ -65,6 +66,9 @@ pub struct AppState {
     /// Whether the user picked `output` via the save dialog (which already warns about
     /// overwriting); auto-derived names get our own confirmation instead.
     pub output_user_chosen: bool,
+    /// The output container for this wizard run. Starts at the persisted default; the
+    /// stage-2 dropdown and a save-dialog pick with an explicit .mkv/.mp4 both change it.
+    pub container: Container,
     /// Edited HDR10 metadata; `None` = detected values as-is.
     pub overrides: Option<Hdr10Metadata>,
     /// Open metadata-row editor: row index + field draft.
@@ -81,6 +85,7 @@ impl AppState {
     pub fn new() -> Self {
         AppState {
             stage: 1,
+            container: Container::from_setting(Settings::load().default_container.as_deref()),
             ..Default::default()
         }
     }

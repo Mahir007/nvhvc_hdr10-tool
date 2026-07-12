@@ -19,6 +19,7 @@ windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "1e9f
 # file open/save dialogs (Win32 common item dialog).
 windows = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92", features = [
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_System_Com",
     "Win32_Foundation",
 ] }

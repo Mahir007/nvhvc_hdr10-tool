@@ -67,17 +67,85 @@ pub fn probe_media(ffprobe: &Path, source: &Path) -> Result<(ProbedHdr10, VideoI
     Ok((parse_probe_json(&json)?, parse_video_info(&json)?))
 }
 
-/// Whether the ffmpeg remux fallback can reproduce this encode's timing bit-exactly.
+/// How a carried track gets into the MP4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mp4Import {
+    /// MP4Box imports the track straight from the original container (bit-exact copy).
+    AudioDirect,
+    /// The DTS core substream is extracted losslessly first (`dca_core` bitstream filter) —
+    /// carries plain DTS as-is and the core of DTS-HD MA/HRA (the only part MP4 can hold).
+    AudioDtsCore,
+    /// Text subtitle, extracted to SRT (ASS/SSA lose styling) and imported as native tx3g.
+    TextSub,
+}
+
+/// One original track the MP4 remux carries over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mp4Track {
+    /// Absolute ffprobe stream index in the original file.
+    pub index: u64,
+    /// Friendly codec name for the result summary (e.g. `"Opus"`, `"DTS"`).
+    pub codec: String,
+    /// How the track is carried.
+    pub import: Mp4Import,
+    /// ISO 639 language, when the original tagged one (and it isn't `und`).
+    pub lang: Option<String>,
+    /// Track title/name, when the original had one.
+    pub name: Option<String>,
+}
+
+/// Which of an encode's streams MP4 can carry, and what gets left behind.
 ///
-/// A raw-stream ffmpeg remux stamps frames in decode order, so it only reproduces the original
-/// timing when there's **no B-frame reordering** (`has_b_frames == 0`) **and a constant frame
-/// rate** (`r_frame_rate == avg_frame_rate`). Returns the frame rate to replay at when it's safe,
-/// or `None` when only MKVToolNix will do (B-frames or VFR — ffmpeg would scramble the order).
-pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<String>> {
-    let f = encoded.to_str().ok_or_else(|| Error::Probe {
-        what: "encode path",
-        detail: "path is not valid UTF-8".to_owned(),
-    })?;
+/// MP4 holds far fewer track types than Matroska. Best effort, mirroring the "carbon copy"
+/// the Matroska remux does: compatible audio is copied bit-exact, DTS-HD carries its lossless
+/// core, text subtitles become native tx3g, an image attachment becomes cover art — and
+/// whatever has no MP4 mapping (PGS/VobSub, TrueHD, fonts) is listed in `dropped` so the
+/// front-ends can say so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mp4Plan {
+    /// Stream index of the video track being replaced (for its start-offset lookup).
+    pub video_index: Option<u64>,
+    /// The original video track's language, if tagged (re-applied to the patched video).
+    pub video_lang: Option<String>,
+    /// The original video track's title, if any.
+    pub video_name: Option<String>,
+    /// Every carried track, in original order.
+    pub tracks: Vec<Mp4Track>,
+    /// Stream index + file extension of an image attachment to carry as MP4 cover art.
+    pub cover: Option<(u64, &'static str)>,
+    /// Number of chapter-style text data streams seen (MP4/MOV inputs expose their chapter
+    /// track this way). Not listed in `dropped` — chapters are carried via a chapter dump.
+    pub chapter_candidates: usize,
+    /// Human-readable notes on what the MP4 doesn't carry, e.g. `["2 PGS subtitles"]`.
+    pub dropped: Vec<String>,
+}
+
+impl Mp4Plan {
+    /// Summary of what the MP4 remux carries over, shaped like the Matroska track report so
+    /// front-end result screens work unchanged.
+    pub fn tracks_summary(&self, video_track_id: u64) -> crate::timing::MkvTracks {
+        crate::timing::MkvTracks {
+            video_track_id,
+            total: 1 + self.tracks.len(),
+            audio_codecs: self
+                .tracks
+                .iter()
+                .filter(|t| t.import != Mp4Import::TextSub)
+                .map(|t| t.codec.clone())
+                .collect(),
+            subtitle_count: self
+                .tracks
+                .iter()
+                .filter(|t| t.import == Mp4Import::TextSub)
+                .count(),
+            chapters: 0,
+            video: Default::default(),
+        }
+    }
+}
+
+/// Classifies `file`'s streams for an MP4 remux (see [`Mp4Plan`]).
+pub fn mp4_stream_plan(ffprobe: &Path, file: &Path) -> Result<Mp4Plan> {
     let stdout = tools::run_capture(
         ffprobe,
         Tool::Ffprobe,
@@ -86,21 +154,275 @@ pub fn ffmpeg_cfr_remuxable(ffprobe: &Path, encoded: &Path) -> Result<Option<Str
             "quiet",
             "-print_format",
             "json",
-            "-select_streams",
-            "v:0",
             "-show_entries",
-            "stream=has_b_frames,r_frame_rate,avg_frame_rate",
-            f,
+            "stream=index,codec_type,codec_name,profile:stream_tags=language,title,mimetype:stream_disposition=attached_pic",
+            crate::tools::path_arg(file)?,
+        ],
+    )?;
+    parse_mp4_plan(&serde_json::from_slice(&stdout)?)
+}
+
+/// Audio codecs MP4Box imports straight from the original container, with display names.
+fn mp4_audio_name(codec: &str) -> Option<&'static str> {
+    match codec {
+        "aac" => Some("AAC"),
+        "ac3" => Some("AC-3"),
+        "eac3" => Some("E-AC-3"),
+        "mp2" => Some("MP2"),
+        "mp3" => Some("MP3"),
+        "opus" => Some("Opus"),
+        "flac" => Some("FLAC"),
+        "alac" => Some("ALAC"),
+        _ => None,
+    }
+}
+
+/// Text subtitle codecs that can be extracted to SRT and imported as tx3g.
+fn mp4_text_subtitle(codec: &str) -> bool {
+    matches!(
+        codec,
+        "subrip" | "srt" | "ass" | "ssa" | "mov_text" | "text" | "webvtt"
+    )
+}
+
+/// Image codecs an attachment/attached-pic stream may carry (→ MP4 cover art).
+fn image_codec(codec: &str, mimetype: Option<&str>) -> bool {
+    matches!(codec, "mjpeg" | "jpeg" | "png" | "bmp" | "gif" | "webp")
+        || mimetype.is_some_and(|m| m.starts_with("image/"))
+}
+
+/// A singular description for a stream MP4 can't hold ("PGS subtitle", "TrueHD audio track").
+fn dropped_description(codec_type: &str, codec: &str) -> String {
+    match (codec_type, codec) {
+        ("subtitle", "hdmv_pgs_subtitle") => "PGS subtitle".to_owned(),
+        ("subtitle", "dvd_subtitle") => "VobSub subtitle".to_owned(),
+        ("subtitle", "dvb_subtitle") => "DVB subtitle".to_owned(),
+        ("subtitle", c) => format!("{c} subtitle"),
+        ("audio", c) if c.starts_with("pcm_") => "PCM audio track".to_owned(),
+        ("audio", c) => format!("{} audio track", mkvish_name(c)),
+        ("attachment", _) => "attachment".to_owned(),
+        ("video", _) => "extra video track".to_owned(),
+        (_, c) => format!("{c} data track"),
+    }
+}
+
+/// Capitalized-ish codec name for descriptions ("vorbis" → "Vorbis").
+fn mkvish_name(codec: &str) -> String {
+    let mut chars = codec.chars();
+    match chars.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+        None => codec.to_owned(),
+    }
+}
+
+/// Parses an ffprobe all-streams document into an [`Mp4Plan`] (separated out for testing).
+fn parse_mp4_plan(json: &Value) -> Result<Mp4Plan> {
+    let streams = json["streams"].as_array().ok_or(Error::Probe {
+        what: "ffprobe streams",
+        detail: "no streams array".to_owned(),
+    })?;
+    let has_ac3_companion = streams.iter().any(|s| {
+        s["codec_type"].as_str() == Some("audio")
+            && matches!(s["codec_name"].as_str(), Some("ac3") | Some("eac3"))
+    });
+    let mut plan = Mp4Plan::default();
+    let mut dropped: Vec<String> = Vec::new(); // singular descriptions, one per stream
+    let mut video_seen = false;
+    for s in streams {
+        let index = s["index"].as_u64().unwrap_or(u64::MAX);
+        let codec_type = s["codec_type"].as_str().unwrap_or("");
+        let codec = s["codec_name"].as_str().unwrap_or("");
+        let profile = s["profile"].as_str().unwrap_or("");
+        let lang = s["tags"]["language"]
+            .as_str()
+            .filter(|l| !l.is_empty() && *l != "und")
+            .map(str::to_owned);
+        let name = s["tags"]["title"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned);
+        let mimetype = s["tags"]["mimetype"].as_str();
+        let attached_pic = s["disposition"]["attached_pic"].as_u64() == Some(1);
+        let track = |import, codec: &str| Mp4Track {
+            index,
+            codec: codec.to_owned(),
+            import,
+            lang: lang.clone(),
+            name: name.clone(),
+        };
+        match codec_type {
+            // The first real video stream is replaced by the patched one; extras have no slot.
+            "video" if !video_seen && !attached_pic => {
+                video_seen = true;
+                plan.video_index = Some(index);
+                plan.video_lang = lang.clone();
+                plan.video_name = name.clone();
+            }
+            // Cover art: the first image attachment (or attached picture) is carried.
+            "video" | "attachment" if image_codec(codec, mimetype) || attached_pic => {
+                if plan.cover.is_none() {
+                    let ext = if codec == "png" || mimetype == Some("image/png") {
+                        "png"
+                    } else {
+                        "jpg"
+                    };
+                    plan.cover = Some((index, ext));
+                } else {
+                    dropped.push("extra image attachment".to_owned());
+                }
+            }
+            "audio" if codec == "dts" => {
+                // Every DTS goes through lossless core extraction: identity for plain DTS,
+                // and the only MP4-compatible representation for DTS-HD MA/HRA.
+                plan.tracks.push(track(Mp4Import::AudioDtsCore, "DTS"));
+                if profile.contains("HD") || profile.contains("MA") || profile.contains("X") {
+                    dropped.push(format!("{profile} extension (its DTS core is carried)"));
+                }
+            }
+            "audio" if codec == "truehd" => {
+                dropped.push(if has_ac3_companion {
+                    "TrueHD audio track (its AC-3 companion is carried)".to_owned()
+                } else {
+                    "TrueHD audio track".to_owned()
+                });
+            }
+            "audio" => match mp4_audio_name(codec) {
+                Some(display) => plan.tracks.push(track(Mp4Import::AudioDirect, display)),
+                None => dropped.push(dropped_description(codec_type, codec)),
+            },
+            "subtitle" if mp4_text_subtitle(codec) => {
+                plan.tracks.push(track(Mp4Import::TextSub, "tx3g"));
+            }
+            // MP4/MOV inputs expose their chapter track as a text-ish data stream; chapters
+            // are carried via a chapter dump instead of a track copy, so don't report it.
+            "data" if matches!(codec, "bin_data" | "mov_text" | "text") => {
+                plan.chapter_candidates += 1;
+            }
+            _ => dropped.push(dropped_description(codec_type, codec)),
+        }
+    }
+    // Collapse repeats: ["PGS subtitle", "PGS subtitle"] → "2 PGS subtitles".
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for d in dropped {
+        match counted.iter_mut().find(|(desc, _)| *desc == d) {
+            Some((_, n)) => *n += 1,
+            None => counted.push((d, 1)),
+        }
+    }
+    plan.dropped = counted
+        .into_iter()
+        .map(|(desc, n)| {
+            if n > 1 {
+                format!("{n} {desc}s")
+            } else {
+                format!("1 {desc}")
+            }
+        })
+        .collect();
+    Ok(plan)
+}
+
+/// The finished MP4's real track IDs for its video/audio/subtitle streams, in stream order —
+/// aligned with the assembly's `-add` order. Chapter/data tracks are skipped. Needed because
+/// GPAC's track-ID assignment is not the `-add` order.
+pub fn mp4_track_ids(ffprobe: &Path, file: &Path) -> Result<Vec<u64>> {
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=index,id,codec_type",
+            crate::tools::path_arg(file)?,
         ],
     )?;
     let json: Value = serde_json::from_slice(&stdout)?;
-    let stream = &json["streams"][0];
-    // Unknown reorder depth → assume B-frames (don't risk a scrambled remux).
-    let has_b_frames = stream["has_b_frames"].as_u64().unwrap_or(1);
-    let r_rate = stream["r_frame_rate"].as_str().unwrap_or("");
-    let avg_rate = stream["avg_frame_rate"].as_str().unwrap_or("");
-    let safe = has_b_frames == 0 && !r_rate.is_empty() && r_rate != "0/0" && r_rate == avg_rate;
-    Ok(safe.then(|| r_rate.to_owned()))
+    let streams = json["streams"].as_array().ok_or(Error::Probe {
+        what: "ffprobe streams",
+        detail: "no streams array".to_owned(),
+    })?;
+    Ok(streams
+        .iter()
+        .filter(|s| {
+            matches!(
+                s["codec_type"].as_str(),
+                Some("video") | Some("audio") | Some("subtitle")
+            )
+        })
+        .filter_map(|s| {
+            let id = s["id"].as_str()?;
+            u64::from_str_radix(id.trim_start_matches("0x"), 16).ok()
+        })
+        .collect())
+}
+
+/// The first/last presentation extent of every stream in `file`, in milliseconds.
+///
+/// One full packet pass; used to re-apply each track's original start offset in the MP4
+/// (MP4Box rebases every imported track to zero) and to size its edit list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamSpan {
+    /// Absolute ffprobe stream index.
+    pub index: u64,
+    /// Earliest packet PTS, ms.
+    pub start_ms: f64,
+    /// Latest packet end (PTS + duration), ms.
+    pub end_ms: f64,
+}
+
+/// Scans `file` once and returns each stream's [`StreamSpan`].
+pub fn stream_spans(ffprobe: &Path, file: &Path) -> Result<Vec<StreamSpan>> {
+    let stdout = tools::run_capture(
+        ffprobe,
+        Tool::Ffprobe,
+        &[
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "packet=stream_index,pts_time,duration_time",
+            crate::tools::path_arg(file)?,
+        ],
+    )?;
+    parse_stream_spans(&serde_json::from_slice(&stdout)?)
+}
+
+/// Parses the packet document into per-stream spans (separated out for testing).
+fn parse_stream_spans(json: &Value) -> Result<Vec<StreamSpan>> {
+    let packets = json["packets"].as_array().ok_or(Error::Probe {
+        what: "ffprobe packets",
+        detail: "no packets array".to_owned(),
+    })?;
+    let mut spans: Vec<StreamSpan> = Vec::new();
+    for p in packets {
+        let Some(index) = p["stream_index"].as_u64() else {
+            continue;
+        };
+        let Some(pts) = p["pts_time"].as_str().and_then(|s| s.parse::<f64>().ok()) else {
+            continue;
+        };
+        let dur = p["duration_time"]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let (start, end) = (pts * 1000.0, (pts + dur) * 1000.0);
+        match spans.iter_mut().find(|s| s.index == index) {
+            Some(s) => {
+                s.start_ms = s.start_ms.min(start);
+                s.end_ms = s.end_ms.max(end);
+            }
+            None => spans.push(StreamSpan {
+                index,
+                start_ms: start,
+                end_ms: end,
+            }),
+        }
+    }
+    Ok(spans)
 }
 
 /// Runs ffprobe on `source` and returns the parsed JSON document.
@@ -390,6 +712,115 @@ mod tests {
         assert_eq!(info.width, 3840);
         assert_eq!(info.height, 2160);
         assert_eq!(info.codec, "hevc");
+    }
+
+    #[test]
+    fn mp4_plan_classifies_streams() {
+        // Mirrors the user's real encode shape: HEVC + Opus + text and image subs + a font.
+        let json: Value = serde_json::from_str(
+            r#"{"streams":[
+                {"index":0,"codec_type":"video","codec_name":"hevc",
+                 "tags":{"language":"eng"}},
+                {"index":1,"codec_type":"audio","codec_name":"opus",
+                 "tags":{"language":"eng","title":"Original 6-Track Mix"}},
+                {"index":2,"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"eng"}},
+                {"index":3,"codec_type":"subtitle","codec_name":"ass"},
+                {"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"},
+                {"index":5,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"},
+                {"index":6,"codec_type":"attachment","codec_name":"ttf"}
+            ]}"#,
+        )
+        .unwrap();
+        let plan = parse_mp4_plan(&json).unwrap();
+        assert_eq!(plan.video_lang.as_deref(), Some("eng"));
+        assert_eq!(plan.tracks.len(), 3); // Opus + srt + ass
+        assert_eq!(plan.tracks[0].import, Mp4Import::AudioDirect);
+        assert_eq!(plan.tracks[0].codec, "Opus");
+        assert_eq!(plan.tracks[0].name.as_deref(), Some("Original 6-Track Mix"));
+        assert_eq!(plan.tracks[1].import, Mp4Import::TextSub);
+        assert_eq!(plan.tracks[2].import, Mp4Import::TextSub);
+        assert_eq!(plan.tracks[2].lang, None);
+        assert_eq!(
+            plan.dropped,
+            vec!["2 PGS subtitles".to_owned(), "1 attachment".to_owned()]
+        );
+        let tracks = plan.tracks_summary(0);
+        assert_eq!(tracks.total, 4); // patched video + Opus + 2 text subs
+        assert_eq!(tracks.audio_codecs, vec!["Opus".to_owned()]);
+        assert_eq!(tracks.subtitle_count, 2);
+    }
+
+    #[test]
+    fn mp4_plan_dts_and_truehd() {
+        let json: Value = serde_json::from_str(
+            r#"{"streams":[
+                {"index":0,"codec_type":"video","codec_name":"hevc"},
+                {"index":1,"codec_type":"audio","codec_name":"dts","profile":"DTS-HD MA"},
+                {"index":2,"codec_type":"audio","codec_name":"dts","profile":"DTS"},
+                {"index":3,"codec_type":"audio","codec_name":"truehd"},
+                {"index":4,"codec_type":"audio","codec_name":"ac3"}
+            ]}"#,
+        )
+        .unwrap();
+        let plan = parse_mp4_plan(&json).unwrap();
+        // Both DTS flavours go through core extraction; plain DTS passes through unchanged.
+        assert_eq!(plan.tracks.len(), 3);
+        assert_eq!(plan.tracks[0].import, Mp4Import::AudioDtsCore);
+        assert_eq!(plan.tracks[1].import, Mp4Import::AudioDtsCore);
+        assert_eq!(plan.tracks[2].codec, "AC-3");
+        // The MA extension is noted; TrueHD points at its carried AC-3 companion.
+        assert_eq!(
+            plan.dropped,
+            vec![
+                "1 DTS-HD MA extension (its DTS core is carried)".to_owned(),
+                "1 TrueHD audio track (its AC-3 companion is carried)".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mp4_plan_cover_and_extra_video() {
+        let json: Value = serde_json::from_str(
+            r#"{"streams":[
+                {"index":0,"codec_type":"video","codec_name":"hevc"},
+                {"index":1,"codec_type":"attachment","codec_name":"mjpeg","tags":{"mimetype":"image/jpeg"}},
+                {"index":2,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},
+                {"index":3,"codec_type":"video","codec_name":"h264"}
+            ]}"#,
+        )
+        .unwrap();
+        let plan = parse_mp4_plan(&json).unwrap();
+        assert_eq!(plan.cover, Some((1, "jpg"))); // first image attachment wins
+        assert_eq!(
+            plan.dropped,
+            vec![
+                "1 extra image attachment".to_owned(),
+                "1 extra video track".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_spans_fold_per_stream() {
+        let json: Value = serde_json::from_str(
+            r#"{"packets":[
+                {"stream_index":0,"pts_time":"1.084000","duration_time":"0.042000"},
+                {"stream_index":1,"pts_time":"0.500000","duration_time":"0.020000"},
+                {"stream_index":0,"pts_time":"1.126000","duration_time":"0.042000"},
+                {"stream_index":1,"pts_time":"0.520000","duration_time":"0.020000"}
+            ]}"#,
+        )
+        .unwrap();
+        let spans = parse_stream_spans(&json).unwrap();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(
+            (spans[0].index, spans[0].start_ms, spans[0].end_ms),
+            (0, 1084.0, 1168.0)
+        );
+        assert_eq!(
+            (spans[1].index, spans[1].start_ms, spans[1].end_ms),
+            (1, 500.0, 540.0)
+        );
     }
 
     #[test]

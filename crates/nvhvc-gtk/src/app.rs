@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use nvhvc_core::config::Settings;
-use nvhvc_core::pipeline::{self, PipelineOptions, Stage as PipeStage};
+use nvhvc_core::pipeline::{self, Container, PipelineOptions, Stage as PipeStage};
 use nvhvc_core::probe;
 use nvhvc_core::tools::{Tool, Toolset};
 
@@ -291,7 +291,7 @@ fn install_actions(app: &adw::Application, ctx: &Rc<Ctx>) {
             "open-source",
             &["<Control>o"],
             Box::new(move || {
-                pick_file(&ctx, false, "Choose HDR10 source", None, |ctx, path| {
+                pick_file(&ctx, "Choose HDR10 source", |ctx, path| {
                     ctx.state.borrow_mut().stage = 1;
                     start_probe(ctx, path, true);
                 });
@@ -307,16 +307,10 @@ fn install_actions(app: &adw::Application, ctx: &Rc<Ctx>) {
                 if ctx.state.borrow().source.is_none() {
                     return;
                 }
-                pick_file(
-                    &ctx,
-                    false,
-                    "Choose the encode to patch",
-                    None,
-                    |ctx, path| {
-                        ctx.state.borrow_mut().stage = 2;
-                        start_probe(ctx, path, false);
-                    },
-                );
+                pick_file(&ctx, "Choose the encode to patch", |ctx, path| {
+                    ctx.state.borrow_mut().stage = 2;
+                    start_probe(ctx, path, false);
+                });
             }),
         );
     }
@@ -325,7 +319,24 @@ fn install_actions(app: &adw::Application, ctx: &Rc<Ctx>) {
         add(
             "preferences",
             &["<Control>comma"],
-            Box::new(move || prefs::show(&ctx.window)),
+            Box::new(move || {
+                let ctx2 = ctx.clone();
+                prefs::show(&ctx.window, move |container| {
+                    {
+                        let mut st = ctx2.state.borrow_mut();
+                        // A new default also applies to the run in progress — unless the user
+                        // already picked an output file explicitly (their pick wins).
+                        if st.output_user_chosen || st.container == container {
+                            return;
+                        }
+                        st.container = container;
+                        if let Some(out) = &st.output {
+                            st.output = Some(out.with_extension(container.extension()));
+                        }
+                    }
+                    render(&ctx2);
+                });
+            }),
         );
     }
     {
@@ -644,8 +655,12 @@ pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
             s.enc_probing = true;
             s.enc_error = None;
             s.encode = None;
+            // Settings are re-read here so a default-folder change in Preferences applies to
+            // the very next pick.
             s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
                 &path.display().to_string(),
+                s.container,
+                Settings::load().default_output_dir.as_deref(),
             )));
             s.output_user_chosen = false;
         }
@@ -721,9 +736,10 @@ pub fn start_run(ctx: &Rc<Ctx>) {
     }
     render(ctx);
 
+    // The outcome is boxed so the enum stays small (Progress is sent per pipeline stage).
     enum Msg {
         Progress(PipeStage),
-        Done(Result<RunOutcome, String>),
+        Done(Box<Result<RunOutcome, String>>),
     }
 
     let (tx, rx) = async_channel::unbounded::<Msg>();
@@ -743,13 +759,13 @@ pub fn start_run(ctx: &Rc<Ctx>) {
             .map(|r| RunOutcome {
                 output: r.output,
                 sps_patched: r.sps_patched,
-                sei_inserted: r.sei_inserted,
+                sei_insertions: r.sei_insertions,
                 frames: r.frames,
                 tracks: r.tracks,
-                used_ffmpeg_fallback: r.used_ffmpeg_fallback,
+                dropped_tracks: r.dropped_tracks,
             })
             .map_err(|e| e.to_string());
-        let _ = tx.send_blocking(Msg::Done(result));
+        let _ = tx.send_blocking(Msg::Done(Box::new(result)));
     });
 
     let ctx = ctx.clone();
@@ -762,15 +778,15 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                         s.processing = Some(stage);
                         false
                     }
-                    Msg::Done(Ok(outcome)) => {
+                    Msg::Done(result) => {
                         s.processing = None;
-                        s.result = Some(outcome);
-                        s.stage = 3;
-                        true
-                    }
-                    Msg::Done(Err(e)) => {
-                        s.processing = None;
-                        s.run_error = Some(e);
+                        match *result {
+                            Ok(outcome) => {
+                                s.result = Some(outcome);
+                                s.stage = 3;
+                            }
+                            Err(e) => s.run_error = Some(e),
+                        }
                         true
                     }
                 }
@@ -791,46 +807,92 @@ pub fn pick_and_probe(ctx: &Rc<Ctx>, is_source: bool) {
     } else {
         "Choose the encode to patch"
     };
-    pick_file(ctx, false, title, None, move |ctx, path| {
+    pick_file(ctx, title, move |ctx, path| {
         start_probe(ctx, path, is_source);
     });
 }
 
-/// Opens a native file dialog; `on_pick` receives the chosen path.
-pub fn pick_file(
+/// Opens a native file-open dialog (source/encode picks), showing only the video files the
+/// pipeline reads (one generic filter, not a per-container choice); `on_pick` receives the
+/// chosen path.
+pub fn pick_file(ctx: &Rc<Ctx>, title: &str, on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static) {
+    let videos = gtk::FileFilter::new();
+    videos.set_name(Some("Video files (*.mkv, *.mp4)"));
+    for c in Container::ALL {
+        videos.add_suffix(c.extension());
+    }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&videos);
+    let dialog = gtk::FileDialog::builder()
+        .title(title)
+        .filters(&filters)
+        .default_filter(&videos)
+        .build();
+    let ctx = ctx.clone();
+    dialog.open(
+        Some(&ctx.window.clone()),
+        gio::Cancellable::NONE,
+        move |result| {
+            if let Some(path) = result.ok().and_then(|f| f.path()) {
+                on_pick(&ctx, path);
+            }
+        },
+    );
+}
+
+/// Opens the native save dialog for the output file, offering only the containers the
+/// pipeline can write (.mkv / .mp4). The preselected filter follows the wizard's current
+/// container choice.
+pub fn pick_output(
     ctx: &Rc<Ctx>,
-    save: bool,
-    title: &str,
     initial_name: Option<&str>,
+    container: Container,
     on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
 ) {
-    let mut builder = gtk::FileDialog::builder().title(title);
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    let mut default_filter = None;
+    for c in Container::ALL {
+        let f = gtk::FileFilter::new();
+        f.set_name(Some(c.label()));
+        f.add_suffix(c.extension());
+        filters.append(&f);
+        if c == container {
+            default_filter = Some(f);
+        }
+    }
+    let mut builder = gtk::FileDialog::builder()
+        .title("Choose output file")
+        .filters(&filters);
     if let Some(name) = initial_name {
         builder = builder.initial_name(name);
     }
+    if let Some(f) = &default_filter {
+        builder = builder.default_filter(f);
+    }
     let dialog = builder.build();
     let ctx = ctx.clone();
-    if save {
-        dialog.save(
-            Some(&ctx.window.clone()),
-            gio::Cancellable::NONE,
-            move |result| {
-                if let Some(path) = result.ok().and_then(|f| f.path()) {
-                    on_pick(&ctx, path);
-                }
-            },
-        );
-    } else {
-        dialog.open(
-            Some(&ctx.window.clone()),
-            gio::Cancellable::NONE,
-            move |result| {
-                if let Some(path) = result.ok().and_then(|f| f.path()) {
-                    on_pick(&ctx, path);
-                }
-            },
-        );
-    }
+    dialog.save(
+        Some(&ctx.window.clone()),
+        gio::Cancellable::NONE,
+        move |result| {
+            if let Some(path) = result.ok().and_then(|f| f.path()) {
+                on_pick(&ctx, path);
+            }
+        },
+    );
+}
+
+/// The tools the current wizard inputs require that aren't available — surfaced on stage 2
+/// (banner + disabled Patch button) so a missing tool never gets discovered mid-run.
+pub fn missing_tools(s: &AppState) -> Vec<Tool> {
+    let Some(enc) = &s.encode else {
+        return Vec::new();
+    };
+    let toolset = Toolset::discover(&Settings::load().tool_overrides);
+    pipeline::required_tools(&enc.path, s.container)
+        .into_iter()
+        .filter(|t| !toolset.resolution(*t).is_found())
+        .collect()
 }
 
 /// Attaches a file drag-and-drop target to `widget`.

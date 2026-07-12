@@ -184,10 +184,12 @@ fn app(cx: &mut RenderCx) -> Element {
     grid(layers).into()
 }
 
-/// Initial UI state (theme restored from settings).
+/// Initial UI state (theme and default container restored from settings).
 fn initial_ui() -> Ui {
+    let settings = Settings::load();
     Ui {
-        theme: ThemeMode::from_setting(Settings::load().ui_theme.as_deref()),
+        theme: ThemeMode::from_setting(settings.ui_theme.as_deref()),
+        container: Container::from_setting(settings.default_container.as_deref()),
         ..Ui::default()
     }
 }
@@ -215,7 +217,7 @@ pub fn pick_source_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let trigger = vm.src_trigger.clone();
     let upd = vm.upd.clone();
     move || {
-        if let Some(path) = pick_file(false) {
+        if let Some(path) = pick_file() {
             set_source.call(path.clone());
             // A new source invalidates any edits made against the old one.
             upd.call(|mut s| {
@@ -233,25 +235,41 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let set_encode = vm.set_encode.clone();
     let set_output = vm.set_output.clone();
     let trigger = vm.enc_trigger.clone();
+    let container = vm.ui.container;
     move || {
-        if let Some(path) = pick_file(false) {
+        if let Some(path) = pick_file() {
             set_encode.call(path.clone());
-            set_output.call(default_output(&path));
+            // Settings are re-read here so a default-folder change in Preferences applies
+            // to the very next pick.
+            set_output.call(default_output(
+                &path,
+                container,
+                Settings::load().default_output_dir.as_deref(),
+            ));
             fire_probe(&trigger, path);
         }
     }
 }
 
-/// Click handler for choosing the output path (save dialog).
+/// Click handler for choosing the output path (save dialog restricted to .mkv/.mp4).
+///
+/// Captures the current container, so the button carrying it is keyed by container in the
+/// view — a container switch remounts it with a fresh closure (reactor wires `on_click` at
+/// mount only).
 pub fn pick_output_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let set_output = vm.set_output.clone();
     let upd = vm.upd.clone();
+    let container = vm.ui.container;
     move || {
-        if let Some(path) = pick_file(true) {
+        if let Some(path) = pick_save_file(container) {
+            let (path, container, rewritten) = normalize_output_pick(&path, container);
             set_output.call(path.clone());
-            // The Win32 save dialog already warned about an existing file.
             upd.call(move |mut s| {
-                s.output_chosen_for = Some(path);
+                s.container = container;
+                // The Win32 save dialog warned about an existing file — but only for the
+                // exact name the user typed; a rewritten extension may collide unseen, so
+                // that case keeps our own overwrite confirmation.
+                s.output_chosen_for = (!rewritten).then_some(path);
                 s
             });
         }
@@ -262,8 +280,8 @@ pub fn pick_output_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
 /// the user didn't pick themselves, then launches.
 pub fn run_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let launch = launch_run(vm);
-    let output = vm.output.clone();
-    let user_chosen = vm.ui.output_chosen_for.as_deref() == Some(vm.output.as_str());
+    let output = effective_output(&vm.output, vm.ui.container);
+    let user_chosen = vm.ui.output_chosen_for.as_deref() == Some(output.as_str());
     let upd = vm.upd.clone();
     move || {
         if !user_chosen && std::path::Path::new(&output).exists() {
@@ -279,7 +297,8 @@ pub fn run_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
 
 /// Launches the pipeline on a worker thread with staged progress.
 pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
-    let (source, encode, output) = (vm.source.clone(), vm.encode.clone(), vm.output.clone());
+    let (source, encode) = (vm.source.clone(), vm.encode.clone());
+    let output = effective_output(&vm.output, vm.ui.container);
     let metadata_override = vm.ui.override_for(&vm.source);
     let token = vm.ui.run_token + 1;
     let upd = vm.upd.clone();
@@ -318,10 +337,10 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
                 token,
                 output: report.output.display().to_string(),
                 sps_patched: report.sps_patched,
-                sei_inserted: report.sei_inserted,
+                sei_insertions: report.sei_insertions,
                 frames: report.frames,
                 tracks: report.tracks.as_ref().map(nvhvc_core::uimodel::tracks_line),
-                used_ffmpeg_fallback: report.used_ffmpeg_fallback,
+                dropped_tracks: report.dropped_tracks,
             })
         });
     }
@@ -339,19 +358,82 @@ fn stage_index(stage: PipeStage) -> usize {
     }
 }
 
-/// Shows a native Open (or Save) file dialog; returns the chosen path, or `None` if cancelled.
-fn pick_file(save: bool) -> Option<String> {
-    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
-    use windows::Win32::UI::Shell::{
-        FileOpenDialog, FileSaveDialog, IFileDialog, SIGDN_FILESYSPATH,
-    };
+/// Shows a native Open file dialog (source/encode picks), showing only the video files the
+/// pipeline reads (one generic filter, not a per-container choice). Returns the chosen path,
+/// or `None` if cancelled.
+fn pick_file() -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Shell::{Common::COMDLG_FILTERSPEC, FileOpenDialog, IFileDialog};
+    use windows::core::w;
 
     unsafe {
-        let dialog: IFileDialog = if save {
-            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?
-        } else {
-            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?
+        let dialog: IFileDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let types = [COMDLG_FILTERSPEC {
+            pszName: w!("Video files"),
+            pszSpec: w!("*.mkv;*.mp4"),
+        }];
+        let _ = dialog.SetFileTypes(&types);
+        show_dialog(&dialog)
+    }
+}
+
+/// Shows the native Save dialog for the output file, offering only the containers the
+/// pipeline can write (.mkv / .mp4). The preselected type follows the wizard's current
+/// container, and the dialog appends the matching extension to a typed bare name.
+fn pick_save_file(container: Container) -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Shell::{Common::COMDLG_FILTERSPEC, FileSaveDialog, IFileDialog};
+    use windows::core::w;
+
+    unsafe {
+        let dialog: IFileDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        // Same order as `Container::ALL`; the type index below is 1-based.
+        let types = [
+            COMDLG_FILTERSPEC {
+                pszName: w!("Matroska video"),
+                pszSpec: w!("*.mkv"),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: w!("MP4 video"),
+                pszSpec: w!("*.mp4"),
+            },
+        ];
+        let _ = dialog.SetFileTypes(&types);
+        let (index, ext) = match container {
+            Container::Mkv => (1, w!("mkv")),
+            Container::Mp4 => (2, w!("mp4")),
         };
+        let _ = dialog.SetFileTypeIndex(index);
+        let _ = dialog.SetDefaultExtension(ext);
+        show_dialog(&dialog)
+    }
+}
+
+/// Shows a native folder picker; returns the chosen folder, or `None` if cancelled.
+pub fn pick_folder() -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Shell::{FOS_PICKFOLDERS, FileOpenDialog, IFileDialog};
+
+    unsafe {
+        let dialog: IFileDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog.SetOptions(options | FOS_PICKFOLDERS).ok()?;
+        show_dialog(&dialog)
+    }
+}
+
+/// Runs a common-item dialog and extracts the picked filesystem path.
+///
+/// # Safety
+/// Must be called from the UI thread that owns the dialog (both callers are click handlers).
+unsafe fn show_dialog(dialog: &windows::Win32::UI::Shell::IFileDialog) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::SIGDN_FILESYSPATH;
+
+    unsafe {
         // `Show` returns an error when the user cancels.
         dialog.Show(None).ok()?;
         let item = dialog.GetResult().ok()?;
@@ -378,9 +460,14 @@ pub fn open_path(path: &str) {
 }
 
 /// Opens Explorer with the file selected.
+///
+/// The argument must be passed raw: std quotes an argument containing spaces as one token
+/// (`"/select,C:\out dir\x.mp4"`), which Explorer misparses and silently falls back to
+/// opening the Documents folder. The path itself is quoted, the `/select,` switch is not.
 pub fn reveal_in_folder(path: &str) {
+    use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
+        .raw_arg(format!("/select,\"{path}\""))
         .spawn();
 }
 
