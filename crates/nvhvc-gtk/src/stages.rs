@@ -1188,10 +1188,10 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         "object-select-symbolic",
         true,
         "HDR10 SEI inserted",
-        if result.sei_inserted {
-            "ST 2086 + MaxCLL/FALL"
-        } else {
-            "already present"
+        &match result.sei_insertions {
+            0 => "already present".to_owned(),
+            1 => "ST 2086 + MaxCLL/FALL".to_owned(),
+            n => format!("ST 2086 + MaxCLL/FALL · {n} IRAPs"),
         },
     );
     add_row(

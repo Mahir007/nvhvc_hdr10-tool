@@ -118,8 +118,10 @@ pub struct PipelineReport {
     pub injected: Hdr10Metadata,
     /// Number of SPS NAL units rewritten in the encode.
     pub sps_patched: usize,
-    /// Whether an HDR10 SEI was inserted.
-    pub sei_inserted: bool,
+    /// Number of HDR10 SEI NALs inserted — one per IRAP (random-access) access unit that
+    /// didn't already carry a mastering-display SEI. Zero means the encode already signalled
+    /// HDR10 at every random-access point.
+    pub sei_insertions: usize,
     /// Number of video frames whose timestamps were captured and reproduced (when known).
     pub frames: Option<usize>,
     /// The encode's track inventory that the remux carried over (when known).
@@ -284,7 +286,7 @@ pub fn run_with_progress(
         probed,
         injected: metadata,
         sps_patched: patch_report.sps_patched,
-        sei_inserted: patch_report.sei_inserted,
+        sei_insertions: patch_report.sei_insertions,
         frames,
         tracks,
         dropped_tracks,

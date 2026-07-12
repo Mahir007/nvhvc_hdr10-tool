@@ -38,9 +38,9 @@ fn main() {
     let (out, report) = patch_stream(&input, &meta).expect("patch stream");
     std::fs::write(&output_path, &out).expect("write output");
     eprintln!(
-        "patched {} SPS, sei_inserted={}, {} -> {} bytes",
+        "patched {} SPS, sei_insertions={}, {} -> {} bytes",
         report.sps_patched,
-        report.sei_inserted,
+        report.sei_insertions,
         input.len(),
         out.len()
     );

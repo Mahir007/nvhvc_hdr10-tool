@@ -1691,10 +1691,10 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
         GLYPH_CHECK,
         ThemeRef::SystemSuccess,
         "HDR10 SEI inserted",
-        if summary.sei_inserted {
-            "ST 2086 + MaxCLL/FALL".to_owned()
-        } else {
-            "already present".to_owned()
+        match summary.sei_insertions {
+            0 => "already present".to_owned(),
+            1 => "ST 2086 + MaxCLL/FALL".to_owned(),
+            n => format!("ST 2086 + MaxCLL/FALL · {n} IRAPs"),
         },
     );
     push_row(

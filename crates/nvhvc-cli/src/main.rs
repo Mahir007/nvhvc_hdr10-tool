@@ -124,7 +124,12 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
             println!();
             println!("wrote {}", report.output.display());
             println!("  SPS patched : {}", report.sps_patched);
-            println!("  SEI inserted: {}", report.sei_inserted);
+            println!(
+                "  SEI inserted: {} (at {} random-access point{})",
+                report.sei_insertions > 0,
+                report.sei_insertions,
+                if report.sei_insertions == 1 { "" } else { "s" }
+            );
             if !report.dropped_tracks.is_empty() {
                 println!(
                     "  note        : not carried into MP4 — {}",

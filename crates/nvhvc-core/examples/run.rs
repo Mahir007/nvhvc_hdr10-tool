@@ -29,10 +29,10 @@ fn main() {
     .expect("pipeline failed");
 
     println!(
-        "OK -> {}\n  SPS patched: {}\n  SEI inserted: {}\n  primaries/transfer/matrix: {}/{}/{}\n  mastering_display: {}\n  content_light_level: {}",
+        "OK -> {}\n  SPS patched: {}\n  SEI insertions: {}\n  primaries/transfer/matrix: {}/{}/{}\n  mastering_display: {}\n  content_light_level: {}",
         report.output.display(),
         report.sps_patched,
-        report.sei_inserted,
+        report.sei_insertions,
         report.probed.color.colour_primaries,
         report.probed.color.transfer_characteristics,
         report.probed.color.matrix_coeffs,
