@@ -18,6 +18,9 @@ const ICON_FONT: &str = "Segoe Fluent Icons";
 
 // Segoe Fluent Icons glyphs.
 const GLYPH_CHECK: &str = "\u{E73E}";
+/// "AutoEnhanceOn" — the double-sparkle mark (result hero; GLYPH_SPARKLE below is the
+/// single star on the Patch button).
+const GLYPH_SPARKLES: &str = "\u{E78D}";
 const GLYPH_CHEVRON: &str = "\u{E76C}";
 const GLYPH_MORE: &str = "\u{E712}";
 /// Film-strip ("MyMovies") — the video-clip glyph used everywhere a source/encode is shown,
@@ -1582,17 +1585,19 @@ fn processing_view(vm: &Vm) -> Element {
 pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     let mut children: Vec<Element> = Vec::new();
 
-    // Success header.
+    // Success header. Sparkles on the accent tint: the green checkmark moved to the
+    // processing view's completion hold, so the result hero celebrates instead of
+    // re-confirming.
     children.push(
         vstack((
             border(
-                glyph(GLYPH_CHECK, 30.0)
-                    .foreground(ThemeRef::SystemSuccess)
+                glyph(GLYPH_SPARKLES, 30.0)
+                    .foreground(ThemeRef::AccentText)
                     .horizontal_alignment(HorizontalAlignment::Center)
                     .vertical_alignment(VerticalAlignment::Center),
             )
             .corner_radius(34.0)
-            .background(ThemeRef::SystemSuccessBackground)
+            .background(ThemeRef::SystemAttentionBackground)
             .width(68.0)
             .height(68.0)
             .horizontal_alignment(HorizontalAlignment::Center),

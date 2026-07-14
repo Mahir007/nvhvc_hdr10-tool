@@ -74,12 +74,17 @@ fn install_bundled_icons() {
     // the library ships it via gresource, but we don't need that packaging here.
     const REEL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 0 0 v 15 h 2 v -1 h 12 v 1 h 2 v -15 h -2 v 1 h -12 v -1 z m 2 3 h 12 v 9 h -12 z m 0 0"/><path d="m 13 11 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 0 0"/><path d="m 7 4.5 c 0.195312 0 0.386719 0.058594 0.554688 0.167969 l 3 2 c 0.589843 0.394531 0.589843 1.269531 0 1.664062 l -3 2 c -0.167969 0.109375 -0.359376 0.167969 -0.554688 0.167969 c 0 0 -1.003906 0 -1 -1 v -4 c -0.003906 -1 1 -1 1 -1 z m 0 0"/></g></svg>"##;
 
+    // Result-hero glyph: a three-sparkle "sparkles" mark, hand-drawn in the GNOME symbolic
+    // style (this icon-library revision doesn't ship one).
+    const SPARKLES_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="M 6.5 3 C 6.2 6 4.5 7.7 1.5 8 C 4.5 8.3 6.2 10 6.5 13 C 6.8 10 8.5 8.3 11.5 8 C 8.5 7.7 6.8 6 6.5 3 Z"/><path d="M 12.5 1 C 12.3 2.8 11.3 3.8 9.5 4 C 11.3 4.2 12.3 5.2 12.5 7 C 12.7 5.2 13.7 4.2 15.5 4 C 13.7 3.8 12.7 2.8 12.5 1 Z"/><path d="M 12 9.5 C 11.85 11 11 11.85 9.5 12 C 11 12.15 11.85 13 12 14.5 C 12.15 13 13 12.15 14.5 12 C 13 11.85 12.15 11 12 9.5 Z"/></g></svg>"##;
+
     let dir = glib::user_cache_dir().join("nvhvc-icons");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let _ = std::fs::write(dir.join("arrow-into-box-symbolic.svg"), ARROW_INTO_BOX_SVG);
     let _ = std::fs::write(dir.join("video-reel-symbolic.svg"), REEL_SVG);
+    let _ = std::fs::write(dir.join("sparkles-symbolic.svg"), SPARKLES_SVG);
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
     }
@@ -847,34 +852,32 @@ pub fn pick_file(ctx: &Rc<Ctx>, title: &str, on_pick: impl Fn(&Rc<Ctx>, PathBuf)
     );
 }
 
-/// Opens the native save dialog for the output file, offering only the containers the
-/// pipeline can write (.mkv / .mp4). The preselected filter follows the wizard's current
-/// container choice.
+/// Opens the native save dialog for the output file, showing the video files the pipeline
+/// can write (.mkv / .mp4).
+///
+/// One combined filter, not one per container: GTK's FileDialog never reports which filter
+/// the user picked and never rewrites the typed name, so per-container filters just sat
+/// there lying next to a prefilled name whose extension didn't follow them. The file name's
+/// extension is the single per-file container switch (a foreign or missing extension is
+/// normalised to the current container by the caller).
 pub fn pick_output(
     ctx: &Rc<Ctx>,
     initial_name: Option<&str>,
-    container: Container,
     on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
 ) {
-    let filters = gio::ListStore::new::<gtk::FileFilter>();
-    let mut default_filter = None;
+    let videos = gtk::FileFilter::new();
+    videos.set_name(Some("Video files (*.mkv, *.mp4)"));
     for c in Container::ALL {
-        let f = gtk::FileFilter::new();
-        f.set_name(Some(c.label()));
-        f.add_suffix(c.extension());
-        filters.append(&f);
-        if c == container {
-            default_filter = Some(f);
-        }
+        videos.add_suffix(c.extension());
     }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&videos);
     let mut builder = gtk::FileDialog::builder()
         .title("Choose output file")
-        .filters(&filters);
+        .filters(&filters)
+        .default_filter(&videos);
     if let Some(name) = initial_name {
         builder = builder.initial_name(name);
-    }
-    if let Some(f) = &default_filter {
-        builder = builder.default_filter(f);
     }
     let dialog = builder.build();
     let ctx = ctx.clone();
