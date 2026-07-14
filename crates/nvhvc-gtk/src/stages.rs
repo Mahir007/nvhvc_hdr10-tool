@@ -1256,7 +1256,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
             "dialog-warning-symbolic",
             "Some tracks were left out",
             &format!(
-                "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                 result.dropped_tracks.join(", ")
             ),
         );

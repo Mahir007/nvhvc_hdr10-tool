@@ -1759,7 +1759,7 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
         children.push(
             InfoBar::new("Some tracks were left out")
                 .message(format!(
-                    "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                    "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                     summary.dropped_tracks.join(", ")
                 ))
                 .warning()
