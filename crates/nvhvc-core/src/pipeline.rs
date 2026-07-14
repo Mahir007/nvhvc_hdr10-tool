@@ -276,7 +276,13 @@ pub fn run_with_progress(
                 }
                 None => None,
             };
-            remux::remux_mp4box(mp4box, &items, chapters.as_deref(), hdr_xml.as_deref(), output)?;
+            remux::remux_mp4box(
+                mp4box,
+                &items,
+                chapters.as_deref(),
+                hdr_xml.as_deref(),
+                output,
+            )?;
             // Cosmetic passes never fail the run: cover art, then real (udta) track titles —
             // the import-time `:name=` only sets the invisible handler name. The finished
             // file's track IDs are read back first (GPAC's assignment isn't the -add order).

@@ -103,7 +103,11 @@ fn mkv_colour_args(hdr: &Hdr10Metadata) -> Vec<String> {
             xy(md.primaries_y[1]),
         ));
         a.push("--white-colour-coordinates".to_owned());
-        a.push(format!("0:{},{}", xy(md.white_point_x), xy(md.white_point_y)));
+        a.push(format!(
+            "0:{},{}",
+            xy(md.white_point_x),
+            xy(md.white_point_y)
+        ));
         a.push("--max-luminance".to_owned());
         a.push(format!("0:{}", lum(md.max_luminance)));
         a.push("--min-luminance".to_owned());
