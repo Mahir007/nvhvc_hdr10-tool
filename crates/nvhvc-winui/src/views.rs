@@ -1853,8 +1853,36 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             grid((
                 vstack((
                     body("Default output container"),
-                    caption("You can still switch it per file in the Save as dialog")
-                        .foreground(ThemeRef::SecondaryText),
+                    // "Save as" is set off like inline code (mono chip), mirroring the
+                    // GTK subtitle's <tt> run.
+                    hstack((
+                        caption("You can still switch it per file in the")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                        border(
+                            caption("Save as")
+                                .font_family("Consolas")
+                                .foreground(ThemeRef::SecondaryText),
+                        )
+                        .background(Color {
+                            a: 26,
+                            r: 145,
+                            g: 145,
+                            b: 145,
+                        })
+                        .corner_radius(4.0)
+                        .padding(Thickness {
+                            left: 5.0,
+                            top: 0.0,
+                            right: 5.0,
+                            bottom: 1.0,
+                        })
+                        .vertical_alignment(VerticalAlignment::Center),
+                        caption("dialog")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                    ))
+                    .spacing(4.0),
                 ))
                 .spacing(1.0)
                 .vertical_alignment(VerticalAlignment::Center)
