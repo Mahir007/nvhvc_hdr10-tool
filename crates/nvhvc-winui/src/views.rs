@@ -1500,20 +1500,41 @@ fn missing_tools(vm: &Vm) -> Vec<Tool> {
         .collect()
 }
 
-/// The centred processing view (spinner, stage label, progress bar).
+/// The centred processing view (spinner, stage label, progress bar). At the Done stage the
+/// spinner gives way to a green checkmark and the view is held briefly (the worker sleeps
+/// before delivering the result) so completion registers; the stage key in `main` changes
+/// with it, so the swap is a clean subtree remount.
 fn processing_view(vm: &Vm) -> Element {
     let idx = vm.progress.min(5);
+    let done = idx == 5;
     let label = [
         "Probing source metadata",
         "Extracting HEVC stream",
         "Patching bitstream",
         "Capturing frame timing",
         "Remuxing tracks",
-        "Finishing up",
+        "Done",
     ][idx];
     let pct = (idx as f64 / 5.0 * 100.0).round();
+    let indicator: Element = if done {
+        // Same footprint as the ring: a green circle with a check, like the result hero.
+        border(
+            glyph(GLYPH_CHECK, 26.0)
+                .foreground(ThemeRef::SystemSuccess)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .vertical_alignment(VerticalAlignment::Center),
+        )
+        .corner_radius(28.0)
+        .background(ThemeRef::SystemSuccessBackground)
+        .width(56.0)
+        .height(56.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .into()
+    } else {
+        ProgressRing::indeterminate().width(56.0).height(56.0).into()
+    };
     vstack((
-        ProgressRing::indeterminate().width(56.0).height(56.0),
+        indicator,
         text_block(label)
             .font_size(18.0)
             .semibold()
