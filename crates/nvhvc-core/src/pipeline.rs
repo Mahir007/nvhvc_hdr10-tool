@@ -174,13 +174,39 @@ pub fn run_with_progress(
         metadata.color.chroma_loc = Some(chroma);
     }
 
+    let container = Container::from_path(output).ok_or_else(|| Error::Probe {
+        what: "output container",
+        detail: format!(
+            "output must be .mkv or .mp4 (got {:?})",
+            output.extension().and_then(|e| e.to_str()).unwrap_or("")
+        ),
+    })?;
+
     let work = make_workdir()?;
     let extracted = work.join("extracted.hevc");
     let patched = work.join("patched.hevc");
     let timecodes = work.join("timestamps.txt");
 
-    // 2. Extract the raw HEVC from the encode.
+    // 2. Extract the raw HEVC from the encode. The MP4 assembly reads the encode end-to-end
+    //    several more times (timing capture, packet spans, track extraction, MP4Box's direct
+    //    audio imports), so for MP4 output the encode is first staged into the workdir and
+    //    every pass reads local storage — on network/VM-share mounts the repeated re-reads
+    //    dominated the whole run, and for files larger than the page cache this wins on
+    //    local disks too. Matroska output reads the encode only a couple of times; not worth
+    //    the copy.
     progress(Stage::Extracting);
+    let staged;
+    let encoded: &Path = if container == Container::Mp4 {
+        let name = match encoded.extension().and_then(|e| e.to_str()) {
+            Some(ext) => format!("encode.{ext}"),
+            None => "encode".to_owned(),
+        };
+        staged = work.join(name);
+        std::fs::copy(encoded, &staged)?;
+        &staged
+    } else {
+        encoded
+    };
     extract::extract_hevc(ffmpeg, encoded, &extracted)?;
 
     // 3. Patch the bitstream.
@@ -192,13 +218,6 @@ pub fn run_with_progress(
     // 4. Capture timing and remux into the chosen container. Only mkvmerge can re-apply the
     //    captured per-frame timing, so MKVToolNix is a hard requirement (front-ends surface
     //    missing tools before the run via [`required_tools`]).
-    let container = Container::from_path(output).ok_or_else(|| Error::Probe {
-        what: "output container",
-        detail: format!(
-            "output must be .mkv or .mp4 (got {:?})",
-            output.extension().and_then(|e| e.to_str()).unwrap_or("")
-        ),
-    })?;
     // Timing comes from mkvextract for Matroska encodes (bit-exact, validated) and from
     // ffprobe-synthesized packet timestamps for anything else (mkvextract only reads Matroska).
     let matroska_input = timing::is_matroska(encoded);
@@ -417,6 +436,34 @@ fn build_mp4_items(
         name: plan.video_name.clone(),
         edit: video_edit,
     }];
+    // All extracted pieces (DTS cores, SRT subtitles) are attempted as ONE ffmpeg pass, so
+    // the encode is read once — per-track invocations re-read the whole file once per track,
+    // which dominated multi-track runs. If the combined pass fails (one bad track fails it
+    // all), the loop below falls back to per-track extraction so the failure degrades to a
+    // single dropped-track note.
+    let pieces: Vec<(u64, std::path::PathBuf, Mp4Import)> = plan
+        .tracks
+        .iter()
+        .filter_map(|t| match t.import {
+            Mp4Import::AudioDtsCore => Some((
+                t.index,
+                work.join(format!("core_{}.dts", t.index)),
+                t.import,
+            )),
+            Mp4Import::TextSub => {
+                Some((t.index, work.join(format!("sub_{}.srt", t.index)), t.import))
+            }
+            Mp4Import::AudioDirect => None,
+        })
+        .collect();
+    let jobs: Vec<extract::ExtractJob> = pieces
+        .iter()
+        .map(|(index, out, import)| match import {
+            Mp4Import::AudioDtsCore => extract::ExtractJob::DtsCore { index: *index, out },
+            _ => extract::ExtractJob::Srt { index: *index, out },
+        })
+        .collect();
+    let combined = !jobs.is_empty() && extract::extract_many(ffmpeg, encoded, &jobs).is_ok();
     // Disjoint borrows: the loop reads `tracks` while extraction failures append to `dropped`.
     let crate::probe::Mp4Plan {
         tracks, dropped, ..
@@ -429,22 +476,21 @@ fn build_mp4_items(
             }),
             Mp4Import::AudioDtsCore => {
                 let out = work.join(format!("core_{}.dts", track.index));
-                match extract::extract_dts_core(ffmpeg, encoded, track.index, &out) {
-                    Ok(()) => Some(remux::Mp4Source::File(out)),
-                    Err(_) => {
-                        dropped.push("1 DTS audio track (core extraction failed)".to_owned());
-                        None
-                    }
+                if combined || extract::extract_dts_core(ffmpeg, encoded, track.index, &out).is_ok()
+                {
+                    Some(remux::Mp4Source::File(out))
+                } else {
+                    dropped.push("1 DTS audio track (core extraction failed)".to_owned());
+                    None
                 }
             }
             Mp4Import::TextSub => {
                 let out = work.join(format!("sub_{}.srt", track.index));
-                match extract::extract_srt(ffmpeg, encoded, track.index, &out) {
-                    Ok(()) => Some(remux::Mp4Source::File(out)),
-                    Err(_) => {
-                        dropped.push("1 subtitle (extraction failed)".to_owned());
-                        None
-                    }
+                if combined || extract::extract_srt(ffmpeg, encoded, track.index, &out).is_ok() {
+                    Some(remux::Mp4Source::File(out))
+                } else {
+                    dropped.push("1 subtitle (extraction failed)".to_owned());
+                    None
                 }
             }
         };

@@ -85,6 +85,53 @@ pub fn extract_dts_core(ffmpeg: &Path, input: &Path, index: u64, out_dts: &Path)
     )
 }
 
+/// One piece of a combined extraction pass (see [`extract_many`]).
+pub enum ExtractJob<'a> {
+    /// [`extract_dts_core`] equivalent.
+    DtsCore { index: u64, out: &'a Path },
+    /// [`extract_srt`] equivalent.
+    Srt { index: u64, out: &'a Path },
+}
+
+/// Extracts every job's track in a single ffmpeg invocation, so the input is read once —
+/// per-track invocations re-read the whole file once per track, which dominated multi-track
+/// MP4 runs. One bad track fails the whole pass: callers fall back to the per-track
+/// extractors to isolate the failure.
+pub fn extract_many(ffmpeg: &Path, input: &Path, jobs: &[ExtractJob]) -> Result<()> {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<String> = ["-y", "-loglevel", "error", "-i", path_arg(input)?]
+        .map(str::to_owned)
+        .into();
+    for job in jobs {
+        match job {
+            ExtractJob::DtsCore { index, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:a".to_owned(),
+                "copy".to_owned(),
+                "-bsf:a".to_owned(),
+                "dca_core".to_owned(),
+                "-f".to_owned(),
+                "dts".to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
+            ExtractJob::Srt { index, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:s".to_owned(),
+                "srt".to_owned(),
+                "-f".to_owned(),
+                "srt".to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
+        }
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    tools::run(ffmpeg, Tool::Ffmpeg, &args)
+}
+
 /// Extracts a Matroska file's chapters in OGM ("simple") format — exactly what MP4Box's
 /// `-chap` option consumes.
 pub fn extract_chapters_ogm(mkvextract: &Path, input: &Path, out_txt: &Path) -> Result<()> {
