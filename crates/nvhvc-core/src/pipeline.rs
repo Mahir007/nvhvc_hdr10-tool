@@ -276,20 +276,26 @@ pub fn run_with_progress(
                 }
                 None => None,
             };
+            // MP4Box seeks and rewrites heavily while assembling, and the cosmetic passes
+            // below rewrite the whole file again — on a slow output filesystem (network
+            // shares, VM mounts) that reads as a many-minute stall. Assemble next to the
+            // other intermediates and move the finished file into place in one pass.
+            let assembled = work.join("assembled.mp4");
             remux::remux_mp4box(
                 mp4box,
                 &items,
                 chapters.as_deref(),
                 hdr_xml.as_deref(),
-                output,
+                &assembled,
             )?;
             // Cosmetic passes never fail the run: cover art, then real (udta) track titles —
             // the import-time `:name=` only sets the invisible handler name. The finished
             // file's track IDs are read back first (GPAC's assignment isn't the -add order).
-            apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, output);
-            if let Ok(ids) = crate::probe::mp4_track_ids(ffprobe, output) {
-                let _ = remux::mp4box_set_track_names(mp4box, output, &items, &ids);
+            apply_mp4_cover(ffmpeg, mp4box, encoded, &work, &plan, &assembled);
+            if let Ok(ids) = crate::probe::mp4_track_ids(ffprobe, &assembled) {
+                let _ = remux::mp4box_set_track_names(mp4box, &assembled, &items, &ids);
             }
+            move_into_place(&assembled, output)?;
             let carried = plan.tracks_summary(mkv_tracks.video_track_id);
             (Some(carried), plan.dropped)
         }
@@ -310,6 +316,18 @@ pub fn run_with_progress(
         dropped_tracks,
         output: output.to_path_buf(),
     })
+}
+
+/// Moves a finished intermediate into its final location: a cheap rename on the same
+/// filesystem, a streaming copy when the workdir and the output live on different mounts
+/// (or the target exists on Windows, where rename won't replace it).
+fn move_into_place(from: &Path, to: &Path) -> Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    let _ = std::fs::remove_file(from);
+    Ok(())
 }
 
 /// Creates a per-process scratch directory for intermediate files.
