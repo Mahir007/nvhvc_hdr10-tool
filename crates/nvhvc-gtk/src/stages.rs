@@ -927,7 +927,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("out.{}", container.extension()));
         choose.connect_clicked(move |_| {
-            app::pick_output(&ctx, Some(&initial), container, |ctx, path| {
+            app::pick_output(&ctx, Some(&initial), |ctx, path| {
                 {
                     let mut st = ctx.state.borrow_mut();
                     let (normalized, container, rewritten) =

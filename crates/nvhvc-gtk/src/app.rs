@@ -847,34 +847,32 @@ pub fn pick_file(ctx: &Rc<Ctx>, title: &str, on_pick: impl Fn(&Rc<Ctx>, PathBuf)
     );
 }
 
-/// Opens the native save dialog for the output file, offering only the containers the
-/// pipeline can write (.mkv / .mp4). The preselected filter follows the wizard's current
-/// container choice.
+/// Opens the native save dialog for the output file, showing the video files the pipeline
+/// can write (.mkv / .mp4).
+///
+/// One combined filter, not one per container: GTK's FileDialog never reports which filter
+/// the user picked and never rewrites the typed name, so per-container filters just sat
+/// there lying next to a prefilled name whose extension didn't follow them. The file name's
+/// extension is the single per-file container switch (a foreign or missing extension is
+/// normalised to the current container by the caller).
 pub fn pick_output(
     ctx: &Rc<Ctx>,
     initial_name: Option<&str>,
-    container: Container,
     on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
 ) {
-    let filters = gio::ListStore::new::<gtk::FileFilter>();
-    let mut default_filter = None;
+    let videos = gtk::FileFilter::new();
+    videos.set_name(Some("Video files (*.mkv, *.mp4)"));
     for c in Container::ALL {
-        let f = gtk::FileFilter::new();
-        f.set_name(Some(c.label()));
-        f.add_suffix(c.extension());
-        filters.append(&f);
-        if c == container {
-            default_filter = Some(f);
-        }
+        videos.add_suffix(c.extension());
     }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&videos);
     let mut builder = gtk::FileDialog::builder()
         .title("Choose output file")
-        .filters(&filters);
+        .filters(&filters)
+        .default_filter(&videos);
     if let Some(name) = initial_name {
         builder = builder.initial_name(name);
-    }
-    if let Some(f) = &default_filter {
-        builder = builder.default_filter(f);
     }
     let dialog = builder.build();
     let ctx = ctx.clone();
