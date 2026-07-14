@@ -318,17 +318,29 @@ fn compact_path_impl(path: &str, home: Option<&str>) -> String {
     }
 }
 
-/// Default output path for an encode: `<dir>/<stem> [HDR10].<ext>`.
+/// The filename suffix auto-named outputs get when no custom one is configured.
+pub const DEFAULT_OUTPUT_SUFFIX: &str = " [HDR10]";
+
+/// Default output path for an encode: `<dir>/<stem><suffix>.<ext>`.
 ///
 /// `out_dir` is the configured default output folder; `None` (or empty) puts the output next
-/// to the encode.
-pub fn default_output(encode: &str, container: Container, out_dir: Option<&Path>) -> String {
+/// to the encode. `suffix` is the configured filename suffix, appended verbatim to the stem;
+/// `None` (or empty) means [`DEFAULT_OUTPUT_SUFFIX`].
+pub fn default_output(
+    encode: &str,
+    container: Container,
+    out_dir: Option<&Path>,
+    suffix: Option<&str>,
+) -> String {
     let p = Path::new(encode);
     let stem = p
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".to_owned());
-    let name = format!("{stem} [HDR10].{}", container.extension());
+    let suffix = suffix
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(DEFAULT_OUTPUT_SUFFIX);
+    let name = format!("{stem}{suffix}.{}", container.extension());
     let dir = out_dir
         .filter(|d| !d.as_os_str().is_empty())
         .or_else(|| p.parent().filter(|d| !d.as_os_str().is_empty()));
@@ -456,7 +468,7 @@ mod tests {
 
     #[test]
     fn default_output_derives_from_encode() {
-        let out = default_output("/videos/encode.mkv", Container::Mkv, None);
+        let out = default_output("/videos/encode.mkv", Container::Mkv, None, None);
         let p = Path::new(&out);
         assert_eq!(
             p.file_name().unwrap().to_str().unwrap(),
@@ -467,7 +479,7 @@ mod tests {
 
     #[test]
     fn default_output_follows_container() {
-        let out = default_output("/videos/encode.mkv", Container::Mp4, None);
+        let out = default_output("/videos/encode.mkv", Container::Mp4, None, None);
         assert_eq!(
             Path::new(&out).file_name().unwrap().to_str().unwrap(),
             "encode [HDR10].mp4"
@@ -480,6 +492,7 @@ mod tests {
             "/videos/encode.mkv",
             Container::Mkv,
             Some(Path::new("/patched")),
+            None,
         );
         let p = Path::new(&out);
         assert_eq!(p.parent().unwrap(), Path::new("/patched"));
@@ -488,8 +501,29 @@ mod tests {
             "encode [HDR10].mkv"
         );
         // An empty configured folder means "next to the encode".
-        let out = default_output("/videos/encode.mkv", Container::Mkv, Some(Path::new("")));
+        let out = default_output(
+            "/videos/encode.mkv",
+            Container::Mkv,
+            Some(Path::new("")),
+            None,
+        );
         assert_eq!(Path::new(&out).parent().unwrap(), Path::new("/videos"));
+    }
+
+    #[test]
+    fn default_output_honours_configured_suffix() {
+        // A custom suffix is appended verbatim (spacing included).
+        let out = default_output("/videos/encode.mkv", Container::Mkv, None, Some(".hdr10"));
+        assert_eq!(
+            Path::new(&out).file_name().unwrap().to_str().unwrap(),
+            "encode.hdr10.mkv"
+        );
+        // Empty or whitespace-only means the default.
+        let out = default_output("/videos/encode.mkv", Container::Mkv, None, Some("  "));
+        assert_eq!(
+            Path::new(&out).file_name().unwrap().to_str().unwrap(),
+            "encode [HDR10].mkv"
+        );
     }
 
     #[test]

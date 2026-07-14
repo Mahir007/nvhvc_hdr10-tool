@@ -33,6 +33,7 @@ pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Conta
     // --- Output ---
     let output_group = adw::PreferencesGroup::builder().title("Output").build();
     output_group.add(&container_row(&settings, on_default_container));
+    output_group.add(&suffix_row(parent, &settings));
     output_group.add(&folder_row(parent, &settings));
     page.add(&output_group);
 
@@ -183,6 +184,82 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
         on_change(container);
     });
     row
+}
+
+/// Subtitle for the default-output-filename-suffix row: the suffix in use.
+fn suffix_subtitle(settings: &Settings) -> String {
+    settings
+        .default_output_suffix
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(nvhvc_core::uimodel::DEFAULT_OUTPUT_SUFFIX)
+        .to_owned()
+}
+
+/// The "Default output filename suffix" row: read-only with a pencil that opens the editor,
+/// matching the tool rows. The suffix goes between the encode's name and the extension.
+fn suffix_row(window: &adw::ApplicationWindow, settings: &Settings) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title("Default output filename suffix")
+        .subtitle(suffix_subtitle(settings))
+        .build();
+    let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit.add_css_class("flat");
+    edit.set_valign(gtk::Align::Center);
+    edit.set_tooltip_text(Some("Edit suffix"));
+    row.add_suffix(&edit);
+    row.set_activatable_widget(Some(&edit));
+    {
+        let window = window.clone();
+        let row = row.clone();
+        edit.connect_clicked(move |_| open_suffix_editor(&window, &row));
+    }
+    row
+}
+
+/// Modal editor for the output filename suffix (clear it to go back to the default).
+fn open_suffix_editor(window: &adw::ApplicationWindow, row: &adw::ActionRow) {
+    let settings = Settings::load();
+    let current = settings.default_output_suffix.clone().unwrap_or_default();
+
+    let entry = gtk::Entry::builder()
+        .text(&current)
+        .placeholder_text(nvhvc_core::uimodel::DEFAULT_OUTPUT_SUFFIX)
+        .hexpand(true)
+        .activates_default(true)
+        .build();
+
+    let dialog = adw::AlertDialog::new(
+        Some("Default output filename suffix"),
+        Some("Added to the encode's file name, before the extension. Leave empty for the default."),
+    );
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Cancel"), ("set", "Set")]);
+    dialog.set_response_appearance("set", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("set"));
+    dialog.set_close_response("cancel");
+    {
+        let row = row.clone();
+        let entry = entry.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "set" {
+                return;
+            }
+            // Kept verbatim (a leading space is meaningful in a suffix); only a blank
+            // entry resets to the default.
+            let value = entry.text().to_string();
+            let mut settings = Settings::load();
+            settings.default_output_suffix = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+            let _ = settings.save();
+            row.set_subtitle(&suffix_subtitle(&settings));
+        });
+    }
+    dialog.present(Some(window));
+    entry.grab_focus();
 }
 
 /// Subtitle for the default-output-folder row.

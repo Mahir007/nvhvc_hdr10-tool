@@ -239,12 +239,14 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     move || {
         if let Some(path) = pick_file() {
             set_encode.call(path.clone());
-            // Settings are re-read here so a default-folder change in Preferences applies
-            // to the very next pick.
+            // Settings are re-read here so a default folder/suffix change in Preferences
+            // applies to the very next pick.
+            let settings = Settings::load();
             set_output.call(default_output(
                 &path,
                 container,
-                Settings::load().default_output_dir.as_deref(),
+                settings.default_output_dir.as_deref(),
+                settings.default_output_suffix.as_deref(),
             ));
             fire_probe(&trigger, path);
         }

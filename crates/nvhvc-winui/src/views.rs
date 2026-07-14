@@ -585,10 +585,12 @@ fn drop_zone(
                     let path = item.path.clone();
                     set_path.call(path.clone());
                     if let Some((out, container)) = &set_output {
+                        let settings = Settings::load();
                         out.call(default_output(
                             &path,
                             *container,
-                            Settings::load().default_output_dir.as_deref(),
+                            settings.default_output_dir.as_deref(),
+                            settings.default_output_suffix.as_deref(),
                         ));
                     }
                     fire_probe(&probe, path);
@@ -1905,6 +1907,8 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             vstack((
                 container_pref_row.with_key("out-container"),
                 divider().with_key("out-div"),
+                suffix_row(vm).with_key("out-suffix"),
+                divider().with_key("out-div2"),
                 folder_row(vm).with_key("out-folder"),
             ))
             .spacing(0.0),
@@ -1920,6 +1924,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
                 s.prefs_open = false;
                 s.tool_edit = None;
                 s.folder_edit = None;
+                s.suffix_edit = None;
                 s
             });
         })
@@ -2415,6 +2420,113 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Stretch)
         .into()
+}
+
+/// The "Default output filename suffix" row in Preferences — or its inline editor when open.
+/// The suffix goes between the encode's name and the extension when auto-naming the output;
+/// clearing the field resets to [`DEFAULT_OUTPUT_SUFFIX`]. Both branches return a vstack so
+/// the reconciler never sees the row swap element type.
+fn suffix_row(vm: &Vm) -> Element {
+    if let Some(draft) = &vm.ui.suffix_edit {
+        let upd = vm.upd.clone();
+        let input = text_box(draft.clone())
+            .placeholder_text(DEFAULT_OUTPUT_SUFFIX)
+            .on_text_changed(move |v: String| {
+                upd.call(move |mut s| {
+                    if let Some(d) = s.suffix_edit.as_mut() {
+                        *d = v;
+                    }
+                    s
+                });
+            });
+        let upd = vm.upd.clone();
+        let cancel = button("Cancel").on_click(move || {
+            upd.call(|mut s| {
+                s.suffix_edit = None;
+                s
+            });
+        });
+        let upd = vm.upd.clone();
+        let draft_now = draft.clone();
+        let set = button("Set").accent().on_click(move || {
+            // Kept verbatim (a leading space is meaningful in a suffix); only a blank
+            // entry resets to the default.
+            let value = draft_now.clone();
+            let mut settings = Settings::load();
+            settings.default_output_suffix = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+            let _ = settings.save();
+            upd.call(|mut s| {
+                s.suffix_edit = None;
+                s
+            });
+        });
+        let editor = border(
+            vstack((
+                caption("Default output filename suffix (leave empty for the default)")
+                    .semibold(),
+                grid((
+                    input.grid_column(0),
+                    cancel.grid_column(1),
+                    set.grid_column(2),
+                ))
+                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+                .column_spacing(8.0),
+            ))
+            .spacing(8.0),
+        )
+        .background(ThemeRef::SystemAttentionBackground)
+        .padding(Thickness {
+            left: 15.0,
+            top: 14.0,
+            right: 15.0,
+            bottom: 14.0,
+        });
+        return vstack(vec![Element::from(editor.with_key("suffix-edit"))])
+            .spacing(0.0)
+            .into();
+    }
+
+    let settings = Settings::load();
+    let current = settings
+        .default_output_suffix
+        .clone()
+        .filter(|s| !s.trim().is_empty());
+    let detail = current
+        .clone()
+        .unwrap_or_else(|| DEFAULT_OUTPUT_SUFFIX.to_owned());
+    let upd = vm.upd.clone();
+    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
+        let current = current.clone().unwrap_or_default();
+        upd.call(move |mut s| {
+            s.suffix_edit = Some(current);
+            s
+        });
+    });
+    let row = padded(
+        grid((
+            vstack((
+                body("Default output filename suffix"),
+                caption(detail).foreground(ThemeRef::SecondaryText),
+            ))
+            .spacing(1.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .grid_column(0),
+            edit.grid_column(1),
+        ))
+        .columns([GridLength::Star(1.0), GridLength::Auto])
+        .column_spacing(13.0),
+        Thickness {
+            left: 16.0,
+            top: 13.0,
+            right: 16.0,
+            bottom: 13.0,
+        },
+    );
+    vstack(vec![Element::from(row)]).spacing(0.0).into()
 }
 
 /// The "Default output folder" row in Preferences — or its inline editor when open. Auto-named
