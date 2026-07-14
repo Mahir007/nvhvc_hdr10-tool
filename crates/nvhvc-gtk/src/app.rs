@@ -588,7 +588,7 @@ fn show_about(window: &adw::ApplicationWindow) {
         .developer_name("nvhvc")
         .license_type(gtk::License::Gpl30)
         .comments(
-            "Injects HDR10 metadata into HEVC streams without re-encoding — bit-exact \
+            "Injects HDR10 metadata into HEVC streams without re-encoding: bit-exact \
              SPS/VUI editing with the encode's frame timing preserved exactly.",
         )
         .build();
@@ -617,7 +617,7 @@ pub fn confirm_and_run(ctx: &Rc<Ctx>) {
     };
     let dialog = adw::AlertDialog::builder()
         .heading(format!("Replace “{name}”?"))
-        .body("A file with this name already exists. Replacing it will overwrite its contents.")
+        .body("A file with this name already exists.\nReplacing it will overwrite its contents.")
         .build();
     // Replace is added first so it sits on the LEFT (destructive, red) — deliberately not
     // under the pointer's default resting spot. Cancel stays the default/close response so
@@ -655,12 +655,14 @@ pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
             s.enc_probing = true;
             s.enc_error = None;
             s.encode = None;
-            // Settings are re-read here so a default-folder change in Preferences applies to
-            // the very next pick.
+            // Settings are re-read here so a default folder/suffix change in Preferences
+            // applies to the very next pick.
+            let settings = Settings::load();
             s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
                 &path.display().to_string(),
                 s.container,
-                Settings::load().default_output_dir.as_deref(),
+                settings.default_output_dir.as_deref(),
+                settings.default_output_suffix.as_deref(),
             )));
             s.output_user_chosen = false;
         }

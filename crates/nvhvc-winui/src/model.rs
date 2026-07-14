@@ -6,9 +6,9 @@ use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 
 pub use nvhvc_core::pipeline::Container;
 pub use nvhvc_core::uimodel::{
-    Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS, code_label, colour_summary,
-    compact_path, default_output, file_name, human_size, normalize_output_pick, row_overridden,
-    row_value,
+    DEFAULT_OUTPUT_SUFFIX, Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS,
+    code_label, colour_summary, compact_path, default_output, file_name, human_size,
+    normalize_output_pick, row_overridden, row_value,
 };
 
 /// The output path the pipeline will actually write: the stored (picked or derived) path with
@@ -120,6 +120,8 @@ pub struct Ui {
     pub tool_edit: Option<(usize, String)>,
     /// Preferences: draft text of the default-output-folder editor, when open.
     pub folder_edit: Option<String>,
+    /// Preferences: draft text of the output-filename-suffix editor, when open.
+    pub suffix_edit: Option<String>,
     /// The output path the user explicitly chose via the save dialog (which already warns
     /// about overwriting). Auto-derived names that already exist get our own confirmation.
     pub output_chosen_for: Option<String>,

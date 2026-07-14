@@ -152,7 +152,7 @@ fn app(cx: &mut RenderCx) -> Element {
                 // Two balanced ~60-char lines keep the dialog comfortably wide.
                 .content(format!(
                     "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
-                     re-encoding\n\u{2014} bit-exact SPS/VUI editing, frame timing preserved \
+                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
                      exactly.\n\nGPL-3.0",
                     nvhvc_core::VERSION
                 ))
@@ -239,12 +239,14 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     move || {
         if let Some(path) = pick_file() {
             set_encode.call(path.clone());
-            // Settings are re-read here so a default-folder change in Preferences applies
-            // to the very next pick.
+            // Settings are re-read here so a default folder/suffix change in Preferences
+            // applies to the very next pick.
+            let settings = Settings::load();
             set_output.call(default_output(
                 &path,
                 container,
-                Settings::load().default_output_dir.as_deref(),
+                settings.default_output_dir.as_deref(),
+                settings.default_output_suffix.as_deref(),
             ));
             fire_probe(&trigger, path);
         }

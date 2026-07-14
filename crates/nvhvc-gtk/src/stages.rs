@@ -72,14 +72,16 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with a bold title line above the body — matching the WinUI
-/// `InfoBar`s, which always carry a title.
+/// Tinted rounded banner with a bold title and the body alongside it — matching the WinUI
+/// `InfoBar`s (title and message share a line; a multi-line body drops below the title,
+/// mirroring the InfoBar's overflow behaviour).
 fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
+    let sep = if body.contains('\n') { "\n" } else { "  " };
     banner_markup(
         kind,
         icon,
         &format!(
-            "<b>{}</b>\n{}",
+            "<b>{}</b>{sep}{}",
             gtk::glib::markup_escape_text(title),
             gtk::glib::markup_escape_text(body)
         ),
@@ -488,7 +490,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
             "amber",
             "dialog-warning-symbolic",
             "No HDR10 signalling detected",
-            "No mastering-display metadata found — the values above can still be edited.",
+            "No mastering-display metadata found. The values above can still be edited.",
         )
     };
     col.append(&b);
@@ -799,11 +801,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     let s = ctx.state.borrow();
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // "Copying from …" banner: bold title line + colour summary below, mirroring the WinUI
-    // InfoBar (title/message) — no separator dot between the file name and the metadata.
+    // "Copying from …" banner: bold title with the colour summary alongside, mirroring the
+    // WinUI InfoBar (title/message) — no separator dot between the file name and the metadata.
     if let (Some(src), Some(meta)) = (&s.source, s.effective()) {
         let markup = format!(
-            "<b>Copying from {}</b>\n{}",
+            "<b>Copying from {}</b>  {}",
             gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
             gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
@@ -951,7 +953,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         col.append(&banner_titled(
@@ -1107,7 +1109,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     hero.append(&title);
     let sub = gtk::Label::builder()
         .label(
-            "Your encode now carries the source's HDR10 signalling — losslessly, with every frame's timing preserved.",
+            "Your encode now carries the source's HDR10 signalling, losslessly, with every frame's timing preserved.",
         )
         .wrap(true)
         .justify(gtk::Justification::Center)
