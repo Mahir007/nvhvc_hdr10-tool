@@ -257,7 +257,11 @@ mod tests {
         let nals = find_nals(&out);
         for (i, n) in nals.iter().enumerate() {
             if n.is_irap() {
-                assert_eq!(nals[i - 1].nal_type, NAL_PREFIX_SEI, "IRAP not preceded by SEI");
+                assert_eq!(
+                    nals[i - 1].nal_type,
+                    NAL_PREFIX_SEI,
+                    "IRAP not preceded by SEI"
+                );
             }
         }
         let p_slice = nals.iter().position(|n| n.nal_type == 1).unwrap();
