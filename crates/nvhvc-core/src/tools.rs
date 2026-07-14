@@ -266,7 +266,13 @@ pub fn path_arg(p: &Path) -> Result<&str> {
 }
 
 /// Runs a tool to completion, returning captured stdout. Errors include captured stderr.
+///
+/// With `NVHVC_TRACE` set (any non-empty value), every invocation is logged to stderr with
+/// its wall-clock duration — the pipeline's time is almost entirely spent in these children,
+/// so this is the built-in profiler.
 pub fn run_capture(program: &Path, tool: Tool, args: &[&str]) -> Result<Vec<u8>> {
+    let trace = std::env::var_os("NVHVC_TRACE").is_some_and(|v| !v.is_empty());
+    let started = trace.then(std::time::Instant::now);
     let mut cmd = Command::new(program);
     cmd.args(args);
     // Console children pop up their own console window when the parent is a GUI app — every
@@ -279,6 +285,14 @@ pub fn run_capture(program: &Path, tool: Tool, args: &[&str]) -> Result<Vec<u8>>
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let output = cmd.output()?;
+    if let Some(started) = started {
+        eprintln!(
+            "[nvhvc-trace] {:>8.2}s  {} {}",
+            started.elapsed().as_secs_f64(),
+            tool.label(),
+            args.join(" ")
+        );
+    }
     if !output.status.success() {
         return Err(Error::CommandFailed {
             tool: tool.label(),
