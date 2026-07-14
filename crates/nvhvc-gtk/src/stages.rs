@@ -73,10 +73,11 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
 }
 
 /// Tinted rounded banner with a bold title and the body alongside it — matching the WinUI
-/// `InfoBar`s (title and message share a line; a multi-line body drops below the title,
-/// mirroring the InfoBar's overflow behaviour).
+/// `InfoBar`s (title and message share a line; a multi-line or long body drops below the
+/// title, mirroring the InfoBar's overflow behaviour).
 fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
-    let sep = if body.contains('\n') { "\n" } else { "  " };
+    let stacked = body.contains('\n') || title.chars().count() + body.chars().count() > 64;
+    let sep = if stacked { "\n" } else { "  " };
     banner_markup(
         kind,
         icon,
@@ -991,6 +992,8 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 /// in place, so the spinner animation runs uninterrupted across stage changes.
 pub struct ProcessingUi {
     pub root: gtk::Widget,
+    spinner: adw::Spinner,
+    check: gtk::Image,
     title: gtk::Label,
     bar: gtk::ProgressBar,
     step: gtk::Label,
@@ -1014,12 +1017,17 @@ const STAGE_LABELS: [&str; 6] = [
     "Patching bitstream",
     "Capturing frame timing",
     "Remuxing tracks",
-    "Finishing up",
+    "Done",
 ];
 
 impl ProcessingUi {
     pub fn update(&self, stage: PipeStage) {
         let idx = stage_index(stage);
+        // The Done stage is held on screen briefly (the worker sleeps before delivering the
+        // result), so the finished state registers: checkmark in place of the spinner, 100%.
+        let done = stage == PipeStage::Done;
+        self.spinner.set_visible(!done);
+        self.check.set_visible(done);
         self.title.set_label(STAGE_LABELS[idx]);
         self.bar.set_fraction(idx as f64 / 5.0);
         self.step.set_label(&format!("Stage {} of 6", idx + 1));
@@ -1042,6 +1050,14 @@ pub fn build_processing(stage: PipeStage) -> ProcessingUi {
     spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
+
+    // Swapped in for the spinner while the finished state is held (same footprint).
+    let check = gtk::Image::from_icon_name("object-select-symbolic");
+    check.add_css_class("processing-done-circle");
+    check.set_pixel_size(28);
+    check.set_halign(gtk::Align::Center);
+    check.set_visible(false);
+    col.append(&check);
 
     let title = gtk::Label::new(None);
     title.add_css_class("title-3");
@@ -1071,6 +1087,8 @@ pub fn build_processing(stage: PipeStage) -> ProcessingUi {
 
     let ui = ProcessingUi {
         root: col.upcast(),
+        spinner,
+        check,
         title,
         bar,
         step,
@@ -1238,7 +1256,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
             "dialog-warning-symbolic",
             "Some tracks were left out",
             &format!(
-                "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                 result.dropped_tracks.join(", ")
             ),
         );

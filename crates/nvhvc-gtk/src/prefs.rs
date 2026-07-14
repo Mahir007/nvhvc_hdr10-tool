@@ -160,7 +160,9 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
     let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
         .title("Default output container")
-        .subtitle("You can still switch it per file in the Save as dialog")
+        // The subtitle is Pango markup (rows default to use-markup); <tt> renders the
+        // dialog's name like inline code, matching the WinUI chip.
+        .subtitle("You can still switch it per file in the <tt>Save as</tt> dialog")
         .model(&gtk::StringList::new(&labels))
         .build();
     let current = Container::from_setting(settings.default_container.as_deref());

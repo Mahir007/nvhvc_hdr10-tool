@@ -184,4 +184,13 @@ button.suggested-action:disabled {
   min-height: 56px;
   color: @accent_bg_color;
 }
+
+/* The green checkmark shown in the spinner's place while the finished state is held. */
+.processing-done-circle {
+  min-width: 56px;
+  min-height: 56px;
+  border-radius: 999px;
+  background: alpha(@success_color, .14);
+  color: @success_color;
+}
 "#;

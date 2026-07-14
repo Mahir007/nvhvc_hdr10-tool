@@ -1500,20 +1500,41 @@ fn missing_tools(vm: &Vm) -> Vec<Tool> {
         .collect()
 }
 
-/// The centred processing view (spinner, stage label, progress bar).
+/// The centred processing view (spinner, stage label, progress bar). At the Done stage the
+/// spinner gives way to a green checkmark and the view is held briefly (the worker sleeps
+/// before delivering the result) so completion registers; the stage key in `main` changes
+/// with it, so the swap is a clean subtree remount.
 fn processing_view(vm: &Vm) -> Element {
     let idx = vm.progress.min(5);
+    let done = idx == 5;
     let label = [
         "Probing source metadata",
         "Extracting HEVC stream",
         "Patching bitstream",
         "Capturing frame timing",
         "Remuxing tracks",
-        "Finishing up",
+        "Done",
     ][idx];
     let pct = (idx as f64 / 5.0 * 100.0).round();
+    let indicator: Element = if done {
+        // Same footprint as the ring: a green circle with a check, like the result hero.
+        border(
+            glyph(GLYPH_CHECK, 26.0)
+                .foreground(ThemeRef::SystemSuccess)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .vertical_alignment(VerticalAlignment::Center),
+        )
+        .corner_radius(28.0)
+        .background(ThemeRef::SystemSuccessBackground)
+        .width(56.0)
+        .height(56.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .into()
+    } else {
+        ProgressRing::indeterminate().width(56.0).height(56.0).into()
+    };
     vstack((
-        ProgressRing::indeterminate().width(56.0).height(56.0),
+        indicator,
         text_block(label)
             .font_size(18.0)
             .semibold()
@@ -1738,7 +1759,7 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
         children.push(
             InfoBar::new("Some tracks were left out")
                 .message(format!(
-                    "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                    "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                     summary.dropped_tracks.join(", ")
                 ))
                 .warning()
@@ -1853,8 +1874,36 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             grid((
                 vstack((
                     body("Default output container"),
-                    caption("You can still switch it per file in the Save as dialog")
-                        .foreground(ThemeRef::SecondaryText),
+                    // "Save as" is set off like inline code (mono chip), mirroring the
+                    // GTK subtitle's <tt> run.
+                    hstack((
+                        caption("You can still switch it per file in the")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                        border(
+                            caption("Save as")
+                                .font_family("Consolas")
+                                .foreground(ThemeRef::SecondaryText),
+                        )
+                        .background(Color {
+                            a: 26,
+                            r: 145,
+                            g: 145,
+                            b: 145,
+                        })
+                        .corner_radius(4.0)
+                        .padding(Thickness {
+                            left: 5.0,
+                            top: 0.0,
+                            right: 5.0,
+                            bottom: 1.0,
+                        })
+                        .vertical_alignment(VerticalAlignment::Center),
+                        caption("dialog")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                    ))
+                    .spacing(4.0),
                 ))
                 .spacing(1.0)
                 .vertical_alignment(VerticalAlignment::Center)

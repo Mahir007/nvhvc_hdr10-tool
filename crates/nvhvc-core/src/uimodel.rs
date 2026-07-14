@@ -225,7 +225,6 @@ fn short_transfer(code: u8) -> &'static str {
 
 /// `"11 · Opus + 9 subtitles"`-style summary of the tracks a remux carried over.
 pub fn tracks_line(tracks: &crate::timing::MkvTracks) -> String {
-    let mut parts: Vec<String> = Vec::new();
     // Collapse repeated audio codecs: ["AAC", "AAC"] → "2× AAC".
     let mut seen: Vec<(String, usize)> = Vec::new();
     for codec in &tracks.audio_codecs {
@@ -234,29 +233,47 @@ pub fn tracks_line(tracks: &crate::timing::MkvTracks) -> String {
             None => seen.push((codec.clone(), 1)),
         }
     }
-    for (codec, n) in seen {
-        parts.push(if n > 1 {
-            format!("{n}× {codec}")
-        } else {
-            codec
-        });
-    }
-    if tracks.subtitle_count > 0 {
-        parts.push(format!(
-            "{} subtitle{}",
-            tracks.subtitle_count,
-            if tracks.subtitle_count == 1 { "" } else { "s" }
-        ));
-    }
-    if parts.is_empty() {
-        format!(
+    if seen.is_empty() && tracks.subtitle_count == 0 {
+        return format!(
             "{} track{}",
             tracks.total,
             if tracks.total == 1 { "" } else { "s" }
-        )
-    } else {
-        format!("{} · {}", tracks.total, parts.join(" + "))
+        );
     }
+    // The result rows render this on a single line with no ellipsis to fall back on (a full
+    // 6-codec list broke the WinUI summary layout), so a long list is summarised: keep the
+    // first codecs and fold the rest into "N more audio", shrinking until the line fits.
+    let line = |kept: usize| {
+        let mut parts: Vec<String> = seen[..kept]
+            .iter()
+            .map(|(codec, n)| {
+                if *n > 1 {
+                    format!("{n}× {codec}")
+                } else {
+                    codec.clone()
+                }
+            })
+            .collect();
+        let folded: usize = seen[kept..].iter().map(|(_, n)| n).sum();
+        if folded > 0 {
+            parts.push(format!("{folded} more audio"));
+        }
+        if tracks.subtitle_count > 0 {
+            parts.push(format!(
+                "{} subtitle{}",
+                tracks.subtitle_count,
+                if tracks.subtitle_count == 1 { "" } else { "s" }
+            ));
+        }
+        format!("{} · {}", tracks.total, parts.join(" + "))
+    };
+    let mut kept = seen.len();
+    let mut s = line(kept);
+    while kept > 1 && s.chars().count() > 60 {
+        kept -= 1;
+        s = line(kept);
+    }
+    s
 }
 
 /// `"518 MB"`-style file size.
@@ -464,6 +481,33 @@ mod tests {
             video: Default::default(),
         };
         assert_eq!(tracks_line(&bare), "1 track");
+    }
+
+    #[test]
+    fn tracks_line_summarises_long_codec_lists() {
+        use crate::timing::MkvTracks;
+        // The 23-track master that broke the WinUI result layout: 6 audio, 16 subtitles.
+        let t = MkvTracks {
+            video_track_id: 0,
+            total: 23,
+            audio_codecs: vec![
+                "DTS-HD Master Audio".to_owned(),
+                "TrueHD Atmos".to_owned(),
+                "AC-3 Dolby Surround EX".to_owned(),
+                "AC-3".to_owned(),
+                "AC-3".to_owned(),
+                "AC-3".to_owned(),
+            ],
+            subtitle_count: 16,
+            chapters: 0,
+            video: Default::default(),
+        };
+        let line = tracks_line(&t);
+        assert_eq!(
+            line,
+            "23 · DTS-HD Master Audio + 5 more audio + 16 subtitles"
+        );
+        assert!(line.chars().count() <= 60);
     }
 
     #[test]

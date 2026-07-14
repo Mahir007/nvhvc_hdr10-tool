@@ -767,6 +767,11 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 dropped_tracks: r.dropped_tracks,
             })
             .map_err(|e| e.to_string());
+        // Hold the finished state (checkmark + 100%) briefly so completion registers
+        // before the result screen replaces it.
+        if result.is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
         let _ = tx.send_blocking(Msg::Done(Box::new(result)));
     });
 

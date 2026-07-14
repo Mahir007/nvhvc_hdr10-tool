@@ -112,6 +112,10 @@ fn app(cx: &mut RenderCx) -> Element {
     // subtree instead of morphing one stage's controls into the other's (the reconciler
     // matches keyed children by identity, not position).
     let stage_key = match (shown, processing) {
+        // The Done hold re-keys the processing view so the spinner→checkmark swap is a
+        // wholesale subtree replacement (mixed-type in-place child swaps confuse the
+        // reconciler).
+        (Stage::Encode, true) if vm.progress >= 5 => "processing-done",
         (Stage::Encode, true) => "processing",
         (Stage::Source, _) => "source",
         (Stage::Encode, _) => "encode",
@@ -335,6 +339,9 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
                 &mut |stage| set_progress.call(stage_index(stage)),
             )
             .map_err(|e| e.to_string())?;
+            // Hold the finished state (checkmark + 100%) briefly so completion registers
+            // before the result screen replaces it.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
             Ok(RunSummary {
                 token,
                 output: report.output.display().to_string(),
