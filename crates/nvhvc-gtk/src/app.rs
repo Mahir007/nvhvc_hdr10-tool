@@ -588,7 +588,7 @@ fn show_about(window: &adw::ApplicationWindow) {
         .developer_name("nvhvc")
         .license_type(gtk::License::Gpl30)
         .comments(
-            "Injects HDR10 metadata into HEVC streams without re-encoding — bit-exact \
+            "Injects HDR10 metadata into HEVC streams without re-encoding: bit-exact \
              SPS/VUI editing with the encode's frame timing preserved exactly.",
         )
         .build();
@@ -617,7 +617,7 @@ pub fn confirm_and_run(ctx: &Rc<Ctx>) {
     };
     let dialog = adw::AlertDialog::builder()
         .heading(format!("Replace “{name}”?"))
-        .body("A file with this name already exists. Replacing it will overwrite its contents.")
+        .body("A file with this name already exists.\nReplacing it will overwrite its contents.")
         .build();
     // Replace is added first so it sits on the LEFT (destructive, red) — deliberately not
     // under the pointer's default resting spot. Cancel stays the default/close response so

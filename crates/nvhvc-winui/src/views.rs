@@ -1412,7 +1412,7 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         children.push(
@@ -1586,7 +1586,7 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
                 }),
             // Two manually-centred lines: TextBlock has no TextAlignment, so a wrapped
             // block would left-align its second line.
-            text_block("Your encode now carries the source's HDR10 signalling —")
+            text_block("Your encode now carries the source's HDR10 signalling,")
                 .font_size(13.0)
                 .foreground(ThemeRef::SecondaryText)
                 .horizontal_alignment(HorizontalAlignment::Center),
@@ -1853,7 +1853,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             grid((
                 vstack((
                     body("Default output container"),
-                    caption("Save as can still switch it per file (.mkv / .mp4)")
+                    caption("You can still switch it per file in the Save as dialog")
                         .foreground(ThemeRef::SecondaryText),
                 ))
                 .spacing(1.0)
@@ -1891,11 +1891,6 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
 
     let body_col = vstack((
         body_strong("External tools"),
-        caption(
-            "Point any tool at your own build. A custom path is always used, even when a copy is found on PATH.",
-        )
-        .foreground(ThemeRef::SecondaryText)
-        .wrap(),
         card(vstack(rows).spacing(0.0)).margin(Thickness {
             left: 0.0,
             top: 10.0,
@@ -2397,7 +2392,7 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
                 .font_size(18.0)
                 .semibold(),
             text_block(
-                "A file with this name already exists. Replacing it will overwrite its contents.",
+                "A file with this name already exists.\nReplacing it will overwrite its contents.",
             )
             .font_size(13.0)
             .foreground(ThemeRef::SecondaryText)
@@ -2536,7 +2531,7 @@ fn folder_row(vm: &Vm) -> Element {
     if let Some(draft) = &vm.ui.folder_edit {
         let upd = vm.upd.clone();
         let input = text_box(draft.clone())
-            .placeholder_text("Same folder as the encode")
+            .placeholder_text(r"C:\path\to\output\folder")
             .on_text_changed(move |v: String| {
                 upd.call(move |mut s| {
                     if let Some(d) = s.folder_edit.as_mut() {
@@ -2692,7 +2687,7 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
             let editor = border(
                 vstack((
                     caption(format!(
-                        "{} — custom executable (empty resets to auto-detect)",
+                        "Custom {} executable (empty resets to auto-detect)",
                         tool.label()
                     ))
                     .semibold(),

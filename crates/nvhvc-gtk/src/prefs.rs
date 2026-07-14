@@ -18,10 +18,6 @@ pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Conta
     // --- External tools ---
     let tools_group = adw::PreferencesGroup::builder()
         .title("External tools")
-        .description(
-            "Point any tool at your own build. A custom path is always used, even when a copy is \
-             found on PATH.",
-        )
         .build();
     let settings = Settings::load();
     let toolset = Toolset::discover(&settings.tool_overrides);
@@ -164,7 +160,7 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
     let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
         .title("Default output container")
-        .subtitle("Save as can still switch it per file (.mkv / .mp4)")
+        .subtitle("You can still switch it per file in the Save as dialog")
         .model(&gtk::StringList::new(&labels))
         .build();
     let current = Container::from_setting(settings.default_container.as_deref());
@@ -305,7 +301,7 @@ fn open_folder_editor(window: &adw::ApplicationWindow, row: &adw::ActionRow) {
 
     let entry = gtk::Entry::builder()
         .text(&current)
-        .placeholder_text("Same folder as the encode")
+        .placeholder_text("/path/to/output/folder")
         .hexpand(true)
         .activates_default(true)
         .build();

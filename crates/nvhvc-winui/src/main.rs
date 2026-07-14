@@ -152,7 +152,7 @@ fn app(cx: &mut RenderCx) -> Element {
                 // Two balanced ~60-char lines keep the dialog comfortably wide.
                 .content(format!(
                     "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
-                     re-encoding\n\u{2014} bit-exact SPS/VUI editing, frame timing preserved \
+                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
                      exactly.\n\nGPL-3.0",
                     nvhvc_core::VERSION
                 ))
