@@ -490,7 +490,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
             "amber",
             "dialog-warning-symbolic",
             "No HDR10 signalling detected",
-            "No mastering-display metadata found. The values above can still be edited.",
+            "This file doesn't look like an HDR10 master; the detected values can still be edited above.",
         )
     };
     col.append(&b);
