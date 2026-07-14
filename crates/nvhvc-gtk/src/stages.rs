@@ -72,14 +72,16 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with a bold title line above the body — matching the WinUI
-/// `InfoBar`s, which always carry a title.
+/// Tinted rounded banner with a bold title and the body alongside it — matching the WinUI
+/// `InfoBar`s (title and message share a line; a multi-line body drops below the title,
+/// mirroring the InfoBar's overflow behaviour).
 fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
+    let sep = if body.contains('\n') { "\n" } else { "  " };
     banner_markup(
         kind,
         icon,
         &format!(
-            "<b>{}</b>\n{}",
+            "<b>{}</b>{sep}{}",
             gtk::glib::markup_escape_text(title),
             gtk::glib::markup_escape_text(body)
         ),
