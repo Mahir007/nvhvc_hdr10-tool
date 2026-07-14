@@ -1387,9 +1387,10 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
                 .icon(Symbol::Save)
                 .on_click(crate::pick_output_handler(vm))
                 .grid_column(1)
-                // `on_click` is wired at mount only; the handler captures the container for
-                // the save dialog's preselected type, so a container switch must remount it.
-                .with_key(format!("out-choose-{}", container.extension()))
+                // `on_click` is wired at mount only; the handler captures the container (the
+                // save dialog's preselected type) and the current output name (the dialog's
+                // prefilled file name), so a change to either must remount it.
+                .with_key(format!("out-choose-{}", file_name(&out_display)))
                 .into(),
         );
         padded(
