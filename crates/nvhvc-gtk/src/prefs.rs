@@ -160,9 +160,14 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
     let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
         .title("Default output container")
-        // The subtitle is Pango markup (rows default to use-markup); <tt> renders the
-        // dialog's name like inline code, matching the WinUI chip.
-        .subtitle("You can still switch it per file in the <tt>Save as</tt> dialog")
+        // "Save as" renders like inline code (mono on a translucent grey run), matching
+        // the WinUI chip. use-markup must be explicit: AdwComboRow switches it off
+        // (verified empirically; plain AdwActionRows default to markup on).
+        .use_markup(true)
+        .subtitle(
+            "You can still switch it per file in the <span font_family=\"monospace\" \
+             background=\"#808080\" background_alpha=\"20%\"> Save as </span> dialog",
+        )
         .model(&gtk::StringList::new(&labels))
         .build();
     let current = Container::from_setting(settings.default_container.as_deref());
