@@ -818,11 +818,10 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.encode.is_none() && !s.enc_probing && s.enc_error.is_none() {
         drop(s);
-        // Our bundled "arrow-into-box" glyph (registered in app.rs) — an arrow pointing into a
-        // box, i.e. dropping the encode in to be patched.
+        // Our bundled "extract" glyph (registered in app.rs) — an arrow rising out of a tray.
         col.append(&drop_zone(
             ctx,
-            "arrow-into-box-symbolic",
+            "extract-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -865,10 +864,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         Some(("No HDR10", "amber"))
     };
     let enc_card = card();
-    // Accent video-reel icon like the WinUI film block — the HDR10 badge already carries
-    // the present/missing signal, so no warning triangle here.
+    // Accent film icon like the WinUI film block — the HDR10 badge already carries the
+    // present/missing signal, so no warning triangle here. The reel2 variant keeps the
+    // encode visually distinct from the source's reel.
     enc_card.append(&card_row(&file_row(
-        "video-reel-symbolic",
+        "video-reel2-symbolic",
         "",
         &name,
         &enc.detail(),
