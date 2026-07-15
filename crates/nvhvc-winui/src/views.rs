@@ -18,9 +18,9 @@ const ICON_FONT: &str = "Segoe Fluent Icons";
 
 // Segoe Fluent Icons glyphs.
 const GLYPH_CHECK: &str = "\u{E73E}";
-/// "AutoEnhanceOn" — the double-sparkle mark (result hero; GLYPH_SPARKLE below is the
-/// single star on the Patch button).
-const GLYPH_SPARKLES: &str = "\u{E78D}";
+/// "Sparkle" — the double-sparkle mark (result hero; GLYPH_SPARKLE below is the single
+/// star on the Patch button). E78D renders as a broken box on this font revision.
+const GLYPH_SPARKLES: &str = "\u{F4A5}";
 const GLYPH_CHEVRON: &str = "\u{E76C}";
 const GLYPH_MORE: &str = "\u{E712}";
 /// Film-strip ("MyMovies") — the video-clip glyph used everywhere a source/encode is shown,

@@ -445,6 +445,11 @@ fn build_mp4_items(
         .tracks
         .iter()
         .filter_map(|t| match t.import {
+            Mp4Import::AudioRaw { ext, .. } => Some((
+                t.index,
+                work.join(format!("audio_{}.{ext}", t.index)),
+                t.import,
+            )),
             Mp4Import::AudioDtsCore => Some((
                 t.index,
                 work.join(format!("core_{}.dts", t.index)),
@@ -459,6 +464,11 @@ fn build_mp4_items(
     let jobs: Vec<extract::ExtractJob> = pieces
         .iter()
         .map(|(index, out, import)| match import {
+            Mp4Import::AudioRaw { muxer, .. } => extract::ExtractJob::Audio {
+                index: *index,
+                muxer,
+                out,
+            },
             Mp4Import::AudioDtsCore => extract::ExtractJob::DtsCore { index: *index, out },
             _ => extract::ExtractJob::Srt { index: *index, out },
         })
@@ -474,6 +484,21 @@ fn build_mp4_items(
                 file: encoded.to_path_buf(),
                 num: track.index + 1,
             }),
+            Mp4Import::AudioRaw { muxer, ext } => {
+                let out = work.join(format!("audio_{}.{ext}", track.index));
+                if combined
+                    || extract::extract_audio_raw(ffmpeg, encoded, track.index, muxer, &out).is_ok()
+                {
+                    Some(remux::Mp4Source::File(out))
+                } else {
+                    // Degrades to the direct container import: still bit-exact, just the
+                    // slower path — never a dropped track.
+                    Some(remux::Mp4Source::Track {
+                        file: encoded.to_path_buf(),
+                        num: track.index + 1,
+                    })
+                }
+            }
             Mp4Import::AudioDtsCore => {
                 let out = work.join(format!("core_{}.dts", track.index));
                 if combined || extract::extract_dts_core(ffmpeg, encoded, track.index, &out).is_ok()

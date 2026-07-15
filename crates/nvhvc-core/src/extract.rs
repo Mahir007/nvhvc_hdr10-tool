@@ -58,6 +58,38 @@ pub fn extract_srt(ffmpeg: &Path, input: &Path, index: u64, out_srt: &Path) -> R
     )
 }
 
+/// Extracts audio stream `index` as a raw bitstream file via ffmpeg muxer `muxer` — a
+/// lossless stream copy (self-framing codecs byte for byte; AAC gains removable ADTS
+/// framing). MP4Box imports the raw file far faster than selecting the track out of the
+/// original container.
+pub fn extract_audio_raw(
+    ffmpeg: &Path,
+    input: &Path,
+    index: u64,
+    muxer: &str,
+    out: &Path,
+) -> Result<()> {
+    let map = format!("0:{index}");
+    tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            path_arg(input)?,
+            "-map",
+            &map,
+            "-c:a",
+            "copy",
+            "-f",
+            muxer,
+            path_arg(out)?,
+        ],
+    )
+}
+
 /// Extracts audio stream `index` through the `dca_core` bitstream filter to a raw DTS file —
 /// a lossless passthrough for plain DTS, and the core substream (the only part MP4 can hold)
 /// for DTS-HD MA/HRA.
@@ -87,6 +119,12 @@ pub fn extract_dts_core(ffmpeg: &Path, input: &Path, index: u64, out_dts: &Path)
 
 /// One piece of a combined extraction pass (see [`extract_many`]).
 pub enum ExtractJob<'a> {
+    /// [`extract_audio_raw`] equivalent.
+    Audio {
+        index: u64,
+        muxer: &'static str,
+        out: &'a Path,
+    },
     /// [`extract_dts_core`] equivalent.
     DtsCore { index: u64, out: &'a Path },
     /// [`extract_srt`] equivalent.
@@ -106,6 +144,15 @@ pub fn extract_many(ffmpeg: &Path, input: &Path, jobs: &[ExtractJob]) -> Result<
         .into();
     for job in jobs {
         match job {
+            ExtractJob::Audio { index, muxer, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:a".to_owned(),
+                "copy".to_owned(),
+                "-f".to_owned(),
+                (*muxer).to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
             ExtractJob::DtsCore { index, out } => args.extend([
                 "-map".to_owned(),
                 format!("0:{index}"),

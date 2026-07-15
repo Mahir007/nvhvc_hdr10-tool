@@ -865,9 +865,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         Some(("No HDR10", "amber"))
     };
     let enc_card = card();
+    // Accent video-reel icon like the WinUI film block — the HDR10 badge already carries
+    // the present/missing signal, so no warning triangle here.
     enc_card.append(&card_row(&file_row(
-        "dialog-warning-symbolic",
-        "warn",
+        "video-reel-symbolic",
+        "",
         &name,
         &enc.detail(),
         badge,
@@ -1120,7 +1122,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     // completion hold, so the result hero celebrates instead of re-confirming.
     let spark = gtk::Image::from_icon_name("sparkles-symbolic");
     spark.add_css_class("accent-circle");
-    spark.set_pixel_size(34);
+    spark.set_pixel_size(38);
     spark.set_halign(gtk::Align::Center);
     hero.append(&spark);
     let title = gtk::Label::new(Some("HDR10 metadata embedded"));
