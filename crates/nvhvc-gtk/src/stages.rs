@@ -865,9 +865,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         Some(("No HDR10", "amber"))
     };
     let enc_card = card();
+    // Accent video-reel icon like the WinUI film block — the HDR10 badge already carries
+    // the present/missing signal, so no warning triangle here.
     enc_card.append(&card_row(&file_row(
-        "dialog-warning-symbolic",
-        "warn",
+        "video-reel-symbolic",
+        "",
         &name,
         &enc.detail(),
         badge,
