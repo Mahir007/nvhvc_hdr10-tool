@@ -71,7 +71,19 @@ pub fn probe_media(ffprobe: &Path, source: &Path) -> Result<(ProbedHdr10, VideoI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mp4Import {
     /// MP4Box imports the track straight from the original container (bit-exact copy).
+    /// Only used for codecs with no raw bitstream form — GPAC's `#track` selection during a
+    /// multi-input assembly re-demuxes the whole container per track, which measured 8×
+    /// slower per track than importing an extracted raw file.
     AudioDirect,
+    /// Extracted to a raw bitstream file first (`ffmpeg -c copy -f <muxer>`), then imported.
+    /// A lossless stream copy: self-framing codecs (AC-3/E-AC-3/MP2/MP3) byte for byte, AAC
+    /// via ADTS framing that GPAC strips again on import.
+    AudioRaw {
+        /// The ffmpeg muxer that writes the raw form.
+        muxer: &'static str,
+        /// File extension GPAC recognises the raw form by.
+        ext: &'static str,
+    },
     /// The DTS core substream is extracted losslessly first (`dca_core` bitstream filter) —
     /// carries plain DTS as-is and the core of DTS-HD MA/HRA (the only part MP4 can hold).
     AudioDtsCore,
@@ -173,6 +185,20 @@ fn mp4_audio_name(codec: &str) -> Option<&'static str> {
         "opus" => Some("Opus"),
         "flac" => Some("FLAC"),
         "alac" => Some("ALAC"),
+        _ => None,
+    }
+}
+
+/// The ffmpeg muxer + file extension for a lossless raw extraction of an MP4-compatible
+/// audio codec, when one exists. Codecs without a raw form (Opus/FLAC/ALAC) stay on the
+/// direct container import.
+fn raw_audio_format(codec: &str) -> Option<(&'static str, &'static str)> {
+    match codec {
+        "aac" => Some(("adts", "aac")),
+        "ac3" => Some(("ac3", "ac3")),
+        "eac3" => Some(("eac3", "eac3")),
+        "mp2" => Some(("mp2", "mp2")),
+        "mp3" => Some(("mp3", "mp3")),
         _ => None,
     }
 }
@@ -287,7 +313,13 @@ fn parse_mp4_plan(json: &Value) -> Result<Mp4Plan> {
                 });
             }
             "audio" => match mp4_audio_name(codec) {
-                Some(display) => plan.tracks.push(track(Mp4Import::AudioDirect, display)),
+                Some(display) => {
+                    let import = match raw_audio_format(codec) {
+                        Some((muxer, ext)) => Mp4Import::AudioRaw { muxer, ext },
+                        None => Mp4Import::AudioDirect,
+                    };
+                    plan.tracks.push(track(import, display));
+                }
                 None => dropped.push(dropped_description(codec_type, codec)),
             },
             "subtitle" if mp4_text_subtitle(codec) => {
@@ -768,6 +800,14 @@ mod tests {
         assert_eq!(plan.tracks[0].import, Mp4Import::AudioDtsCore);
         assert_eq!(plan.tracks[1].import, Mp4Import::AudioDtsCore);
         assert_eq!(plan.tracks[2].codec, "AC-3");
+        // Self-framing codecs are extracted raw for the import (see Mp4Import::AudioRaw).
+        assert_eq!(
+            plan.tracks[2].import,
+            Mp4Import::AudioRaw {
+                muxer: "ac3",
+                ext: "ac3"
+            }
+        );
         // The MA extension is noted; TrueHD points at its carried AC-3 companion.
         assert_eq!(
             plan.dropped,
