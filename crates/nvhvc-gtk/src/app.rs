@@ -64,10 +64,14 @@ fn load_css() {
 /// Icons the stock theme lacks, written to the cache dir and added as an (unthemed)
 /// icon search path. Monochrome `-symbolic` SVGs recolor with the theme like any other.
 fn install_bundled_icons() {
-    // Stage-2 encode glyph: the GNOME icon-library "arrow-into-box" (an arrow pointing into a
-    // rounded box). Bundled as a plain file on the unthemed search path; the library ships it
-    // via gresource, but we don't need that packaging here.
-    const ARROW_INTO_BOX_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 5 -0.0078125 c -1.644531 0 -3 1.3554685 -3 3.0000005 v 2 h 2 v -2 c 0 -0.570313 0.429688 -1 1 -1 h 8 c 0.570312 0 1 0.429687 1 1 v 10 c 0 0.570312 -0.429688 1 -1 1 h -8 c -0.570312 0 -1 -0.429688 -1 -1 v -2 h -2 v 2 c 0 1.644531 1.355469 3 3 3 h 8 c 1.644531 0 3 -1.355469 3 -3 v -10 c 0 -1.644532 -1.355469 -3.0000005 -3 -3.0000005 z m 0 0"/><path d="m 6 3.992188 v 1 c 0 0.257812 0.128906 0.527343 0.3125 0.71875 l 1.28125 1.28125 h -7.59375 v 2 h 7.59375 l -1.28125 1.28125 c -0.183594 0.191406 -0.3125 0.410156 -0.3125 0.71875 v 1 h 1 c 0.308594 0 0.550781 -0.089844 0.75 -0.28125 l 3.65625 -3.71875 l -3.65625 -3.71875 c -0.199219 -0.191407 -0.441406 -0.28125 -0.75 -0.28125 z m 0 0"/></g></svg>"##;
+    // Stage-2 drop-zone glyph: the GNOME icon-library "extract" (an arrow rising out of a
+    // rounded tray; SVG kept in scratch/). Bundled as a plain file on the unthemed search
+    // path; the library ships it via gresource, but we don't need that packaging here.
+    const EXTRACT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><path d="m 8.011719 0.0117188 c -0.253907 0 -0.511719 0.0976562 -0.707031 0.2929692 l -2 2 c -0.183594 0.1875 -0.289063 0.441406 -0.285157 0.707031 h -0.007812 v 1 l 1.988281 0.011719 v 7 c 0 0.550781 0.449219 1 1 1 s 1 -0.449219 1 -1 v -7 l 2.011719 -0.015626 v -1 h -0.003907 c 0 -0.261718 -0.101562 -0.515624 -0.289062 -0.707031 l -2 -2 c -0.195312 -0.191406 -0.449219 -0.2929685 -0.707031 -0.2929685 z m -4.011719 7.0117192 c -1.644531 0 -3 1.355468 -3 3 v 3 c 0 1.644531 1.355469 3 3 3 h 8 c 1.644531 0 3 -1.355469 3 -3 v -3 c 0 -1.644532 -1.355469 -3 -3 -3 h -2 v 2 h 2 c 0.5625 0 1 0.4375 1 1 v 3 c 0 0.5625 -0.4375 1 -1 1 h -8 c -0.5625 0 -1 -0.4375 -1 -1 v -3 c 0 -0.5625 0.4375 -1 1 -1 h 2 v -2 z m 0 0" fill="#222222"/></svg>"##;
+
+    // Stage-2 encode-card glyph: the GNOME icon-library "video-reel2" (film frame with a play
+    // button, full-bleed variant; SVG kept in scratch/).
+    const REEL2_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 0 0 v 16 h 2 v -2 h 12 v 2 h 2 v -16 h -2 v 2 h -12 v -2 z m 2 4 h 12 v 8 h -12 z m 0 0"/><path d="m 7 5 c 0.195312 0 0.386719 0.058594 0.554688 0.167969 l 3 2 c 0.589843 0.394531 0.589843 1.269531 0 1.664062 l -3 2 c -0.167969 0.109375 -0.359376 0.167969 -0.554688 0.167969 c 0 0 -1.003906 0 -1 -1 v -4 c -0.003906 -1 1 -1 1 -1 z m 0 0"/></g></svg>"##;
 
     // Stage-1 source glyph: the GNOME icon-library "video-reel" (a film box with a play
     // button). Bundled as a plain file on the same unthemed search path as the upload glyph —
@@ -82,8 +86,9 @@ fn install_bundled_icons() {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let _ = std::fs::write(dir.join("arrow-into-box-symbolic.svg"), ARROW_INTO_BOX_SVG);
+    let _ = std::fs::write(dir.join("extract-symbolic.svg"), EXTRACT_SVG);
     let _ = std::fs::write(dir.join("video-reel-symbolic.svg"), REEL_SVG);
+    let _ = std::fs::write(dir.join("video-reel2-symbolic.svg"), REEL2_SVG);
     let _ = std::fs::write(dir.join("sparkles-symbolic.svg"), SPARKLES_SVG);
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
