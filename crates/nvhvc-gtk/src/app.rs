@@ -76,7 +76,7 @@ fn install_bundled_icons() {
 
     // Result-hero glyph: a three-sparkle "sparkles" mark, hand-drawn in the GNOME symbolic
     // style (this icon-library revision doesn't ship one).
-    const SPARKLES_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="M 6.5 3 C 6.2 6 4.5 7.7 1.5 8 C 4.5 8.3 6.2 10 6.5 13 C 6.8 10 8.5 8.3 11.5 8 C 8.5 7.7 6.8 6 6.5 3 Z"/><path d="M 12.5 1 C 12.3 2.8 11.3 3.8 9.5 4 C 11.3 4.2 12.3 5.2 12.5 7 C 12.7 5.2 13.7 4.2 15.5 4 C 13.7 3.8 12.7 2.8 12.5 1 Z"/><path d="M 12 9.5 C 11.85 11 11 11.85 9.5 12 C 11 12.15 11.85 13 12 14.5 C 12.15 13 13 12.15 14.5 12 C 13 11.85 12.15 11 12 9.5 Z"/></g></svg>"##;
+    const SPARKLES_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="M 6 3.1 C 5.65 6.6 3.6 8.65 0.1 9 C 3.6 9.35 5.65 11.4 6 14.9 C 6.35 11.4 8.4 9.35 11.9 9 C 8.4 8.65 6.35 6.6 6 3.1 Z"/><path d="M 11.9 0.7 C 11.7 2.75 10.55 3.9 8.5 4.1 C 10.55 4.3 11.7 5.45 11.9 7.5 C 12.1 5.45 13.25 4.3 15.3 4.1 C 13.25 3.9 12.1 2.75 11.9 0.7 Z"/><path d="M 13.2 9.2 C 13.05 10.8 12.2 11.65 10.6 11.8 C 12.2 11.95 13.05 12.8 13.2 14.4 C 13.35 12.8 14.2 11.95 15.8 11.8 C 14.2 11.65 13.35 10.8 13.2 9.2 Z"/></g></svg>"##;
 
     let dir = glib::user_cache_dir().join("nvhvc-icons");
     if std::fs::create_dir_all(&dir).is_err() {

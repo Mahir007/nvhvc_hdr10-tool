@@ -1120,7 +1120,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
     // completion hold, so the result hero celebrates instead of re-confirming.
     let spark = gtk::Image::from_icon_name("sparkles-symbolic");
     spark.add_css_class("accent-circle");
-    spark.set_pixel_size(34);
+    spark.set_pixel_size(38);
     spark.set_halign(gtk::Align::Center);
     hero.append(&spark);
     let title = gtk::Label::new(Some("HDR10 metadata embedded"));
