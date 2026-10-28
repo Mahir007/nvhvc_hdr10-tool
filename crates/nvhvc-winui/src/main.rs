@@ -112,6 +112,10 @@ fn app(cx: &mut RenderCx) -> Element {
     // subtree instead of morphing one stage's controls into the other's (the reconciler
     // matches keyed children by identity, not position).
     let stage_key = match (shown, processing) {
+        // The Done hold re-keys the processing view so the spinner→checkmark swap is a
+        // wholesale subtree replacement (mixed-type in-place child swaps confuse the
+        // reconciler).
+        (Stage::Encode, true) if vm.progress >= 5 => "processing-done",
         (Stage::Encode, true) => "processing",
         (Stage::Source, _) => "source",
         (Stage::Encode, _) => "encode",
@@ -152,7 +156,7 @@ fn app(cx: &mut RenderCx) -> Element {
                 // Two balanced ~60-char lines keep the dialog comfortably wide.
                 .content(format!(
                     "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
-                     re-encoding\n\u{2014} bit-exact SPS/VUI editing, frame timing preserved \
+                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
                      exactly.\n\nGPL-3.0",
                     nvhvc_core::VERSION
                 ))
@@ -239,12 +243,14 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     move || {
         if let Some(path) = pick_file() {
             set_encode.call(path.clone());
-            // Settings are re-read here so a default-folder change in Preferences applies
-            // to the very next pick.
+            // Settings are re-read here so a default folder/suffix change in Preferences
+            // applies to the very next pick.
+            let settings = Settings::load();
             set_output.call(default_output(
                 &path,
                 container,
-                Settings::load().default_output_dir.as_deref(),
+                settings.default_output_dir.as_deref(),
+                settings.default_output_suffix.as_deref(),
             ));
             fire_probe(&trigger, path);
         }
@@ -253,15 +259,19 @@ pub fn pick_encode_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
 
 /// Click handler for choosing the output path (save dialog restricted to .mkv/.mp4).
 ///
-/// Captures the current container, so the button carrying it is keyed by container in the
-/// view — a container switch remounts it with a fresh closure (reactor wires `on_click` at
-/// mount only).
+/// Captures the current container and the derived output name (prefilled in the dialog), so
+/// the button carrying it is keyed by the effective output name in the view — a container or
+/// output change remounts it with a fresh closure (reactor wires `on_click` at mount only).
 pub fn pick_output_handler(vm: &Vm) -> impl Fn() + Clone + 'static {
     let set_output = vm.set_output.clone();
     let upd = vm.upd.clone();
     let container = vm.ui.container;
+    let initial = {
+        let out = effective_output(&vm.output, container);
+        (!out.is_empty()).then(|| nvhvc_core::uimodel::file_name(&out))
+    };
     move || {
-        if let Some(path) = pick_save_file(container) {
+        if let Some(path) = pick_save_file(container, initial.as_deref()) {
             let (path, container, rewritten) = normalize_output_pick(&path, container);
             set_output.call(path.clone());
             upd.call(move |mut s| {
@@ -333,6 +343,9 @@ pub fn launch_run(vm: &Vm) -> impl Fn() + Clone + 'static {
                 &mut |stage| set_progress.call(stage_index(stage)),
             )
             .map_err(|e| e.to_string())?;
+            // Hold the finished state (checkmark + 100%) briefly so completion registers
+            // before the result screen replaces it.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
             Ok(RunSummary {
                 token,
                 output: report.output.display().to_string(),
@@ -381,14 +394,19 @@ fn pick_file() -> Option<String> {
 /// Shows the native Save dialog for the output file, offering only the containers the
 /// pipeline can write (.mkv / .mp4). The preselected type follows the wizard's current
 /// container, and the dialog appends the matching extension to a typed bare name.
-fn pick_save_file(container: Container) -> Option<String> {
+fn pick_save_file(container: Container, initial: Option<&str>) -> Option<String> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::UI::Shell::{Common::COMDLG_FILTERSPEC, FileSaveDialog, IFileDialog};
-    use windows::core::w;
+    use windows::core::{HSTRING, PCWSTR, w};
 
     unsafe {
         let dialog: IFileDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        // Prefill the name the wizard already shows on the output card (mirrors GTK).
+        if let Some(name) = initial {
+            let name = HSTRING::from(name);
+            let _ = dialog.SetFileName(PCWSTR(name.as_ptr()));
+        }
         // Same order as `Container::ALL`; the type index below is 1-based.
         let types = [
             COMDLG_FILTERSPEC {

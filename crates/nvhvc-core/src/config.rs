@@ -22,6 +22,9 @@ pub struct Settings {
     pub default_container: Option<String>,
     /// Folder auto-named outputs are saved to. `None` (or empty) = next to the encode.
     pub default_output_dir: Option<PathBuf>,
+    /// Suffix appended verbatim to the encode's file stem when auto-naming the output.
+    /// `None` (or empty) = [`crate::uimodel::DEFAULT_OUTPUT_SUFFIX`].
+    pub default_output_suffix: Option<String>,
     /// GUI theme preference: `"system"` (follow the OS), `"light"` or `"dark"`.
     pub ui_theme: Option<String>,
 }

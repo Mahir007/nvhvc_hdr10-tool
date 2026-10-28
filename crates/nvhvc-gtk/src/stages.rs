@@ -72,14 +72,17 @@ fn card_row(child: &impl IsA<gtk::Widget>) -> gtk::ListBoxRow {
         .build()
 }
 
-/// Tinted rounded banner with a bold title line above the body — matching the WinUI
-/// `InfoBar`s, which always carry a title.
+/// Tinted rounded banner with a bold title and the body alongside it — matching the WinUI
+/// `InfoBar`s (title and message share a line; a multi-line or long body drops below the
+/// title, mirroring the InfoBar's overflow behaviour).
 fn banner_titled(kind: &str, icon: &str, title: &str, body: &str) -> gtk::Box {
+    let stacked = body.contains('\n') || title.chars().count() + body.chars().count() > 64;
+    let sep = if stacked { "\n" } else { "  " };
     banner_markup(
         kind,
         icon,
         &format!(
-            "<b>{}</b>\n{}",
+            "<b>{}</b>{sep}{}",
             gtk::glib::markup_escape_text(title),
             gtk::glib::markup_escape_text(body)
         ),
@@ -488,7 +491,7 @@ pub fn stage_source(ctx: &Rc<Ctx>) -> gtk::Widget {
             "amber",
             "dialog-warning-symbolic",
             "No HDR10 signalling detected",
-            "No mastering-display metadata found — the values above can still be edited.",
+            "This file doesn't look like an HDR10 master; the detected values can still be edited above.",
         )
     };
     col.append(&b);
@@ -799,11 +802,11 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     let s = ctx.state.borrow();
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // "Copying from …" banner: bold title line + colour summary below, mirroring the WinUI
-    // InfoBar (title/message) — no separator dot between the file name and the metadata.
+    // "Copying from …" banner: bold title with the colour summary alongside, mirroring the
+    // WinUI InfoBar (title/message) — no separator dot between the file name and the metadata.
     if let (Some(src), Some(meta)) = (&s.source, s.effective()) {
         let markup = format!(
-            "<b>Copying from {}</b>\n{}",
+            "<b>Copying from {}</b>  {}",
             gtk::glib::markup_escape_text(&uimodel::file_name(&src.path.display().to_string())),
             gtk::glib::markup_escape_text(&uimodel::colour_summary(&meta)),
         );
@@ -815,11 +818,10 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 
     if s.encode.is_none() && !s.enc_probing && s.enc_error.is_none() {
         drop(s);
-        // Our bundled "arrow-into-box" glyph (registered in app.rs) — an arrow pointing into a
-        // box, i.e. dropping the encode in to be patched.
+        // Our bundled "extract" glyph (registered in app.rs) — an arrow rising out of a tray.
         col.append(&drop_zone(
             ctx,
-            "arrow-into-box-symbolic",
+            "extract-symbolic",
             "Select the encode to patch",
             "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
             false,
@@ -862,9 +864,12 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
         Some(("No HDR10", "amber"))
     };
     let enc_card = card();
+    // Accent film icon like the WinUI film block — the HDR10 badge already carries the
+    // present/missing signal, so no warning triangle here. The reel2 variant keeps the
+    // encode visually distinct from the source's reel.
     enc_card.append(&card_row(&file_row(
-        "dialog-warning-symbolic",
-        "warn",
+        "video-reel2-symbolic",
+        "",
         &name,
         &enc.detail(),
         badge,
@@ -924,7 +929,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("out.{}", container.extension()));
         choose.connect_clicked(move |_| {
-            app::pick_output(&ctx, Some(&initial), container, |ctx, path| {
+            app::pick_output(&ctx, Some(&initial), |ctx, path| {
                 {
                     let mut st = ctx.state.borrow_mut();
                     let (normalized, container, rewritten) =
@@ -951,7 +956,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         col.append(&banner_titled(
@@ -989,6 +994,8 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
 /// in place, so the spinner animation runs uninterrupted across stage changes.
 pub struct ProcessingUi {
     pub root: gtk::Widget,
+    spinner: adw::Spinner,
+    check: gtk::Image,
     title: gtk::Label,
     bar: gtk::ProgressBar,
     step: gtk::Label,
@@ -1012,12 +1019,17 @@ const STAGE_LABELS: [&str; 6] = [
     "Patching bitstream",
     "Capturing frame timing",
     "Remuxing tracks",
-    "Finishing up",
+    "Done",
 ];
 
 impl ProcessingUi {
     pub fn update(&self, stage: PipeStage) {
         let idx = stage_index(stage);
+        // The Done stage is held on screen briefly (the worker sleeps before delivering the
+        // result), so the finished state registers: checkmark in place of the spinner, 100%.
+        let done = stage == PipeStage::Done;
+        self.spinner.set_visible(!done);
+        self.check.set_visible(done);
         self.title.set_label(STAGE_LABELS[idx]);
         self.bar.set_fraction(idx as f64 / 5.0);
         self.step.set_label(&format!("Stage {} of 6", idx + 1));
@@ -1040,6 +1052,14 @@ pub fn build_processing(stage: PipeStage) -> ProcessingUi {
     spinner.add_css_class("processing-spinner");
     spinner.set_halign(gtk::Align::Center);
     col.append(&spinner);
+
+    // Swapped in for the spinner while the finished state is held (same footprint).
+    let check = gtk::Image::from_icon_name("object-select-symbolic");
+    check.add_css_class("processing-done-circle");
+    check.set_pixel_size(28);
+    check.set_halign(gtk::Align::Center);
+    check.set_visible(false);
+    col.append(&check);
 
     let title = gtk::Label::new(None);
     title.add_css_class("title-3");
@@ -1069,6 +1089,8 @@ pub fn build_processing(stage: PipeStage) -> ProcessingUi {
 
     let ui = ProcessingUi {
         root: col.upcast(),
+        spinner,
+        check,
         title,
         bar,
         step,
@@ -1096,18 +1118,20 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
         .halign(gtk::Align::Center)
         .margin_bottom(24)
         .build();
-    let check = gtk::Image::from_icon_name("object-select-symbolic");
-    check.add_css_class("success-circle");
-    check.set_pixel_size(34);
-    check.set_halign(gtk::Align::Center);
-    hero.append(&check);
+    // Sparkles on the accent tint: the green checkmark moved to the processing view's
+    // completion hold, so the result hero celebrates instead of re-confirming.
+    let spark = gtk::Image::from_icon_name("sparkles-symbolic");
+    spark.add_css_class("accent-circle");
+    spark.set_pixel_size(38);
+    spark.set_halign(gtk::Align::Center);
+    hero.append(&spark);
     let title = gtk::Label::new(Some("HDR10 metadata embedded"));
     title.add_css_class("title-2");
     title.set_margin_top(14);
     hero.append(&title);
     let sub = gtk::Label::builder()
         .label(
-            "Your encode now carries the source's HDR10 signalling — losslessly, with every frame's timing preserved.",
+            "Your encode now carries the source's HDR10 signalling, losslessly, with every frame's timing preserved.",
         )
         .wrap(true)
         .justify(gtk::Justification::Center)
@@ -1236,7 +1260,7 @@ pub fn stage_result(ctx: &Rc<Ctx>) -> gtk::Widget {
             "dialog-warning-symbolic",
             "Some tracks were left out",
             &format!(
-                "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                 result.dropped_tracks.join(", ")
             ),
         );

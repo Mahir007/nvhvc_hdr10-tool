@@ -132,7 +132,7 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
             );
             if !report.dropped_tracks.is_empty() {
                 println!(
-                    "  note        : not carried into MP4 — {}",
+                    "  note        : not carried into MP4 ({})",
                     report.dropped_tracks.join(", ")
                 );
             }
@@ -185,7 +185,7 @@ fn print_metadata(p: &ProbedHdr10) {
         Some(md) => {
             let gamut = naming::gamut_name(md).unwrap_or("Custom");
             println!(
-                "  mastering : {gamut} — max {:.0} nits, min {:.4} nits",
+                "  mastering : {gamut}, max {:.0} nits, min {:.4} nits",
                 md.max_luminance as f64 / 10_000.0,
                 md.min_luminance as f64 / 10_000.0,
             );

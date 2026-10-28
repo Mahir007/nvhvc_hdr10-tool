@@ -243,6 +243,9 @@ mod tests {
         assert!(rbsp_has_sei_payload(&cll_only, SEI_CONTENT_LIGHT_LEVEL));
         assert!(!rbsp_has_sei_payload(&md_only, SEI_CONTENT_LIGHT_LEVEL));
         // A bare prefix-SEI header with only trailing bits has no messages.
-        assert!(!rbsp_has_sei_payload(&[0x4E, 0x01, 0x80], SEI_MASTERING_DISPLAY));
+        assert!(!rbsp_has_sei_payload(
+            &[0x4E, 0x01, 0x80],
+            SEI_MASTERING_DISPLAY
+        ));
     }
 }

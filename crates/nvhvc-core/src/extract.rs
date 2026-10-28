@@ -58,6 +58,38 @@ pub fn extract_srt(ffmpeg: &Path, input: &Path, index: u64, out_srt: &Path) -> R
     )
 }
 
+/// Extracts audio stream `index` as a raw bitstream file via ffmpeg muxer `muxer` — a
+/// lossless stream copy (self-framing codecs byte for byte; AAC gains removable ADTS
+/// framing). MP4Box imports the raw file far faster than selecting the track out of the
+/// original container.
+pub fn extract_audio_raw(
+    ffmpeg: &Path,
+    input: &Path,
+    index: u64,
+    muxer: &str,
+    out: &Path,
+) -> Result<()> {
+    let map = format!("0:{index}");
+    tools::run(
+        ffmpeg,
+        Tool::Ffmpeg,
+        &[
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            path_arg(input)?,
+            "-map",
+            &map,
+            "-c:a",
+            "copy",
+            "-f",
+            muxer,
+            path_arg(out)?,
+        ],
+    )
+}
+
 /// Extracts audio stream `index` through the `dca_core` bitstream filter to a raw DTS file —
 /// a lossless passthrough for plain DTS, and the core substream (the only part MP4 can hold)
 /// for DTS-HD MA/HRA.
@@ -83,6 +115,68 @@ pub fn extract_dts_core(ffmpeg: &Path, input: &Path, index: u64, out_dts: &Path)
             path_arg(out_dts)?,
         ],
     )
+}
+
+/// One piece of a combined extraction pass (see [`extract_many`]).
+pub enum ExtractJob<'a> {
+    /// [`extract_audio_raw`] equivalent.
+    Audio {
+        index: u64,
+        muxer: &'static str,
+        out: &'a Path,
+    },
+    /// [`extract_dts_core`] equivalent.
+    DtsCore { index: u64, out: &'a Path },
+    /// [`extract_srt`] equivalent.
+    Srt { index: u64, out: &'a Path },
+}
+
+/// Extracts every job's track in a single ffmpeg invocation, so the input is read once —
+/// per-track invocations re-read the whole file once per track, which dominated multi-track
+/// MP4 runs. One bad track fails the whole pass: callers fall back to the per-track
+/// extractors to isolate the failure.
+pub fn extract_many(ffmpeg: &Path, input: &Path, jobs: &[ExtractJob]) -> Result<()> {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<String> = ["-y", "-loglevel", "error", "-i", path_arg(input)?]
+        .map(str::to_owned)
+        .into();
+    for job in jobs {
+        match job {
+            ExtractJob::Audio { index, muxer, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:a".to_owned(),
+                "copy".to_owned(),
+                "-f".to_owned(),
+                (*muxer).to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
+            ExtractJob::DtsCore { index, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:a".to_owned(),
+                "copy".to_owned(),
+                "-bsf:a".to_owned(),
+                "dca_core".to_owned(),
+                "-f".to_owned(),
+                "dts".to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
+            ExtractJob::Srt { index, out } => args.extend([
+                "-map".to_owned(),
+                format!("0:{index}"),
+                "-c:s".to_owned(),
+                "srt".to_owned(),
+                "-f".to_owned(),
+                "srt".to_owned(),
+                path_arg(out)?.to_owned(),
+            ]),
+        }
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    tools::run(ffmpeg, Tool::Ffmpeg, &args)
 }
 
 /// Extracts a Matroska file's chapters in OGM ("simple") format — exactly what MP4Box's

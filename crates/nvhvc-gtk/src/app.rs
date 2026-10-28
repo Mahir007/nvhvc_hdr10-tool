@@ -64,22 +64,32 @@ fn load_css() {
 /// Icons the stock theme lacks, written to the cache dir and added as an (unthemed)
 /// icon search path. Monochrome `-symbolic` SVGs recolor with the theme like any other.
 fn install_bundled_icons() {
-    // Stage-2 encode glyph: the GNOME icon-library "arrow-into-box" (an arrow pointing into a
-    // rounded box). Bundled as a plain file on the unthemed search path; the library ships it
-    // via gresource, but we don't need that packaging here.
-    const ARROW_INTO_BOX_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 5 -0.0078125 c -1.644531 0 -3 1.3554685 -3 3.0000005 v 2 h 2 v -2 c 0 -0.570313 0.429688 -1 1 -1 h 8 c 0.570312 0 1 0.429687 1 1 v 10 c 0 0.570312 -0.429688 1 -1 1 h -8 c -0.570312 0 -1 -0.429688 -1 -1 v -2 h -2 v 2 c 0 1.644531 1.355469 3 3 3 h 8 c 1.644531 0 3 -1.355469 3 -3 v -10 c 0 -1.644532 -1.355469 -3.0000005 -3 -3.0000005 z m 0 0"/><path d="m 6 3.992188 v 1 c 0 0.257812 0.128906 0.527343 0.3125 0.71875 l 1.28125 1.28125 h -7.59375 v 2 h 7.59375 l -1.28125 1.28125 c -0.183594 0.191406 -0.3125 0.410156 -0.3125 0.71875 v 1 h 1 c 0.308594 0 0.550781 -0.089844 0.75 -0.28125 l 3.65625 -3.71875 l -3.65625 -3.71875 c -0.199219 -0.191407 -0.441406 -0.28125 -0.75 -0.28125 z m 0 0"/></g></svg>"##;
+    // Stage-2 drop-zone glyph: the GNOME icon-library "extract" (an arrow rising out of a
+    // rounded tray; SVG kept in scratch/). Bundled as a plain file on the unthemed search
+    // path; the library ships it via gresource, but we don't need that packaging here.
+    const EXTRACT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><path d="m 8.011719 0.0117188 c -0.253907 0 -0.511719 0.0976562 -0.707031 0.2929692 l -2 2 c -0.183594 0.1875 -0.289063 0.441406 -0.285157 0.707031 h -0.007812 v 1 l 1.988281 0.011719 v 7 c 0 0.550781 0.449219 1 1 1 s 1 -0.449219 1 -1 v -7 l 2.011719 -0.015626 v -1 h -0.003907 c 0 -0.261718 -0.101562 -0.515624 -0.289062 -0.707031 l -2 -2 c -0.195312 -0.191406 -0.449219 -0.2929685 -0.707031 -0.2929685 z m -4.011719 7.0117192 c -1.644531 0 -3 1.355468 -3 3 v 3 c 0 1.644531 1.355469 3 3 3 h 8 c 1.644531 0 3 -1.355469 3 -3 v -3 c 0 -1.644532 -1.355469 -3 -3 -3 h -2 v 2 h 2 c 0.5625 0 1 0.4375 1 1 v 3 c 0 0.5625 -0.4375 1 -1 1 h -8 c -0.5625 0 -1 -0.4375 -1 -1 v -3 c 0 -0.5625 0.4375 -1 1 -1 h 2 v -2 z m 0 0" fill="#222222"/></svg>"##;
+
+    // Stage-2 encode-card glyph: the GNOME icon-library "video-reel2" (film frame with a play
+    // button, full-bleed variant; SVG kept in scratch/).
+    const REEL2_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 0 0 v 16 h 2 v -2 h 12 v 2 h 2 v -16 h -2 v 2 h -12 v -2 z m 2 4 h 12 v 8 h -12 z m 0 0"/><path d="m 7 5 c 0.195312 0 0.386719 0.058594 0.554688 0.167969 l 3 2 c 0.589843 0.394531 0.589843 1.269531 0 1.664062 l -3 2 c -0.167969 0.109375 -0.359376 0.167969 -0.554688 0.167969 c 0 0 -1.003906 0 -1 -1 v -4 c -0.003906 -1 1 -1 1 -1 z m 0 0"/></g></svg>"##;
 
     // Stage-1 source glyph: the GNOME icon-library "video-reel" (a film box with a play
     // button). Bundled as a plain file on the same unthemed search path as the upload glyph —
     // the library ships it via gresource, but we don't need that packaging here.
     const REEL_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="m 0 0 v 15 h 2 v -1 h 12 v 1 h 2 v -15 h -2 v 1 h -12 v -1 z m 2 3 h 12 v 9 h -12 z m 0 0"/><path d="m 13 11 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 9 -2 v -1 h -1 v 1 z m -9 0 v -1 h -1 v 1 z m 0 0"/><path d="m 7 4.5 c 0.195312 0 0.386719 0.058594 0.554688 0.167969 l 3 2 c 0.589843 0.394531 0.589843 1.269531 0 1.664062 l -3 2 c -0.167969 0.109375 -0.359376 0.167969 -0.554688 0.167969 c 0 0 -1.003906 0 -1 -1 v -4 c -0.003906 -1 1 -1 1 -1 z m 0 0"/></g></svg>"##;
 
+    // Result-hero glyph: a three-sparkle "sparkles" mark, hand-drawn in the GNOME symbolic
+    // style (this icon-library revision doesn't ship one).
+    const SPARKLES_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 0 16 16" width="16px"><g fill="#222222"><path d="M 6 3.1 C 5.65 6.6 3.6 8.65 0.1 9 C 3.6 9.35 5.65 11.4 6 14.9 C 6.35 11.4 8.4 9.35 11.9 9 C 8.4 8.65 6.35 6.6 6 3.1 Z"/><path d="M 11.9 0.7 C 11.7 2.75 10.55 3.9 8.5 4.1 C 10.55 4.3 11.7 5.45 11.9 7.5 C 12.1 5.45 13.25 4.3 15.3 4.1 C 13.25 3.9 12.1 2.75 11.9 0.7 Z"/><path d="M 13.2 9.2 C 13.05 10.8 12.2 11.65 10.6 11.8 C 12.2 11.95 13.05 12.8 13.2 14.4 C 13.35 12.8 14.2 11.95 15.8 11.8 C 14.2 11.65 13.35 10.8 13.2 9.2 Z"/></g></svg>"##;
+
     let dir = glib::user_cache_dir().join("nvhvc-icons");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let _ = std::fs::write(dir.join("arrow-into-box-symbolic.svg"), ARROW_INTO_BOX_SVG);
+    let _ = std::fs::write(dir.join("extract-symbolic.svg"), EXTRACT_SVG);
     let _ = std::fs::write(dir.join("video-reel-symbolic.svg"), REEL_SVG);
+    let _ = std::fs::write(dir.join("video-reel2-symbolic.svg"), REEL2_SVG);
+    let _ = std::fs::write(dir.join("sparkles-symbolic.svg"), SPARKLES_SVG);
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
     }
@@ -588,7 +598,7 @@ fn show_about(window: &adw::ApplicationWindow) {
         .developer_name("nvhvc")
         .license_type(gtk::License::Gpl30)
         .comments(
-            "Injects HDR10 metadata into HEVC streams without re-encoding — bit-exact \
+            "Injects HDR10 metadata into HEVC streams without re-encoding: bit-exact \
              SPS/VUI editing with the encode's frame timing preserved exactly.",
         )
         .build();
@@ -617,7 +627,7 @@ pub fn confirm_and_run(ctx: &Rc<Ctx>) {
     };
     let dialog = adw::AlertDialog::builder()
         .heading(format!("Replace “{name}”?"))
-        .body("A file with this name already exists. Replacing it will overwrite its contents.")
+        .body("A file with this name already exists.\nReplacing it will overwrite its contents.")
         .build();
     // Replace is added first so it sits on the LEFT (destructive, red) — deliberately not
     // under the pointer's default resting spot. Cancel stays the default/close response so
@@ -655,12 +665,14 @@ pub fn start_probe(ctx: &Rc<Ctx>, path: PathBuf, is_source: bool) {
             s.enc_probing = true;
             s.enc_error = None;
             s.encode = None;
-            // Settings are re-read here so a default-folder change in Preferences applies to
-            // the very next pick.
+            // Settings are re-read here so a default folder/suffix change in Preferences
+            // applies to the very next pick.
+            let settings = Settings::load();
             s.output = Some(PathBuf::from(nvhvc_core::uimodel::default_output(
                 &path.display().to_string(),
                 s.container,
-                Settings::load().default_output_dir.as_deref(),
+                settings.default_output_dir.as_deref(),
+                settings.default_output_suffix.as_deref(),
             )));
             s.output_user_chosen = false;
         }
@@ -765,6 +777,11 @@ pub fn start_run(ctx: &Rc<Ctx>) {
                 dropped_tracks: r.dropped_tracks,
             })
             .map_err(|e| e.to_string());
+        // Hold the finished state (checkmark + 100%) briefly so completion registers
+        // before the result screen replaces it.
+        if result.is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
         let _ = tx.send_blocking(Msg::Done(Box::new(result)));
     });
 
@@ -840,34 +857,32 @@ pub fn pick_file(ctx: &Rc<Ctx>, title: &str, on_pick: impl Fn(&Rc<Ctx>, PathBuf)
     );
 }
 
-/// Opens the native save dialog for the output file, offering only the containers the
-/// pipeline can write (.mkv / .mp4). The preselected filter follows the wizard's current
-/// container choice.
+/// Opens the native save dialog for the output file, showing the video files the pipeline
+/// can write (.mkv / .mp4).
+///
+/// One combined filter, not one per container: GTK's FileDialog never reports which filter
+/// the user picked and never rewrites the typed name, so per-container filters just sat
+/// there lying next to a prefilled name whose extension didn't follow them. The file name's
+/// extension is the single per-file container switch (a foreign or missing extension is
+/// normalised to the current container by the caller).
 pub fn pick_output(
     ctx: &Rc<Ctx>,
     initial_name: Option<&str>,
-    container: Container,
     on_pick: impl Fn(&Rc<Ctx>, PathBuf) + 'static,
 ) {
-    let filters = gio::ListStore::new::<gtk::FileFilter>();
-    let mut default_filter = None;
+    let videos = gtk::FileFilter::new();
+    videos.set_name(Some("Video files (*.mkv, *.mp4)"));
     for c in Container::ALL {
-        let f = gtk::FileFilter::new();
-        f.set_name(Some(c.label()));
-        f.add_suffix(c.extension());
-        filters.append(&f);
-        if c == container {
-            default_filter = Some(f);
-        }
+        videos.add_suffix(c.extension());
     }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&videos);
     let mut builder = gtk::FileDialog::builder()
         .title("Choose output file")
-        .filters(&filters);
+        .filters(&filters)
+        .default_filter(&videos);
     if let Some(name) = initial_name {
         builder = builder.initial_name(name);
-    }
-    if let Some(f) = &default_filter {
-        builder = builder.default_filter(f);
     }
     let dialog = builder.build();
     let ctx = ctx.clone();

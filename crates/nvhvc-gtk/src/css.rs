@@ -124,12 +124,12 @@ button.open-pill:hover {
 }
 
 /* ===== result ===== */
-.success-circle {
+.accent-circle {
   min-width: 68px;
   min-height: 68px;
   border-radius: 999px;
-  background: alpha(@success_color, .14);
-  color: @success_color;
+  background: alpha(@accent_bg_color, .14);
+  color: @accent_bg_color;
 }
 
 /* ===== theme selector circles (app menu) ===== */
@@ -183,5 +183,14 @@ button.suggested-action:disabled {
   min-width: 56px;
   min-height: 56px;
   color: @accent_bg_color;
+}
+
+/* The green checkmark shown in the spinner's place while the finished state is held. */
+.processing-done-circle {
+  min-width: 56px;
+  min-height: 56px;
+  border-radius: 999px;
+  background: alpha(@success_color, .14);
+  color: @success_color;
 }
 "#;

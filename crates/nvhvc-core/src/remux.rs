@@ -103,7 +103,11 @@ fn mkv_colour_args(hdr: &Hdr10Metadata) -> Vec<String> {
             xy(md.primaries_y[1]),
         ));
         a.push("--white-colour-coordinates".to_owned());
-        a.push(format!("0:{},{}", xy(md.white_point_x), xy(md.white_point_y)));
+        a.push(format!(
+            "0:{},{}",
+            xy(md.white_point_x),
+            xy(md.white_point_y)
+        ));
         a.push("--max-luminance".to_owned());
         a.push(format!("0:{}", lum(md.max_luminance)));
         a.push("--min-luminance".to_owned());
@@ -286,6 +290,11 @@ pub fn mp4box_set_track_names(
 ) -> Result<()> {
     let mut args: Vec<String> = Vec::new();
     for (item, id) in items.iter().zip(track_ids) {
+        // GPAC stamps its importer spec + version as the handler name ("mkv:lang=eng@GPAC…")
+        // on every imported track, and tools like MediaInfo surface that as a bogus track
+        // Title. Blank it on every track; a real title lives in the udta name below.
+        args.push("-name".to_owned());
+        args.push(format!("{id}="));
         if let Some(name) = &item.name {
             args.push("-udta".to_owned());
             args.push(format!("{id}:type=name:str={}", sanitize_opt(name)));

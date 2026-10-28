@@ -18,6 +18,9 @@ const ICON_FONT: &str = "Segoe Fluent Icons";
 
 // Segoe Fluent Icons glyphs.
 const GLYPH_CHECK: &str = "\u{E73E}";
+/// "Sparkle" — the double-sparkle mark (result hero; GLYPH_SPARKLE below is the single
+/// star on the Patch button). E78D renders as a broken box on this font revision.
+const GLYPH_SPARKLES: &str = "\u{F4A5}";
 const GLYPH_CHEVRON: &str = "\u{E76C}";
 const GLYPH_MORE: &str = "\u{E712}";
 /// Film-strip ("MyMovies") — the video-clip glyph used everywhere a source/encode is shown,
@@ -585,10 +588,12 @@ fn drop_zone(
                     let path = item.path.clone();
                     set_path.call(path.clone());
                     if let Some((out, container)) = &set_output {
+                        let settings = Settings::load();
                         out.call(default_output(
                             &path,
                             *container,
-                            Settings::load().default_output_dir.as_deref(),
+                            settings.default_output_dir.as_deref(),
+                            settings.default_output_suffix.as_deref(),
                         ));
                     }
                     fire_probe(&probe, path);
@@ -1385,9 +1390,10 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
                 .icon(Symbol::Save)
                 .on_click(crate::pick_output_handler(vm))
                 .grid_column(1)
-                // `on_click` is wired at mount only; the handler captures the container for
-                // the save dialog's preselected type, so a container switch must remount it.
-                .with_key(format!("out-choose-{}", container.extension()))
+                // `on_click` is wired at mount only; the handler captures the container (the
+                // save dialog's preselected type) and the current output name (the dialog's
+                // prefilled file name), so a change to either must remount it.
+                .with_key(format!("out-choose-{}", file_name(&out_display)))
                 .into(),
         );
         padded(
@@ -1410,7 +1416,7 @@ pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{} — {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         children.push(
@@ -1498,20 +1504,41 @@ fn missing_tools(vm: &Vm) -> Vec<Tool> {
         .collect()
 }
 
-/// The centred processing view (spinner, stage label, progress bar).
+/// The centred processing view (spinner, stage label, progress bar). At the Done stage the
+/// spinner gives way to a green checkmark and the view is held briefly (the worker sleeps
+/// before delivering the result) so completion registers; the stage key in `main` changes
+/// with it, so the swap is a clean subtree remount.
 fn processing_view(vm: &Vm) -> Element {
     let idx = vm.progress.min(5);
+    let done = idx == 5;
     let label = [
         "Probing source metadata",
         "Extracting HEVC stream",
         "Patching bitstream",
         "Capturing frame timing",
         "Remuxing tracks",
-        "Finishing up",
+        "Done",
     ][idx];
     let pct = (idx as f64 / 5.0 * 100.0).round();
+    let indicator: Element = if done {
+        // Same footprint as the ring: a green circle with a check, like the result hero.
+        border(
+            glyph(GLYPH_CHECK, 26.0)
+                .foreground(ThemeRef::SystemSuccess)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .vertical_alignment(VerticalAlignment::Center),
+        )
+        .corner_radius(28.0)
+        .background(ThemeRef::SystemSuccessBackground)
+        .width(56.0)
+        .height(56.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .into()
+    } else {
+        ProgressRing::indeterminate().width(56.0).height(56.0).into()
+    };
     vstack((
-        ProgressRing::indeterminate().width(56.0).height(56.0),
+        indicator,
         text_block(label)
             .font_size(18.0)
             .semibold()
@@ -1558,17 +1585,19 @@ fn processing_view(vm: &Vm) -> Element {
 pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     let mut children: Vec<Element> = Vec::new();
 
-    // Success header.
+    // Success header. Sparkles on the accent tint: the green checkmark moved to the
+    // processing view's completion hold, so the result hero celebrates instead of
+    // re-confirming.
     children.push(
         vstack((
             border(
-                glyph(GLYPH_CHECK, 30.0)
-                    .foreground(ThemeRef::SystemSuccess)
+                glyph(GLYPH_SPARKLES, 30.0)
+                    .foreground(ThemeRef::AccentText)
                     .horizontal_alignment(HorizontalAlignment::Center)
                     .vertical_alignment(VerticalAlignment::Center),
             )
             .corner_radius(34.0)
-            .background(ThemeRef::SystemSuccessBackground)
+            .background(ThemeRef::SystemAttentionBackground)
             .width(68.0)
             .height(68.0)
             .horizontal_alignment(HorizontalAlignment::Center),
@@ -1584,7 +1613,7 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
                 }),
             // Two manually-centred lines: TextBlock has no TextAlignment, so a wrapped
             // block would left-align its second line.
-            text_block("Your encode now carries the source's HDR10 signalling —")
+            text_block("Your encode now carries the source's HDR10 signalling,")
                 .font_size(13.0)
                 .foreground(ThemeRef::SecondaryText)
                 .horizontal_alignment(HorizontalAlignment::Center),
@@ -1736,7 +1765,7 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
         children.push(
             InfoBar::new("Some tracks were left out")
                 .message(format!(
-                    "Not carried into MP4 (unsupported there): {}. Choose Matroska output to keep every track.",
+                    "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                     summary.dropped_tracks.join(", ")
                 ))
                 .warning()
@@ -1851,8 +1880,36 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             grid((
                 vstack((
                     body("Default output container"),
-                    caption("Save as can still switch it per file (.mkv / .mp4)")
-                        .foreground(ThemeRef::SecondaryText),
+                    // "Save as" is set off like inline code (mono chip), mirroring the
+                    // GTK subtitle's <tt> run.
+                    hstack((
+                        caption("You can still switch it per file in the")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                        border(
+                            caption("Save as")
+                                .font_family("Consolas")
+                                .foreground(ThemeRef::SecondaryText),
+                        )
+                        .background(Color {
+                            a: 26,
+                            r: 145,
+                            g: 145,
+                            b: 145,
+                        })
+                        .corner_radius(4.0)
+                        .padding(Thickness {
+                            left: 5.0,
+                            top: 0.0,
+                            right: 5.0,
+                            bottom: 1.0,
+                        })
+                        .vertical_alignment(VerticalAlignment::Center),
+                        caption("dialog")
+                            .foreground(ThemeRef::SecondaryText)
+                            .vertical_alignment(VerticalAlignment::Center),
+                    ))
+                    .spacing(4.0),
                 ))
                 .spacing(1.0)
                 .vertical_alignment(VerticalAlignment::Center)
@@ -1889,11 +1946,6 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
 
     let body_col = vstack((
         body_strong("External tools"),
-        caption(
-            "Point any tool at your own build. A custom path is always used, even when a copy is found on PATH.",
-        )
-        .foreground(ThemeRef::SecondaryText)
-        .wrap(),
         card(vstack(rows).spacing(0.0)).margin(Thickness {
             left: 0.0,
             top: 10.0,
@@ -1905,6 +1957,8 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
             vstack((
                 container_pref_row.with_key("out-container"),
                 divider().with_key("out-div"),
+                suffix_row(vm).with_key("out-suffix"),
+                divider().with_key("out-div2"),
                 folder_row(vm).with_key("out-folder"),
             ))
             .spacing(0.0),
@@ -1920,6 +1974,7 @@ pub fn prefs_overlay(vm: &Vm) -> Element {
                 s.prefs_open = false;
                 s.tool_edit = None;
                 s.folder_edit = None;
+                s.suffix_edit = None;
                 s
             });
         })
@@ -2392,7 +2447,7 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
                 .font_size(18.0)
                 .semibold(),
             text_block(
-                "A file with this name already exists. Replacing it will overwrite its contents.",
+                "A file with this name already exists.\nReplacing it will overwrite its contents.",
             )
             .font_size(13.0)
             .foreground(ThemeRef::SecondaryText)
@@ -2417,6 +2472,113 @@ pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
         .into()
 }
 
+/// The "Default output filename suffix" row in Preferences — or its inline editor when open.
+/// The suffix goes between the encode's name and the extension when auto-naming the output;
+/// clearing the field resets to [`DEFAULT_OUTPUT_SUFFIX`]. Both branches return a vstack so
+/// the reconciler never sees the row swap element type.
+fn suffix_row(vm: &Vm) -> Element {
+    if let Some(draft) = &vm.ui.suffix_edit {
+        let upd = vm.upd.clone();
+        let input = text_box(draft.clone())
+            .placeholder_text(DEFAULT_OUTPUT_SUFFIX)
+            .on_text_changed(move |v: String| {
+                upd.call(move |mut s| {
+                    if let Some(d) = s.suffix_edit.as_mut() {
+                        *d = v;
+                    }
+                    s
+                });
+            });
+        let upd = vm.upd.clone();
+        let cancel = button("Cancel").on_click(move || {
+            upd.call(|mut s| {
+                s.suffix_edit = None;
+                s
+            });
+        });
+        let upd = vm.upd.clone();
+        let draft_now = draft.clone();
+        let set = button("Set").accent().on_click(move || {
+            // Kept verbatim (a leading space is meaningful in a suffix); only a blank
+            // entry resets to the default.
+            let value = draft_now.clone();
+            let mut settings = Settings::load();
+            settings.default_output_suffix = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            };
+            let _ = settings.save();
+            upd.call(|mut s| {
+                s.suffix_edit = None;
+                s
+            });
+        });
+        let editor = border(
+            vstack((
+                caption("Default output filename suffix (leave empty for the default)")
+                    .semibold(),
+                grid((
+                    input.grid_column(0),
+                    cancel.grid_column(1),
+                    set.grid_column(2),
+                ))
+                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+                .column_spacing(8.0),
+            ))
+            .spacing(8.0),
+        )
+        .background(ThemeRef::SystemAttentionBackground)
+        .padding(Thickness {
+            left: 15.0,
+            top: 14.0,
+            right: 15.0,
+            bottom: 14.0,
+        });
+        return vstack(vec![Element::from(editor.with_key("suffix-edit"))])
+            .spacing(0.0)
+            .into();
+    }
+
+    let settings = Settings::load();
+    let current = settings
+        .default_output_suffix
+        .clone()
+        .filter(|s| !s.trim().is_empty());
+    let detail = current
+        .clone()
+        .unwrap_or_else(|| DEFAULT_OUTPUT_SUFFIX.to_owned());
+    let upd = vm.upd.clone();
+    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
+        let current = current.clone().unwrap_or_default();
+        upd.call(move |mut s| {
+            s.suffix_edit = Some(current);
+            s
+        });
+    });
+    let row = padded(
+        grid((
+            vstack((
+                body("Default output filename suffix"),
+                caption(detail).foreground(ThemeRef::SecondaryText),
+            ))
+            .spacing(1.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .grid_column(0),
+            edit.grid_column(1),
+        ))
+        .columns([GridLength::Star(1.0), GridLength::Auto])
+        .column_spacing(13.0),
+        Thickness {
+            left: 16.0,
+            top: 13.0,
+            right: 16.0,
+            bottom: 13.0,
+        },
+    );
+    vstack(vec![Element::from(row)]).spacing(0.0).into()
+}
+
 /// The "Default output folder" row in Preferences — or its inline editor when open. Auto-named
 /// outputs are saved there; clearing the field resets to "same folder as the encode". Both
 /// branches return a vstack so the reconciler never sees the row swap element type.
@@ -2424,7 +2586,7 @@ fn folder_row(vm: &Vm) -> Element {
     if let Some(draft) = &vm.ui.folder_edit {
         let upd = vm.upd.clone();
         let input = text_box(draft.clone())
-            .placeholder_text("Same folder as the encode")
+            .placeholder_text(r"C:\path\to\output\folder")
             .on_text_changed(move |v: String| {
                 upd.call(move |mut s| {
                     if let Some(d) = s.folder_edit.as_mut() {
@@ -2580,7 +2742,7 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
             let editor = border(
                 vstack((
                     caption(format!(
-                        "{} — custom executable (empty resets to auto-detect)",
+                        "Custom {} executable (empty resets to auto-detect)",
                         tool.label()
                     ))
                     .semibold(),
