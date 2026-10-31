@@ -1,4 +1,5 @@
-//! Fluent views: title bar, breadcrumb, the three wizard stages, and the Preferences overlay.
+//! Fluent views: title bar, breadcrumb, the three wizard stages, and the overlays (app menu,
+//! Preferences, overwrite confirmation, About).
 //!
 //! Layout and styling follow the design mockup ("HDR10 Patcher (WinUI 3)"): Mica window,
 //! card sections on `CardBackground`/`CardStroke`, accent primary buttons, `InfoBar` banners,
@@ -11,19 +12,20 @@ use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
 use nvhvc_core::tools::{Resolution, Tool, Toolset};
 
+use crate::app::{Message, Patcher, PrefEditor, Slot};
 use crate::model::*;
-use crate::{Vm, fire_probe};
+use crate::palette::{Palette, faded, grey};
 
-const ICON_FONT: &str = "Segoe Fluent Icons";
+type Cx = ViewContext<Patcher>;
 
 // Segoe Fluent Icons glyphs.
 const GLYPH_CHECK: &str = "\u{E73E}";
-/// "Sparkle" — the double-sparkle mark (result hero; GLYPH_SPARKLE below is the single
-/// star on the Patch button). E78D renders as a broken box on this font revision.
+/// "Sparkle": the double-sparkle mark (result hero; GLYPH_SPARKLE below is the single star on
+/// the Patch button). E78D renders as a broken box on this font revision.
 const GLYPH_SPARKLES: &str = "\u{F4A5}";
 const GLYPH_CHEVRON: &str = "\u{E76C}";
 const GLYPH_MORE: &str = "\u{E712}";
-/// Film-strip ("MyMovies") — the video-clip glyph used everywhere a source/encode is shown,
+/// Film-strip ("MyMovies"): the video-clip glyph used everywhere a source/encode is shown,
 /// mirroring GTK's `video-reel-symbolic` (E714 is a camera, not a clip).
 const GLYPH_FILM: &str = "\u{E8B2}";
 const GLYPH_UPLOAD: &str = "\u{E898}";
@@ -34,1483 +36,1149 @@ const GLYPH_ARROW_R: &str = "\u{E72A}";
 const GLYPH_SPARKLE: &str = "\u{E735}";
 const GLYPH_FOLDER_OPEN: &str = "\u{E838}";
 
-/// An icon glyph as a text block.
-fn glyph(g: &'static str, size: f64) -> TextBlock {
-    text_block(g).font_family(ICON_FONT).font_size(size)
+// ===================== Building blocks =====================
+
+/// Text that wraps, like every TextBlock the app has had (button captions don't).
+fn text(s: impl Into<String>, size: f64) -> TextBlock {
+    TextBlock::new()
+        .text(s)
+        .font_size(size)
+        .text_wrapping(TextWrapping::Wrap)
+}
+
+fn body(s: impl Into<String>) -> TextBlock {
+    text(s, 14.0)
+}
+
+fn body_strong(s: impl Into<String>) -> TextBlock {
+    body(s).font_weight(FontWeight::SEMI_BOLD)
+}
+
+fn caption(s: impl Into<String>) -> TextBlock {
+    text(s, 12.0)
+}
+
+/// A glyph inside a Button, which supplies its colour. FontIcon renders at a fixed 20px, so a
+/// Viewbox scales it.
+fn icon(g: &str, size: f64) -> View {
+    Viewbox::new()
+        .width(size)
+        .height(size)
+        .vertical_alignment(VerticalAlignment::Center)
+        .slot(ViewboxSlot::Child, FontIcon::new().glyph(g))
+}
+
+/// The stock Button padding (11,5,11,6 plus the 1px border), negated: a content margin that lets
+/// a narrow button centre its icon, or a margin that gives a button its content's footprint.
+fn unpad() -> Thickness {
+    Thickness::new(-11.0, -5.0, -11.0, -6.0)
+}
+
+/// A standalone glyph in `color`, centred in its slot.
+///
+/// FontIcon has no foreground and TextBlock no font family, so the colour comes from a disabled
+/// text-link Button: its template paints the content with the overridable
+/// `HyperlinkButtonForegroundDisabled` resource. The negative margin cancels the button's
+/// padding so the glyph keeps its own layout box.
+fn glyph(g: &str, size: f64, color: Color) -> View {
+    Button::new()
+        .style(ButtonStyle::TextLink)
+        .is_enabled(false)
+        .resource_overrides(
+            ResourceOverrides::new().set("HyperlinkButtonForegroundDisabled", color),
+        )
+        .margin(unpad())
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
+        .content(icon(g, size))
+}
+
+/// A Button's content as the stock icon + label pair.
+fn icon_label(symbol: Symbol, label: &str) -> View {
+    StackPanel::new()
+        .orientation(Orientation::Horizontal)
+        .spacing(8.0)
+        .children((
+            SymbolIcon::new().symbol(symbol),
+            TextBlock::new().text(label),
+        ))
+}
+
+/// `s` in Unicode monospace letters. TextBlock has no font family, so this stands in for a
+/// monospace font in the inline-code chip; pair it with an automation name holding `s`.
+fn monospace(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let mono = match c {
+                'A'..='Z' => 0x1D670 + (c as u32 - 'A' as u32),
+                'a'..='z' => 0x1D68A + (c as u32 - 'a' as u32),
+                '0'..='9' => 0x1D7F6 + (c as u32 - '0' as u32),
+                _ => c as u32,
+            };
+            char::from_u32(mono).unwrap_or(c)
+        })
+        .collect()
+}
+
+/// Lightweight-styling resources for a Subtle button with its own fill per state and a
+/// foreground that dims while pressed.
+fn subtle_states(
+    rest: Color,
+    hover: Color,
+    pressed: Color,
+    fg: Color,
+    pressed_fg: f64,
+) -> ResourceOverrides {
+    // The border brushes match the fills: Subtle buttons paint their 1px border separately.
+    ResourceOverrides::new()
+        .set("SubtleButtonBackground", rest)
+        .set("SubtleButtonBorderBrush", rest)
+        .set("SubtleButtonBackgroundPointerOver", hover)
+        .set("SubtleButtonBorderBrushPointerOver", hover)
+        .set("SubtleButtonBackgroundPressed", pressed)
+        .set("SubtleButtonBorderBrushPressed", pressed)
+        .set("SubtleButtonForeground", fg)
+        .set("SubtleButtonForegroundPointerOver", fg)
+        .set("SubtleButtonForegroundPressed", faded(fg, pressed_fg))
 }
 
 /// A Fluent card: 8px corners, hairline stroke, card fill.
-fn card(child: impl Into<Element>) -> Element {
-    border(child)
+fn card() -> Border {
+    Border::new()
         .corner_radius(8.0)
-        .border_brush(ThemeRef::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
-        .background(ThemeRef::CardBackground)
-        .into()
-}
-
-/// Inner padding for a Grid row. The reactor backend applies `Padding` only to Border /
-/// StackPanel / TextBlock / Control handles — on a `grid()` it is silently dropped, which
-/// made every card row render with zero padding. Wrapping in a Border makes it real.
-fn padded(child: impl Into<Element>, t: Thickness) -> Border {
-    border(child).padding(t)
+        .border_brush(ThemeBrush::CardStroke)
+        .border_thickness(1.0)
+        .background(ThemeBrush::CardBackground)
 }
 
 /// A 1px horizontal divider between card rows.
-fn divider() -> Element {
-    border(text_block(""))
-        .border_thickness(Thickness::uniform(0.0))
-        .height(1.0)
-        .background(ThemeRef::DividerStroke)
-        .into()
+fn divider(pal: &Palette) -> View {
+    Border::new().height(1.0).background(pal.divider).into()
 }
 
 /// A bold section heading above a card.
-fn section(title: &str) -> Element {
+fn section(title: &str) -> View {
     body_strong(title)
-        .margin(Thickness {
-            left: 2.0,
-            top: 22.0,
-            right: 2.0,
-            bottom: 9.0,
-        })
+        .margin(Thickness::new(2.0, 22.0, 2.0, 9.0))
         .into()
 }
 
-/// The 40×40 rounded icon block at the left of a file card, tinted per the card's meaning
-/// (accent = source video, caution = encode missing HDR10, success = finished output).
-fn icon_block(g: &'static str, bg: ThemeRef, fg: ThemeRef, size: f64) -> Element {
-    border(
-        glyph(g, size / 2.0)
-            .foreground(fg)
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .vertical_alignment(VerticalAlignment::Center),
-    )
-    .corner_radius(5.0)
-    .background(bg)
-    .width(size)
-    .height(size)
-    .into()
+/// Places `view` in a grid row.
+fn in_row(row: i32, view: impl Into<View>) -> View {
+    Border::new().grid_row(row).content(view)
+}
+
+/// Places `view` in a grid column.
+fn in_column(column: i32, view: impl Into<View>) -> View {
+    Border::new().grid_column(column).content(view)
+}
+
+/// The rounded icon block at the left of a file card.
+fn icon_block(g: &str, pal: &Palette, size: f64) -> View {
+    Border::new()
+        .corner_radius(5.0)
+        .background(pal.attention_bg)
+        .width(size)
+        .height(size)
+        .content(glyph(g, size / 2.0, pal.accent_text))
 }
 
 /// The scrollable, centred 560px content column of a stage.
-fn page(children: Vec<Element>) -> Element {
-    scroll_viewer(
-        vstack(children)
-            .spacing(0.0)
+fn page(children: Vec<KeyedView>) -> View {
+    ScrollViewer::new().content(
+        StackPanel::new()
             .max_width(560.0)
             // Center (not Stretch): with Stretch the column sits relative to the viewport the
             // scrollbar reservation leaves, drifting right of true window centre.
             .horizontal_alignment(HorizontalAlignment::Center)
             .width(560.0)
-            .margin(Thickness {
-                left: 30.0,
-                top: 26.0,
-                right: 30.0,
-                bottom: 26.0,
-            }),
+            .margin(Thickness::new(30.0, 26.0, 30.0, 26.0))
+            .keyed_children(children),
     )
-    .into()
 }
 
-// ===================== Chrome =====================
-
-/// The window title bar: app title, back button, and the "…" app menu.
-pub fn title_bar(vm: &Vm, shown: Stage, processing: bool) -> Element {
-    // The "…" app-menu toggle is NOT in the titlebar: the strip's input is owned by the
-    // window's non-client machinery — custom controls, wrappers, margin-shifted buttons,
-    // overlays above it, and even a WM_NCHITTEST carve-out all end up dragging the window
-    // and/or losing pointer events (each variant measured/traced). The button lives in the
-    // breadcrumb row instead — client area, full custom control — see `menu_button`.
-    let upd = vm.upd.clone();
-    let run_token = vm.ui.run_token;
-    let showing_result = shown == Stage::Result;
-    TitleBar::new("HDR10 Patcher")
-        .back_button_visible(shown != Stage::Source && !processing)
-        .back_button_enabled(true)
-        .on_back_requested(move || {
-            upd.call(move |mut s| {
-                if showing_result {
-                    // Back from the result screen dismisses it (returns to the encode screen).
-                    s.ack_token = run_token;
-                } else {
-                    s.stage = Stage::Source;
-                }
-                s
-            });
-        })
+/// An always-open, non-closable InfoBar banner.
+fn banner(
+    title: impl Into<String>,
+    message: impl Into<String>,
+    severity: InfoBarSeverity,
+    margin: Thickness,
+) -> View {
+    InfoBar::new()
+        .title(title)
+        .message(message)
+        .severity(severity)
+        .is_open(true)
+        .is_closable(false)
+        .margin(margin)
         .into()
 }
 
-/// The "…" app-menu toggle: a root overlay positioned over the right end of the breadcrumb
-/// row — CLIENT area, so unlike the titlebar strip it supports a full custom control (the
-/// strip's non-client input routing broke every in-titlebar variant; see `title_bar`).
-/// Fill ladder per the design: hover (brightest) > open (persistent, between) > pressed
-/// (dimmest + dimmed glyph, the "held" look). The toggle reads live state on tap.
-pub fn menu_button(vm: &Vm) -> Element {
-    let hovered = vm.ui.hovered_action == Some("menu-btn");
-    let pressed = vm.ui.pressed_action == Some("menu-btn");
-    let open = vm.ui.menu_open;
-    let toggle = vm.upd.clone();
-    let enter = vm.upd.clone();
-    let exit = vm.upd.clone();
-    let press = vm.upd.clone();
-    let release = vm.upd.clone();
-    border(
-        glyph(GLYPH_MORE, 14.0)
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .vertical_alignment(VerticalAlignment::Center)
-            .opacity(if pressed { 0.55 } else { 1.0 }),
-    )
-    .corner_radius(5.0)
-    .background(match (pressed, hovered, open) {
-        (true, _, _) => Color {
-            a: 16,
-            r: 145,
-            g: 145,
-            b: 145,
-        },
-        (false, true, _) => Color {
-            a: 40,
-            r: 145,
-            g: 145,
-            b: 145,
-        },
-        (false, false, true) => Color {
-            a: 26,
-            r: 145,
-            g: 145,
-            b: 145,
-        },
-        (false, false, false) => Color::transparent(),
-    })
-    .width(40.0)
-    .height(32.0)
-    .on_tapped(move || {
-        toggle.call(|mut s| {
-            s.menu_open = !s.menu_open;
-            s
-        });
-    })
-    .on_pointer_entered(move |_| {
-        enter.call(|mut s| {
-            s.hovered_action = Some("menu-btn");
-            s
-        });
-    })
-    .on_pointer_exited(move || {
-        exit.call(|mut s| {
-            s.hovered_action = None;
-            s.pressed_action = None;
-            s
-        });
-    })
-    .on_pointer_pressed(move |_| {
-        press.call(|mut s| {
-            s.pressed_action = Some("menu-btn");
-            s
-        });
-    })
-    .on_pointer_released(move |_| {
-        release.call(|mut s| {
-            s.pressed_action = None;
-            s
-        });
-    })
-    .horizontal_alignment(HorizontalAlignment::Right)
-    .vertical_alignment(VerticalAlignment::Top)
-    // Vertically centred on the breadcrumb row: the TitleBar strip renders 32px tall (the
-    // 48px figure was the mockup's), and the row is ~48px (16+20+12), so a 32px button
-    // starts at 40. Right margin matches the menu panel's so their edges align.
-    .margin(Thickness {
-        left: 0.0,
-        top: 40.0,
-        right: 12.0,
-        bottom: 0.0,
-    })
-    .into()
+fn top(px: f64) -> Thickness {
+    Thickness::new(0.0, px, 0.0, 0.0)
 }
 
-/// Applies the persisted theme at startup (without re-saving it).
-pub fn apply_startup_theme() {
-    let mode = ThemeMode::from_setting(Settings::load().ui_theme.as_deref());
-    set_requested_theme(match mode {
-        ThemeMode::System => RequestedTheme::Default,
-        ThemeMode::Light => RequestedTheme::Light,
-        ThemeMode::Dark => RequestedTheme::Dark,
-    });
+// ===================== Window =====================
+
+pub fn root(p: &Patcher, cx: &mut Cx) -> View {
+    cx.window_title("HDR10 Patcher");
+    cx.window_visuals(
+        WindowVisuals::new()
+            .backdrop(WindowBackdrop::Mica)
+            .client_size(780.0, 760.0)
+            .theme(match p.theme {
+                ThemeMode::System => WindowTheme::System,
+                ThemeMode::Light => WindowTheme::Light,
+                ThemeMode::Dark => WindowTheme::Dark,
+            }),
+    );
+    let on_scheme = cx.callback(Message::ColorScheme);
+    cx.on_color_scheme(on_scheme);
+
+    let shown = p.shown_stage();
+    let processing = p.processing();
+    let (content, footer) = match (&p.run, shown) {
+        (Run::Running { stage, .. }, _) => (processing_view(&p.palette, *stage), View::empty()),
+        (Run::Done(summary), Stage::Result) => stage_result(p, cx, summary),
+        (_, Stage::Encode) => stage_encode(p, cx),
+        _ => stage_source(p, cx),
+    };
+
+    // Stage content and footer are keyed per stage so switching stages swaps the whole subtree
+    // (fresh scroll position) instead of morphing one stage's controls into the next's.
+    let stage_key = match (shown, processing) {
+        (Stage::Encode, true) => "processing",
+        (Stage::Source, _) => "source",
+        (Stage::Encode, _) => "encode",
+        (Stage::Result, _) => "result",
+    };
+    let main = Grid::new()
+        .rows([
+            GridLength::Auto,
+            GridLength::Auto,
+            GridLength::Star(1.0),
+            GridLength::Auto,
+        ])
+        .columns([GridLength::Star(1.0)])
+        .keyed_children([
+            KeyedView::new("titlebar", title_bar(cx, shown, processing)),
+            KeyedView::new("crumbs", in_row(1, breadcrumb(&p.palette, shown))),
+            KeyedView::new(format!("content-{stage_key}"), in_row(2, content)),
+            KeyedView::new(format!("footer-{stage_key}"), in_row(3, footer)),
+        ]);
+
+    // Overlay layers stack in the same grid cell; later children draw on top.
+    let mut layers = vec![
+        KeyedView::new("app", main),
+        // Over the breadcrumb row, in the client area: see `menu_button`.
+        KeyedView::new("menu-btn", menu_button(p, cx)),
+        KeyedView::new("about", about_dialog(p, cx)),
+    ];
+    if p.prefs_open {
+        layers.push(KeyedView::new("prefs", prefs_overlay(p, cx)));
+    }
+    if p.confirm_overwrite {
+        layers.push(KeyedView::new("overwrite", overwrite_overlay(p, cx)));
+    }
+    if p.menu_open {
+        layers.push(KeyedView::new("menu", menu_overlay(p, cx)));
+    }
+    Grid::new().keyed_children(layers)
 }
 
-/// Applies and persists a theme choice.
-pub fn apply_theme(mode: ThemeMode) {
-    set_requested_theme(match mode {
-        ThemeMode::System => RequestedTheme::Default,
-        ThemeMode::Light => RequestedTheme::Light,
-        ThemeMode::Dark => RequestedTheme::Dark,
-    });
-    let mut settings = Settings::load();
-    settings.ui_theme = Some(mode.as_setting().to_owned());
-    let _ = settings.save();
+/// The window title bar: app title and back button.
+fn title_bar(cx: &Cx, shown: Stage, processing: bool) -> View {
+    TitleBar::new()
+        .title("HDR10 Patcher")
+        .is_back_button_visible(shown != Stage::Source && !processing)
+        .is_back_button_enabled(true)
+        .on_back_requested(cx.message(Message::Back))
+        .grid_row(0)
+        .into()
+}
+
+/// The "…" app-menu toggle, over the right end of the breadcrumb row. It sits in the client
+/// area rather than the title bar, where the strip's non-client input handling made every
+/// custom control drag the window. Fill ladder per the design: hover (brightest) > open
+/// (persistent, between) > pressed (dimmest, glyph dimmed).
+fn menu_button(p: &Patcher, cx: &Cx) -> View {
+    let rest = if p.menu_open {
+        grey(26)
+    } else {
+        Color::transparent()
+    };
+    Button::new()
+        .style(ButtonStyle::Subtle)
+        // Corners stay at the stock 4px: a CornerRadius resource override (for the 5px the
+        // custom control had) brings WinUI down a few seconds after it's applied.
+        .resource_overrides(subtle_states(
+            rest,
+            grey(40),
+            grey(16),
+            p.palette.text_primary,
+            0.55,
+        ))
+        .width(40.0)
+        .height(32.0)
+        .horizontal_alignment(HorizontalAlignment::Right)
+        .vertical_alignment(VerticalAlignment::Top)
+        // Vertically centred on the breadcrumb row: the title bar is 32px and the row ~48px
+        // (16+20+12), so a 32px button starts at 40. Right margin matches the menu panel's so
+        // their edges align.
+        .margin(Thickness::new(0.0, 40.0, 12.0, 0.0))
+        .automation_name("App menu")
+        .on_click(cx.message(Message::ToggleMenu))
+        .content(icon(GLYPH_MORE, 14.0))
 }
 
 /// The "Source › Encode › Result" step indicator under the title bar.
-pub fn breadcrumb(shown: Stage) -> Element {
-    let state = |step: Stage| -> u8 {
-        use Stage::*;
-        let idx = |s: Stage| match s {
-            Source => 0,
-            Encode => 1,
-            Result => 2,
+fn breadcrumb(pal: &Palette, shown: Stage) -> View {
+    let index = |s: Stage| match s {
+        Stage::Source => 0,
+        Stage::Encode => 1,
+        Stage::Result => 2,
+    };
+    let crumb = |label: &str, step: Stage| -> View {
+        let label = text(label, 14.0);
+        let mut kids = Vec::new();
+        let label = match index(shown).cmp(&index(step)) {
+            std::cmp::Ordering::Greater => {
+                kids.push(KeyedView::new(
+                    "check",
+                    glyph(GLYPH_CHECK, 12.0, pal.accent_text),
+                ));
+                label.foreground(ThemeBrush::PrimaryText)
+            }
+            std::cmp::Ordering::Equal => label
+                .font_weight(FontWeight::SEMI_BOLD)
+                .foreground(ThemeBrush::PrimaryText),
+            std::cmp::Ordering::Less => label.foreground(pal.text_tertiary),
         };
-        match idx(shown).cmp(&idx(step)) {
-            std::cmp::Ordering::Greater => 2, // done
-            std::cmp::Ordering::Equal => 1,   // active
-            std::cmp::Ordering::Less => 0,    // upcoming
-        }
+        kids.push(KeyedView::new("label", label));
+        StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(6.0)
+            .keyed_children(kids)
     };
-    let crumb = |label: &str, st: u8| -> Element {
-        let mut kids: Vec<Element> = Vec::new();
-        if st == 2 {
-            kids.push(
-                glyph(GLYPH_CHECK, 12.0)
-                    .foreground(ThemeRef::AccentText)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .with_key("check")
-                    .into(),
-            );
-        }
-        let text = text_block(label).font_size(14.0);
-        let text = match st {
-            1 => text.semibold().foreground(ThemeRef::PrimaryText),
-            2 => text.foreground(ThemeRef::PrimaryText),
-            _ => text.foreground(ThemeRef::TertiaryText),
-        };
-        kids.push(text.with_key("label").into());
-        hstack(kids).spacing(6.0).into()
-    };
-    let sep = || -> Element {
-        glyph(GLYPH_CHEVRON, 11.0)
-            .foreground(ThemeRef::TertiaryText)
-            .vertical_alignment(VerticalAlignment::Center)
-            .into()
-    };
-    border(
-        hstack((
-            crumb("Source", state(Stage::Source)),
-            sep(),
-            crumb("Encode", state(Stage::Encode)),
-            sep(),
-            crumb("Result", state(Stage::Result)),
-        ))
-        .spacing(8.0)
-        .horizontal_alignment(HorizontalAlignment::Center),
-    )
-    .border_thickness(Thickness {
-        left: 0.0,
-        top: 0.0,
-        right: 0.0,
-        bottom: 1.0,
-    })
-    .border_brush(ThemeRef::DividerStroke)
-    // Roomier than the mockup's 12px top: the row also hosts the 32px "…" menu button.
-    .padding(Thickness {
-        left: 24.0,
-        top: 16.0,
-        right: 24.0,
-        bottom: 12.0,
-    })
-    .into()
+    let sep = || glyph(GLYPH_CHEVRON, 11.0, pal.text_tertiary);
+    Border::new()
+        .border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0))
+        .border_brush(pal.divider)
+        // Roomier than the mockup's 12px top: the row also hosts the 32px "…" menu button.
+        .padding(Thickness::new(24.0, 16.0, 24.0, 12.0))
+        .content(
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(8.0)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .children((
+                    crumb("Source", Stage::Source),
+                    sep(),
+                    crumb("Encode", Stage::Encode),
+                    sep(),
+                    crumb("Result", Stage::Result),
+                )),
+        )
 }
 
 /// The footer command bar: hint text on the left, primary action on the right.
-fn footer(hint: &str, action: Option<Element>) -> Element {
-    let mut cells: Vec<Element> = vec![
+fn footer(pal: &Palette, hint: &str, action: Option<View>) -> View {
+    let mut cells = vec![KeyedView::new(
+        "hint",
         caption(hint)
-            .foreground(ThemeRef::TertiaryText)
+            .foreground(pal.text_tertiary)
             .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0)
-            .with_key("hint")
-            .into(),
-    ];
-    if let Some(a) = action {
-        cells.push(a.grid_column(1).with_key("action"));
+            .grid_column(0),
+    )];
+    if let Some(action) = action {
+        cells.push(KeyedView::new("action", in_column(1, action)));
     }
-    // Padding lives on the Border — a Grid drops it (see `padded`).
-    border(grid(cells).columns([GridLength::Star(1.0), GridLength::Auto]))
-        .padding(Thickness {
-            left: 22.0,
-            top: 16.0,
-            right: 22.0,
-            bottom: 16.0,
-        })
-        .border_thickness(Thickness {
-            left: 0.0,
-            top: 1.0,
-            right: 0.0,
-            bottom: 0.0,
-        })
-        .border_brush(ThemeRef::DividerStroke)
-        .background(ThemeRef::LayerFill)
-        .into()
+    Border::new()
+        .padding(Thickness::new(22.0, 16.0, 22.0, 16.0))
+        .border_thickness(Thickness::new(0.0, 1.0, 0.0, 0.0))
+        .border_brush(pal.divider)
+        .background(pal.layer)
+        .content(
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .keyed_children(cells),
+        )
 }
 
-// ===================== Action buttons =====================
-
-/// A mockup-styled primary action button built from a Border: a reactor `Button`'s hover
-/// visual state repaints any custom background, so custom-styled buttons track hover
-/// themselves via [`Ui::hovered_action`] (keyed by `id`). `trailing` puts the glyph after
-/// the label ("Continue →"); disabled renders at 40% opacity with no handlers.
+/// A primary action button: accent fill, a glyph before or after the label ("Continue →"),
+/// 22px × 9px padding. Disabled keeps the accent fill at 40% opacity rather than Fluent's grey.
 #[allow(clippy::too_many_arguments)]
-fn action_button(
-    vm: &Vm,
-    id: &'static str,
-    label: &str,
-    glyph_str: &'static str,
-    trailing: bool,
-    enabled: bool,
-    rest_bg: BrushBinding,
-    hover_bg: BrushBinding,
-    on_tap: impl Fn() + Clone + 'static,
-) -> Element {
-    let fg = || BrushBinding::from(ThemeRef::custom("TextOnAccentFillColorPrimaryBrush"));
-    let text = text_block(label)
-        .font_size(14.0)
-        .foreground(fg())
-        .vertical_alignment(VerticalAlignment::Center);
-    let g = glyph(glyph_str, 13.0)
-        .foreground(fg())
-        .vertical_alignment(VerticalAlignment::Center);
-    let cells: Vec<Element> = if trailing {
-        vec![text.with_key("t").into(), g.with_key("g").into()]
-    } else {
-        vec![g.with_key("g").into(), text.with_key("t").into()]
-    };
-    let hovered = enabled && vm.ui.hovered_action == Some(id);
-    let pressed = enabled && vm.ui.pressed_action == Some(id);
-    let content = hstack(cells)
-        .spacing(8.0)
-        .horizontal_alignment(HorizontalAlignment::Center)
-        // Dimmed content while held — the Fluent "pressed" cue.
-        .opacity(if pressed { 0.6 } else { 1.0 });
-
-    let b = border(content)
-        .corner_radius(4.0)
-        .background(if hovered || pressed {
-            hover_bg
-        } else {
-            rest_bg
-        })
-        .padding(Thickness {
-            left: 22.0,
-            top: 9.0,
-            right: 22.0,
-            bottom: 9.0,
-        });
-    if !enabled {
-        return b.opacity(0.4).into();
-    }
-    let enter = vm.upd.clone();
-    let exit = vm.upd.clone();
-    let press = vm.upd.clone();
-    let release = vm.upd.clone();
-    b.on_tapped(on_tap)
-        .on_pointer_entered(move |_| {
-            enter.call(move |mut s| {
-                s.hovered_action = Some(id);
-                s
-            });
-        })
-        .on_pointer_exited(move || {
-            exit.call(|mut s| {
-                s.hovered_action = None;
-                s.pressed_action = None;
-                s
-            });
-        })
-        .on_pointer_pressed(move |_| {
-            press.call(move |mut s| {
-                s.pressed_action = Some(id);
-                s
-            });
-        })
-        .on_pointer_released(move |_| {
-            release.call(|mut s| {
-                s.pressed_action = None;
-                s
-            });
-        })
-        .into()
-}
-
-/// [`action_button`] in the standard accent palette.
 fn accent_action(
-    vm: &Vm,
-    id: &'static str,
+    pal: &Palette,
+    cx: &Cx,
     label: &str,
-    glyph_str: &'static str,
+    glyph_str: &str,
     trailing: bool,
     enabled: bool,
-    on_tap: impl Fn() + Clone + 'static,
-) -> Element {
-    action_button(
-        vm,
-        id,
-        label,
-        glyph_str,
-        trailing,
-        enabled,
-        ThemeRef::Accent.into(),
-        ThemeRef::AccentSecondary.into(),
-        on_tap,
-    )
+    message: Message,
+) -> View {
+    let label_view: View = text(label, 14.0)
+        .vertical_alignment(VerticalAlignment::Center)
+        .into();
+    let glyph_view = icon(glyph_str, 13.0);
+    let cells = if trailing {
+        [label_view, glyph_view]
+    } else {
+        [glyph_view, label_view]
+    };
+    Button::new()
+        .style(ButtonStyle::Accent)
+        .is_enabled(enabled)
+        .opacity(if enabled { 1.0 } else { 0.4 })
+        .resource_overrides(
+            ResourceOverrides::new()
+                .set("AccentButtonBackgroundDisabled", pal.accent_fill)
+                .set("AccentButtonForegroundDisabled", pal.text_on_accent),
+        )
+        .automation_name(label)
+        .on_click(cx.message(message))
+        .content(
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(8.0)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                // With the button's own 1px border and 11,5,11,6 padding: 22,9,22,9 overall.
+                .margin(Thickness::new(10.0, 3.0, 10.0, 2.0))
+                .children(cells),
+        )
 }
 
 // ===================== Drop zone =====================
 
 /// A large "drop a file here or browse" zone with a native-picker button. While a file is
-/// dragged over it, the zone tints accent (`hover`, set from `drag_enter`/`drag_leave`).
-#[allow(clippy::too_many_arguments)]
+/// dragged over it, the zone tints accent.
 fn drop_zone(
-    icon: &'static str,
+    p: &Patcher,
+    cx: &Cx,
+    slot: Slot,
+    glyph_str: &str,
     heading: &str,
     caption_text: &str,
-    on_pick: impl Fn() + 'static,
-    set_path: AsyncSetState<String>,
-    probe: MutationTrigger<FileProbe>,
-    set_output: Option<(AsyncSetState<String>, Container)>,
-    hover: bool,
-    set_hover: AsyncSetState<bool>,
-) -> Element {
+) -> View {
+    let pal = &p.palette;
     // TextBlock has no TextAlignment, so a wrapped caption would left-align its second line.
-    // The strings are fixed two-sentence copy — render each sentence as its own centred line.
-    let (cap1, cap2) = caption_text
-        .split_once(". ")
-        .map(|(a, b)| (format!("{a}."), b.to_owned()))
-        .unwrap_or_else(|| (caption_text.to_owned(), String::new()));
-    let mut caption_lines: Vec<Element> = vec![
-        text_block(cap1)
-            .font_size(13.0)
-            .foreground(ThemeRef::SecondaryText)
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .with_key("cap1")
-            .into(),
-    ];
-    if !cap2.is_empty() {
-        caption_lines.push(
-            text_block(cap2)
-                .font_size(13.0)
-                .foreground(ThemeRef::SecondaryText)
-                .horizontal_alignment(HorizontalAlignment::Center)
-                .with_key("cap2")
-                .into(),
-        );
-    }
-
-    let inner = vstack((
-        border(
-            glyph(icon, 30.0)
-                .foreground(ThemeRef::AccentText)
-                .horizontal_alignment(HorizontalAlignment::Center)
-                .vertical_alignment(VerticalAlignment::Center),
+    // The strings are fixed two-sentence copy: render each sentence as its own centred line.
+    let lines: Vec<String> = match caption_text.split_once(". ") {
+        Some((a, b)) => vec![format!("{a}."), b.to_owned()],
+        None => vec![caption_text.to_owned()],
+    };
+    let caption_lines = lines.into_iter().enumerate().map(|(i, line)| {
+        KeyedView::new(
+            i,
+            text(line, 13.0)
+                .foreground(pal.text_secondary)
+                .horizontal_alignment(HorizontalAlignment::Center),
         )
-        .corner_radius(5.0)
-        .background(ThemeRef::SystemAttentionBackground)
-        .width(66.0)
-        .height(66.0)
-        .horizontal_alignment(HorizontalAlignment::Center)
-        .margin(Thickness {
-            left: 0.0,
-            top: 0.0,
-            right: 0.0,
-            bottom: 4.0,
-        }),
-        text_block(heading)
-            .font_size(20.0)
-            .semibold()
-            .horizontal_alignment(HorizontalAlignment::Center),
-        vstack(caption_lines).spacing(2.0),
-        button("Open File\u{2026}")
-            .accent()
-            .icon(Symbol::Folder)
-            .font_size(14.0)
-            .padding(Thickness {
-                left: 20.0,
-                top: 9.0,
-                right: 20.0,
-                bottom: 9.0,
-            })
-            .on_click(on_pick)
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .margin(Thickness {
-                left: 0.0,
-                top: 12.0,
-                right: 0.0,
-                bottom: 0.0,
-            }),
-    ))
-    .spacing(8.0);
+    });
 
-    let enter_hover = set_hover.clone();
-    let leave_hover = set_hover.clone();
-    border(inner)
+    let inner = StackPanel::new().spacing(8.0).children((
+        Border::new()
+            .corner_radius(5.0)
+            .background(pal.attention_bg)
+            .width(66.0)
+            .height(66.0)
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .margin(Thickness::new(0.0, 0.0, 0.0, 4.0))
+            .content(glyph(glyph_str, 30.0, pal.accent_text)),
+        text(heading, 20.0)
+            .font_weight(FontWeight::SEMI_BOLD)
+            .horizontal_alignment(HorizontalAlignment::Center),
+        StackPanel::new().spacing(2.0).keyed_children(caption_lines),
+        Button::new()
+            .style(ButtonStyle::Accent)
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .margin(top(12.0))
+            .automation_name("Open File\u{2026}")
+            .on_click(cx.message(Message::Pick(slot)))
+            .content(
+                // 20,9,20,9 padding overall.
+                Border::new()
+                    .margin(Thickness::new(9.0, 4.0, 9.0, 3.0))
+                    .content(icon_label(Symbol::Folder, "Open File\u{2026}")),
+            ),
+    ));
+
+    let hover = p.drag_hover;
+    Border::new()
         .corner_radius(8.0)
         .border_brush(if hover {
-            BrushBinding::from(ThemeRef::Accent)
+            Brush::from(ThemeBrush::Accent)
         } else {
-            BrushBinding::from(ThemeRef::ControlStrokeSecondary)
+            Brush::from(pal.control_stroke_secondary)
         })
-        .border_thickness(Thickness::uniform(1.5))
+        .border_thickness(1.5)
         .background(if hover {
-            BrushBinding::from(ThemeRef::SystemAttentionBackground)
+            Brush::from(pal.attention_bg)
         } else {
-            BrushBinding::from(ThemeRef::CardBackground)
+            Brush::from(ThemeBrush::CardBackground)
         })
-        .padding(Thickness {
-            left: 24.0,
-            top: 40.0,
-            right: 24.0,
-            bottom: 34.0,
-        })
-        .allow_drop(true)
-        .drag_enter(move |ctx| {
-            let op = crate::accept_files(ctx);
-            if !matches!(op, DragOperation::None) {
-                enter_hover.call(true);
-            }
-            op
-        })
-        .drag_leave(move |_| leave_hover.call(false))
-        .drag_over(crate::accept_files)
-        .drag_drop(move |ctx| {
-            set_hover.call(false);
-            match ctx.get_storage_items().first() {
-                Some(item) => {
-                    let path = item.path.clone();
-                    set_path.call(path.clone());
-                    if let Some((out, container)) = &set_output {
-                        let settings = Settings::load();
-                        out.call(default_output(
-                            &path,
-                            *container,
-                            settings.default_output_dir.as_deref(),
-                            settings.default_output_suffix.as_deref(),
-                        ));
-                    }
-                    fire_probe(&probe, path);
-                    DragOperation::Link
-                }
-                None => DragOperation::None,
-            }
-        })
-        .into()
+        .padding(Thickness::new(24.0, 40.0, 24.0, 34.0))
+        .drop_policy(
+            DragDropPolicy::new().storage_items(
+                DragDropAction::new(DragDropOperation::Link).caption("Use this file"),
+            ),
+        )
+        .on_drag_enter(
+            cx.callback(|kind: DragKind| Message::DragHover(kind == DragKind::StorageItems)),
+        )
+        .on_drag_leave(cx.message(Message::DragHover(false)))
+        .on_drop(cx.callback(move |data: DroppedData| {
+            let path = match data {
+                DroppedData::StorageItems(items) => items.into_iter().next().map(|i| i.path),
+                _ => None,
+            };
+            Message::Dropped(slot, path)
+        }))
+        .content(inner)
 }
 
 // ===================== Stage 1: Source =====================
 
-pub fn stage_source(vm: &Vm) -> (Element, Element) {
-    if vm.source.is_empty() {
-        let content = page(vec![
+fn stage_source(p: &Patcher, cx: &Cx) -> (View, View) {
+    let pal = &p.palette;
+    if p.source.is_empty() {
+        let content = page(vec![KeyedView::new(
+            "src-dropzone",
             drop_zone(
+                p,
+                cx,
+                Slot::Source,
                 GLYPH_FILM,
                 "Select your HDR10 source",
                 "The master file to copy HDR10 metadata from. Drag a video here, or browse.",
-                crate::pick_source_handler(vm),
-                vm.set_source.clone(),
-                vm.src_trigger.clone(),
-                None,
-                vm.drag_hover,
-                vm.set_drag_hover.clone(),
-            )
-            .with_key("src-dropzone"),
-        ]);
+            ),
+        )]);
         let disabled = accent_action(
-            vm,
-            "continue",
+            pal,
+            cx,
             "Continue",
             GLYPH_ARROW_R,
             true,
             false,
-            || {},
+            Message::Continue,
         );
         return (
             content,
-            footer("Pick your HDR10 master to continue", Some(disabled)),
+            footer(pal, "Pick your HDR10 master to continue", Some(disabled)),
         );
     }
 
-    let probe = valid_probe(&vm.src_probe, &vm.source);
-    let mut children: Vec<Element> = Vec::new();
-
-    // Source file card.
-    children.push(
-        body_strong("Source file")
-            .margin(Thickness {
-                left: 2.0,
-                top: 0.0,
-                right: 2.0,
-                bottom: 9.0,
-            })
-            .with_key("src-header")
-            .into(),
-    );
-    children.push(
-        file_card(
-            icon_block(
-                GLYPH_FILM,
-                ThemeRef::SystemAttentionBackground,
-                ThemeRef::AccentText,
-                40.0,
+    let probe = p.src_probe.ready();
+    let mut children = vec![
+        KeyedView::new(
+            "src-header",
+            body_strong("Source file").margin(Thickness::new(2.0, 0.0, 2.0, 9.0)),
+        ),
+        KeyedView::new(
+            "src-card",
+            file_card(
+                icon_block(GLYPH_FILM, pal, 40.0),
+                &file_name(&p.source),
+                &file_detail(&p.source, probe),
+                None,
+                Button::new()
+                    .on_click(cx.message(Message::Pick(Slot::Source)))
+                    .content("Change"),
+                pal,
             ),
-            &file_name(&vm.source),
-            &file_detail(&vm.source, probe),
-            None,
-            button("Change")
-                .on_click(crate::pick_source_handler(vm))
-                .into(),
-        )
-        .with_key("src-card"),
-    );
+        ),
+    ];
 
-    match &vm.src_probe {
-        MutationState::Loading => {
-            children.push(
-                hstack((
-                    ProgressRing::indeterminate().width(20.0).height(20.0),
-                    body("Reading HDR10 metadata\u{2026}").foreground(ThemeRef::SecondaryText),
-                ))
+    match &p.src_probe {
+        Probe::Loading => children.push(KeyedView::new(
+            "src-loading",
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
                 .spacing(10.0)
-                .margin(Thickness {
-                    left: 2.0,
-                    top: 18.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("src-loading")
-                .into(),
-            );
-        }
-        MutationState::Error(e) => {
-            children.push(
-                InfoBar::new("Probe failed")
-                    .message(e.clone())
-                    .error()
-                    .is_open(true)
-                    .is_closable(false)
-                    .margin(Thickness {
-                        left: 0.0,
-                        top: 14.0,
-                        right: 0.0,
-                        bottom: 0.0,
-                    })
-                    .with_key("src-error")
-                    .into(),
-            );
-        }
-        _ => {}
+                .margin(Thickness::new(2.0, 18.0, 0.0, 0.0))
+                .children((
+                    ProgressRing::new()
+                        .is_indeterminate(true)
+                        .is_active(true)
+                        .width(20.0)
+                        .height(20.0),
+                    body("Reading HDR10 metadata\u{2026}").foreground(pal.text_secondary),
+                )),
+        )),
+        Probe::Failed(e) => children.push(KeyedView::new(
+            "src-error",
+            banner("Probe failed", e.clone(), InfoBarSeverity::Error, top(14.0)),
+        )),
+        Probe::Idle | Probe::Ready(_) => {}
     }
 
-    if let Some(p) = probe {
-        let detected = p.hdr.to_metadata();
-        let effective = vm.ui.override_for(&vm.source).unwrap_or(detected);
+    if let Some(probe) = probe {
+        let detected = probe.hdr.to_metadata();
+        let effective = p.overrides.unwrap_or(detected);
         let any_override = effective != detected;
 
-        // "HDR10 metadata" header with optional "Reset all".
-        let mut head: Vec<Element> = vec![
+        // "HDR10 metadata" header with "Reset all" while anything is overridden.
+        let mut head = vec![KeyedView::new(
+            "title",
             body_strong("HDR10 metadata")
                 .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0)
-                .with_key("title")
-                .into(),
-        ];
+                .grid_column(0),
+        )];
         if any_override {
-            let upd = vm.upd.clone();
-            head.push(
-                button("Reset all")
-                    .subtle()
-                    .icon(Symbol::Refresh)
-                    .on_click(move || {
-                        upd.call(|mut s| {
-                            s.overrides = None;
-                            s.editing = None;
-                            s
-                        });
-                    })
+            head.push(KeyedView::new(
+                "reset-all",
+                Button::new()
+                    .style(ButtonStyle::Subtle)
                     .grid_column(1)
-                    .with_key("reset-all")
-                    .into(),
-            );
+                    .automation_name("Reset all")
+                    .on_click(cx.message(Message::ResetAll))
+                    .content(icon_label(Symbol::Refresh, "Reset all")),
+            ));
         }
-        children.push(
-            grid(head)
+        children.push(KeyedView::new(
+            "meta-header",
+            Grid::new()
                 .columns([GridLength::Star(1.0), GridLength::Auto])
-                .margin(Thickness {
-                    left: 2.0,
-                    top: 22.0,
-                    right: 2.0,
-                    bottom: 9.0,
-                })
-                .with_key("meta-header")
-                .into(),
-        );
+                .margin(Thickness::new(2.0, 22.0, 2.0, 9.0))
+                .keyed_children(head),
+        ));
 
-        // The five editable metadata rows. Keys are STABLE and every row is the same element
-        // type (a vstack) whether or not its editor is open — a keyed row that swapped type
-        // when the editor opened desynced the reconciler's child mirror at the tail of the
-        // list, leaving a duplicate of the last row on screen.
-        let mut rows: Vec<Element> = Vec::new();
+        // The five editable metadata rows.
+        let mut rows = Vec::new();
         for row in 0..META_ROWS.len() {
             if row > 0 {
-                rows.push(divider().with_key(format!("div-{row}")));
+                rows.push(KeyedView::new(format!("div-{row}"), divider(pal)));
             }
-            rows.push(meta_row(vm, row, &detected, &effective).with_key(format!("row-{row}")));
+            rows.push(KeyedView::new(
+                format!("row-{row}"),
+                meta_row(p, cx, row, &detected, &effective),
+            ));
         }
-        children.push(card(vstack(rows).spacing(0.0)).with_key("meta-card"));
+        children.push(KeyedView::new(
+            "meta-card",
+            card().content(StackPanel::new().keyed_children(rows)),
+        ));
 
-        // Status banner.
-        let banner = if any_override {
-            InfoBar::new("Manual overrides active")
-                .message("These values will be written instead of the detected ones.")
-                .warning()
-        } else if p.has_hdr10() {
-            InfoBar::new("Valid HDR10 found")
-                .message("Ready to copy into your encode.")
-                .success()
+        let status = if any_override {
+            banner(
+                "Manual overrides active",
+                "These values will be written instead of the detected ones.",
+                InfoBarSeverity::Warning,
+                top(14.0),
+            )
+        } else if probe.has_hdr10() {
+            banner(
+                "Valid HDR10 found",
+                "Ready to copy into your encode.",
+                InfoBarSeverity::Success,
+                top(14.0),
+            )
         } else {
-            InfoBar::new("No HDR10 signalling detected")
-                .message("This file doesn't look like an HDR10 master; the detected values can still be edited above.")
-                .warning()
+            banner(
+                "No HDR10 signalling detected",
+                "This file doesn't look like an HDR10 master; the detected values can still be edited above.",
+                InfoBarSeverity::Warning,
+                top(14.0),
+            )
         };
-        children.push(
-            banner
-                .is_open(true)
-                .is_closable(false)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 14.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("src-banner")
-                .into(),
-        );
+        children.push(KeyedView::new("src-banner", status));
     }
 
-    let upd = vm.upd.clone();
-    let can_continue = probe.is_some();
     let action = accent_action(
-        vm,
-        "continue",
+        pal,
+        cx,
         "Continue",
         GLYPH_ARROW_R,
         true,
-        can_continue,
-        move || {
-            upd.call(|mut s| {
-                s.stage = Stage::Encode;
-                s
-            });
-        },
+        probe.is_some(),
+        Message::Continue,
     );
-    (content_and_hint(children), footer("", Some(action)))
-}
-
-/// Wraps stage children into the page column (helper so both arms return the same shape).
-fn content_and_hint(children: Vec<Element>) -> Element {
-    page(children)
+    (page(children), footer(pal, "", Some(action)))
 }
 
 /// A file (or output) card row: icon block, title + detail, optional badge, trailing button.
 fn file_card(
-    icon: Element,
+    icon: View,
     title_text: &str,
     detail: &str,
-    badge: Option<Element>,
-    action: Element,
-) -> Element {
-    let mut cells: Vec<Element> = vec![
-        icon.grid_column(0).with_key("icon"),
-        vstack((
-            body_strong(title_text),
-            caption(detail).foreground(ThemeRef::SecondaryText),
-        ))
-        .spacing(1.0)
-        .vertical_alignment(VerticalAlignment::Center)
-        .grid_column(1)
-        .with_key("info")
-        .into(),
+    badge: Option<View>,
+    action: impl Into<View>,
+    pal: &Palette,
+) -> View {
+    let mut cells = vec![
+        KeyedView::new("icon", in_column(0, icon)),
+        KeyedView::new(
+            "info",
+            StackPanel::new()
+                .spacing(1.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(1)
+                .children((
+                    body_strong(title_text),
+                    caption(detail).foreground(pal.text_secondary),
+                )),
+        ),
     ];
-    if let Some(b) = badge {
-        cells.push(b.grid_column(2).with_key("badge"));
+    if let Some(badge) = badge {
+        cells.push(KeyedView::new("badge", in_column(2, badge)));
     }
-    cells.push(action.grid_column(3).with_key("action"));
-    card(padded(
-        grid(cells)
-            .columns([
-                GridLength::Auto,
-                GridLength::Star(1.0),
-                GridLength::Auto,
-                GridLength::Auto,
-            ])
-            .column_spacing(13.0),
-        Thickness {
-            left: 15.0,
-            top: 14.0,
-            right: 15.0,
-            bottom: 14.0,
-        },
-    ))
+    cells.push(KeyedView::new("action", in_column(3, action)));
+    card().content(
+        Border::new()
+            .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
+            .content(
+                Grid::new()
+                    .columns([
+                        GridLength::Auto,
+                        GridLength::Star(1.0),
+                        GridLength::Auto,
+                        GridLength::Auto,
+                    ])
+                    .column_spacing(13.0)
+                    .keyed_children(cells),
+            ),
+    )
 }
 
 /// A small tinted pill badge ("No HDR10", "Edited").
-fn pill(text: &str, bg: ThemeRef, fg: ThemeRef) -> Element {
-    border(text_block(text).font_size(11.0).semibold().foreground(fg))
+fn pill(label: &str, bg: Color, fg: impl Into<Brush>) -> View {
+    Border::new()
         .corner_radius(4.0)
         .background(bg)
-        .padding(Thickness {
-            left: 8.0,
-            top: 2.0,
-            right: 8.0,
-            bottom: 2.0,
-        })
+        .padding(Thickness::new(8.0, 2.0, 8.0, 2.0))
         .vertical_alignment(VerticalAlignment::Center)
-        .into()
+        .content(
+            text(label, 11.0)
+                .font_weight(FontWeight::SEMI_BOLD)
+                .foreground(fg),
+        )
+}
+
+/// A narrow icon-only button (metadata pencils, the result screen's play button).
+fn icon_button(symbol: Symbol, name: &str, width: f64, height: f64, message: Callback<()>) -> View {
+    Button::new()
+        .width(width)
+        .height(height)
+        .automation_name(name)
+        .on_click(message)
+        // The stock padding would leave too little room for the 20px symbol.
+        .content(SymbolIcon::new().symbol(symbol).margin(unpad()))
 }
 
 /// One metadata row: label · (Edited) · value · edit button, plus the expanded editor.
-fn meta_row(vm: &Vm, row: usize, detected: &Hdr10Metadata, effective: &Hdr10Metadata) -> Element {
+fn meta_row(
+    p: &Patcher,
+    cx: &Cx,
+    row: usize,
+    detected: &Hdr10Metadata,
+    effective: &Hdr10Metadata,
+) -> View {
+    let pal = &p.palette;
     let overridden = row_overridden(row, effective, detected);
-    let editing = vm
-        .ui
-        .editing_for(&vm.source)
-        .filter(|e| e.row == row)
-        .cloned();
+    let editing = p.editing.as_ref().filter(|e| e.row == row);
 
-    let mut cells: Vec<Element> = vec![
+    let mut cells = vec![KeyedView::new(
+        "label",
         body(META_ROWS[row])
             .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0)
-            .with_key("label")
-            .into(),
-    ];
+            .grid_column(0),
+    )];
     if overridden {
-        cells.push(
-            pill("EDITED", ThemeRef::SubtleFill, ThemeRef::AccentText)
-                .grid_column(1)
-                .with_key("pill"),
-        );
+        cells.push(KeyedView::new(
+            "pill",
+            in_column(1, pill("EDITED", pal.subtle, ThemeBrush::AccentText)),
+        ));
     }
-    let value_fg = if overridden {
-        ThemeRef::AccentText
-    } else {
-        ThemeRef::SecondaryText
-    };
-    cells.push(
-        text_block(row_value(row, effective))
-            .font_size(13.0)
-            .foreground(value_fg)
-            .horizontal_alignment(HorizontalAlignment::Right)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(2)
-            .with_key("value")
-            .into(),
-    );
-    if editing.is_none() {
-        let upd = vm.upd.clone();
-        let path = vm.source.clone();
-        let eff = *effective;
-        cells.push(
-            // Zero padding: with the default control padding the narrow button clips the glyph
-            // (same as the result screen's play button).
-            button("")
-                .icon(Symbol::Edit)
-                .on_click(move || {
-                    let path = path.clone();
-                    upd.call(move |mut s| {
-                        s.editing = Some(EditState {
-                            path,
-                            row,
-                            draft: Draft::from_meta(&eff),
-                        });
-                        s
-                    });
-                })
-                .padding(0.0)
-                .width(34.0)
-                .height(32.0)
-                .grid_column(3)
-                .with_key("edit")
-                .into(),
-        );
-    }
-    let header = padded(
-        grid(cells)
-            .columns([
-                GridLength::Auto,
-                GridLength::Auto,
-                GridLength::Star(1.0),
-                GridLength::Auto,
-            ])
-            .column_spacing(12.0),
-        Thickness {
-            left: 16.0,
-            top: 15.0,
-            right: 14.0,
-            bottom: 15.0,
+    let value = text(row_value(row, effective), 13.0)
+        .horizontal_alignment(HorizontalAlignment::Right)
+        .vertical_alignment(VerticalAlignment::Center)
+        .grid_column(2);
+    cells.push(KeyedView::new(
+        "value",
+        if overridden {
+            value.foreground(ThemeBrush::AccentText)
+        } else {
+            value.foreground(pal.text_secondary)
         },
-    );
-
-    // Both branches are a vstack so opening the editor never changes the row's element type
-    // (see the keying comment at the row loop); the panel is appended/truncated at the tail,
-    // which the reconciler handles cleanly.
-    let mut parts: Vec<Element> = vec![header.with_key("hdr").into()];
-    if let Some(edit) = editing {
-        parts.push(meta_editor(vm, row, edit, detected, overridden).with_key("panel"));
+    ));
+    if editing.is_none() {
+        cells.push(KeyedView::new(
+            "edit",
+            in_column(
+                3,
+                icon_button(
+                    Symbol::Edit,
+                    &format!("Edit {}", META_ROWS[row]),
+                    34.0,
+                    32.0,
+                    cx.message(Message::EditRow(row)),
+                ),
+            ),
+        ));
     }
-    vstack(parts).spacing(0.0).into()
+    let header = Border::new()
+        .padding(Thickness::new(16.0, 15.0, 14.0, 15.0))
+        .content(
+            Grid::new()
+                .columns([
+                    GridLength::Auto,
+                    GridLength::Auto,
+                    GridLength::Star(1.0),
+                    GridLength::Auto,
+                ])
+                .column_spacing(12.0)
+                .keyed_children(cells),
+        );
+
+    let mut parts = vec![KeyedView::new("hdr", header)];
+    if let Some(edit) = editing {
+        parts.push(KeyedView::new(
+            "panel",
+            meta_editor(p, cx, row, edit, overridden),
+        ));
+    }
+    StackPanel::new().keyed_children(parts)
 }
 
 /// The expanded "Raw HEVC values" editor under a metadata row.
-fn meta_editor(
-    vm: &Vm,
-    row: usize,
-    edit: EditState,
-    detected: &Hdr10Metadata,
-    overridden: bool,
-) -> Element {
+fn meta_editor(p: &Patcher, cx: &Cx, row: usize, edit: &EditState, overridden: bool) -> View {
+    let pal = &p.palette;
     let d = edit.draft;
-    let upd = vm.upd.clone();
 
-    // A draft-field mutator: patches the open editor's draft.
-    let set = move |f: fn(&mut Draft, f64)| {
-        let upd = upd.clone();
-        move |v: f64| {
-            upd.call(move |mut s| {
-                if let Some(e) = s.editing.as_mut() {
-                    f(&mut e.draft, v);
-                }
-                s
-            });
-        }
+    let num = |value: f64, header: &str, column: i32, apply: fn(&mut Draft, f64)| -> View {
+        NumberBox::new()
+            .value(value)
+            .on_value_changed(cx.callback(move |v| Message::DraftNumber(apply, v)))
+            .grid_column(column)
+            .slot(NumberBoxSlot::Header, header)
     };
-
-    let num = |value: f64, header: &str, apply: fn(&mut Draft, f64)| -> Element {
-        NumberBox::new(value)
-            .header(header)
-            .on_value_changed(set(apply))
-            .into()
+    let combo = |header: &str,
+                 opts: &'static [u8],
+                 current: u8,
+                 namer: fn(u8) -> &'static str,
+                 column: i32,
+                 apply: fn(&mut Draft, u8)|
+     -> View {
+        let items: Vec<String> = opts.iter().map(|&c| code_label(c, namer(c))).collect();
+        let selected = opts.iter().position(|&c| c == current).unwrap_or(0);
+        ComboBox::new()
+            .items_source(items)
+            .selected_index(selected)
+            .on_selection_changed(cx.callback(move |i: Option<usize>| {
+                Message::DraftCode(apply, i.and_then(|i| opts.get(i).copied()))
+            }))
+            // Fill the Star column: auto-sized combos render as uneven widths.
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .grid_column(column)
+            .slot(ComboBoxSlot::Header, header)
     };
+    let star_columns = |n: usize| vec![GridLength::Star(1.0); n];
 
-    let fields: Element = match row {
-        0 => {
-            let combo = |header: &str,
-                         opts: &[u8],
-                         current: u8,
-                         namer: fn(u8) -> &'static str,
-                         apply: fn(&mut Draft, u8)|
-             -> Element {
-                let items: Vec<String> = opts.iter().map(|&c| code_label(c, namer(c))).collect();
-                let selected = opts.iter().position(|&c| c == current).unwrap_or(0) as i32;
-                let opts = opts.to_vec();
-                let upd = vm.upd.clone();
-                ComboBox::new(items)
-                    .header(header)
-                    .selected_index(selected)
-                    .on_selection_changed(move |i: i32| {
-                        if let Some(&code) = opts.get(i as usize) {
-                            upd.call(move |mut s| {
-                                if let Some(e) = s.editing.as_mut() {
-                                    apply(&mut e.draft, code);
-                                }
-                                s
-                            });
-                        }
-                    })
-                    // Fill the Star column — auto-sized combos render as uneven widths.
-                    .horizontal_alignment(HorizontalAlignment::Stretch)
-                    .into()
-            };
-            grid((
+    let fields: View = match row {
+        0 => Grid::new()
+            .columns(star_columns(3))
+            .column_spacing(10.0)
+            .children((
                 combo(
                     "Colour primaries",
                     &PRIMARIES_OPTS,
                     d.primaries,
                     naming::primaries_name,
+                    0,
                     |d, v| d.primaries = v,
-                )
-                .grid_column(0)
-                .with_key("ed0-prim"),
+                ),
                 combo(
                     "Transfer (EOTF)",
                     &TRANSFER_OPTS,
                     d.transfer,
                     naming::transfer_name,
+                    1,
                     |d, v| d.transfer = v,
-                )
-                .grid_column(1)
-                .with_key("ed0-tf"),
+                ),
                 combo(
                     "Matrix coefficients",
                     &MATRIX_OPTS,
                     d.matrix,
                     naming::matrix_name,
+                    2,
                     |d, v| d.matrix = v,
-                )
-                .grid_column(2)
-                .with_key("ed0-mx"),
-            ))
-            .columns([
-                GridLength::Star(1.0),
-                GridLength::Star(1.0),
-                GridLength::Star(1.0),
-            ])
-            .column_spacing(10.0)
-            .with_key("ed0-fields")
-            .into()
-        }
-        1 => {
-            let upd = vm.upd.clone();
-            ComboBox::new(["0 · Limited (TV)".to_owned(), "1 · Full (PC)".to_owned()])
-                .header("video_full_range_flag")
-                .selected_index(if d.full_range { 1 } else { 0 })
-                .on_selection_changed(move |i: i32| {
-                    upd.call(move |mut s| {
-                        if let Some(e) = s.editing.as_mut() {
-                            e.draft.full_range = i == 1;
-                        }
-                        s
-                    });
-                })
-                // Full width, matching the GTK editor (was a compact left-aligned box).
-                .horizontal_alignment(HorizontalAlignment::Stretch)
-                .into()
-        }
+                ),
+            )),
+        // Full width, matching the GTK editor.
+        1 => ComboBox::new()
+            .items_source(["0 · Limited (TV)", "1 · Full (PC)"])
+            .selected_index(usize::from(d.full_range))
+            .on_selection_changed(
+                cx.callback(|i: Option<usize>| Message::DraftRange(i.map(|i| i == 1))),
+            )
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .slot(ComboBoxSlot::Header, "video_full_range_flag"),
         2 => {
-            let cell = |v: u16, h: &str, apply: fn(&mut Draft, f64)| num(v as f64, h, apply);
-            vstack((
-                grid((
-                    cell(d.gx, "Green x", |d, v| d.gx = v as u16)
-                        .grid_column(0)
-                        .with_key("ed2-gx"),
-                    cell(d.gy, "Green y", |d, v| d.gy = v as u16)
-                        .grid_column(1)
-                        .with_key("ed2-gy"),
-                    cell(d.bx, "Blue x", |d, v| d.bx = v as u16)
-                        .grid_column(2)
-                        .with_key("ed2-bx"),
-                    cell(d.by, "Blue y", |d, v| d.by = v as u16)
-                        .grid_column(3)
-                        .with_key("ed2-by"),
-                ))
-                .columns([
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                ])
-                .column_spacing(10.0)
-                .with_key("ed2-row1"),
-                grid((
-                    cell(d.rx, "Red x", |d, v| d.rx = v as u16)
-                        .grid_column(0)
-                        .with_key("ed2-rx"),
-                    cell(d.ry, "Red y", |d, v| d.ry = v as u16)
-                        .grid_column(1)
-                        .with_key("ed2-ry"),
-                    cell(d.wx, "White x", |d, v| d.wx = v as u16)
-                        .grid_column(2)
-                        .with_key("ed2-wx"),
-                    cell(d.wy, "White y", |d, v| d.wy = v as u16)
-                        .grid_column(3)
-                        .with_key("ed2-wy"),
-                ))
-                .columns([
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                ])
-                .column_spacing(10.0)
-                .with_key("ed2-row2"),
+            let cell = |v: u16, h: &str, column: i32, apply: fn(&mut Draft, f64)| {
+                num(f64::from(v), h, column, apply)
+            };
+            StackPanel::new().spacing(10.0).children((
+                Grid::new()
+                    .columns(star_columns(4))
+                    .column_spacing(10.0)
+                    .children((
+                        cell(d.gx, "Green x", 0, |d, v| d.gx = v as u16),
+                        cell(d.gy, "Green y", 1, |d, v| d.gy = v as u16),
+                        cell(d.bx, "Blue x", 2, |d, v| d.bx = v as u16),
+                        cell(d.by, "Blue y", 3, |d, v| d.by = v as u16),
+                    )),
+                Grid::new()
+                    .columns(star_columns(4))
+                    .column_spacing(10.0)
+                    .children((
+                        cell(d.rx, "Red x", 0, |d, v| d.rx = v as u16),
+                        cell(d.ry, "Red y", 1, |d, v| d.ry = v as u16),
+                        cell(d.wx, "White x", 2, |d, v| d.wx = v as u16),
+                        cell(d.wy, "White y", 3, |d, v| d.wy = v as u16),
+                    )),
             ))
-            .spacing(10.0)
-            .into()
         }
-        3 => grid((
-            num(d.max_lum as f64, "max_luminance (0.0001 cd/m²)", |d, v| {
-                d.max_lum = v as u32
-            })
-            .grid_column(0)
-            .with_key("ed3-max"),
-            num(d.min_lum as f64, "min_luminance (0.0001 cd/m²)", |d, v| {
-                d.min_lum = v as u32
-            })
-            .grid_column(1)
-            .with_key("ed3-min"),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-        .column_spacing(10.0)
-        .with_key("ed3-fields")
-        .into(),
-        _ => grid((
-            num(d.max_cll as f64, "MaxCLL (cd/m²)", |d, v| {
-                d.max_cll = v as u16
-            })
-            .grid_column(0)
-            .with_key("ed4-cll"),
-            num(d.max_fall as f64, "MaxFALL (cd/m²)", |d, v| {
-                d.max_fall = v as u16
-            })
-            .grid_column(1)
-            .with_key("ed4-fall"),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-        .column_spacing(10.0)
-        .with_key("ed4-fields")
-        .into(),
+        3 => Grid::new()
+            .columns(star_columns(2))
+            .column_spacing(10.0)
+            .children((
+                num(
+                    f64::from(d.max_lum),
+                    "max_luminance (0.0001 cd/m²)",
+                    0,
+                    |d, v| d.max_lum = v as u32,
+                ),
+                num(
+                    f64::from(d.min_lum),
+                    "min_luminance (0.0001 cd/m²)",
+                    1,
+                    |d, v| d.min_lum = v as u32,
+                ),
+            )),
+        _ => Grid::new()
+            .columns(star_columns(2))
+            .column_spacing(10.0)
+            .children((
+                num(f64::from(d.max_cll), "MaxCLL (cd/m²)", 0, |d, v| {
+                    d.max_cll = v as u16
+                }),
+                num(f64::from(d.max_fall), "MaxFALL (cd/m²)", 1, |d, v| {
+                    d.max_fall = v as u16
+                }),
+            )),
     };
 
     // Reset-to-detected · Cancel · Apply.
-    let mut buttons: Vec<Element> = Vec::new();
+    let mut buttons = Vec::new();
     if overridden {
-        let upd = vm.upd.clone();
-        let det = *detected;
-        let path = edit.path.clone();
-        buttons.push(
-            button("Reset to detected")
-                .subtle()
-                .on_click(move || {
-                    let path = path.clone();
-                    upd.call(move |mut s| {
-                        // Re-applying this row's detected values over the current override.
-                        if let Some((p, m)) = s.overrides.clone()
-                            && p == path
-                        {
-                            let reset = Draft::from_meta(&det).apply_row(row, m);
-                            s.overrides = Some((p, reset));
-                        }
-                        s.editing = None;
-                        s
-                    });
-                })
-                .grid_column(0)
+        buttons.push(KeyedView::new(
+            "reset",
+            Button::new()
+                .style(ButtonStyle::Subtle)
                 .horizontal_alignment(HorizontalAlignment::Left)
-                .with_key("reset")
-                .into(),
-        );
+                .grid_column(0)
+                .on_click(cx.message(Message::ResetRow))
+                .content("Reset to detected"),
+        ));
     }
-    let upd = vm.upd.clone();
-    buttons.push(
-        button("Cancel")
-            .on_click(move || {
-                upd.call(|mut s| {
-                    s.editing = None;
-                    s
-                });
-            })
+    buttons.push(KeyedView::new(
+        "cancel",
+        Button::new()
             .grid_column(1)
-            .with_key("cancel")
-            .into(),
-    );
-    let upd = vm.upd.clone();
-    let eff_current = vm.ui.override_for(&vm.source).unwrap_or(*detected);
-    let path = edit.path.clone();
-    buttons.push(
-        button("Apply")
-            .accent()
-            .on_click(move || {
-                let path = path.clone();
-                upd.call(move |mut s| {
-                    if let Some(e) = s.editing.take() {
-                        let merged = e.draft.apply_row(row, eff_current);
-                        s.overrides = Some((path, merged));
-                    }
-                    s
-                });
-            })
+            .on_click(cx.message(Message::CancelEdit))
+            .content("Cancel"),
+    ));
+    buttons.push(KeyedView::new(
+        "apply",
+        Button::new()
+            .style(ButtonStyle::Accent)
             .grid_column(2)
-            .with_key("apply")
-            .into(),
-    );
+            .on_click(cx.message(Message::ApplyEdit))
+            .content("Apply"),
+    ));
 
-    border(
-        vstack((
-            caption("RAW HEVC VALUES")
-                .semibold()
-                .foreground(ThemeRef::SecondaryText)
-                .with_key("ed-head"),
-            fields.with_key("ed-fields"),
-            grid(buttons)
-                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
-                .column_spacing(9.0)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 13.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("ed-buttons"),
-        ))
-        .spacing(9.0),
-    )
-    // Accent-soft, like the mockup's tinted editing panel (SubtleFill read as plain grey).
-    .background(ThemeRef::SystemAttentionBackground)
-    .padding(Thickness {
-        left: 16.0,
-        top: 8.0,
-        right: 16.0,
-        bottom: 14.0,
-    })
-    .into()
+    // Accent-soft, like the mockup's tinted editing panel.
+    Border::new()
+        .background(pal.attention_bg)
+        .padding(Thickness::new(16.0, 8.0, 16.0, 14.0))
+        .content(
+            StackPanel::new().spacing(9.0).children((
+                caption("RAW HEVC VALUES")
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .foreground(pal.text_secondary),
+                fields,
+                Grid::new()
+                    .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+                    .column_spacing(9.0)
+                    .margin(top(13.0))
+                    .keyed_children(buttons),
+            )),
+        )
 }
 
 // ===================== Stage 2: Encode =====================
 
-pub fn stage_encode(vm: &Vm, processing: bool) -> (Element, Option<Element>) {
-    if processing {
-        return (processing_view(vm), None);
-    }
-
-    let src_probe = valid_probe(&vm.src_probe, &vm.source);
-    let mut children: Vec<Element> = Vec::new();
+fn stage_encode(p: &Patcher, cx: &Cx) -> (View, View) {
+    let pal = &p.palette;
+    let mut children = Vec::new();
 
     // "Copying from …" banner.
-    let src_meta = src_probe.map(|p| {
-        vm.ui
-            .override_for(&vm.source)
-            .unwrap_or_else(|| p.hdr.to_metadata())
-    });
-    let copying = match &src_meta {
-        Some(m) => colour_summary(m),
-        None => String::new(),
-    };
-    children.push(
-        InfoBar::new(format!("Copying from {}", file_name(&vm.source)))
-            .message(copying)
-            .informational()
-            .is_open(true)
-            .is_closable(false)
-            .margin(Thickness {
-                left: 0.0,
-                top: 0.0,
-                right: 0.0,
-                bottom: 22.0,
-            })
-            .with_key("enc-src-banner")
-            .into(),
-    );
+    let copying = p
+        .effective_metadata()
+        .map(|m| colour_summary(&m))
+        .unwrap_or_default();
+    children.push(KeyedView::new(
+        "enc-src-banner",
+        banner(
+            format!("Copying from {}", file_name(&p.source)),
+            copying,
+            InfoBarSeverity::Informational,
+            Thickness::new(0.0, 0.0, 0.0, 22.0),
+        ),
+    ));
 
-    if vm.encode.is_empty() {
-        children.push(
+    if p.encode.is_empty() {
+        children.push(KeyedView::new(
+            "enc-dropzone",
             drop_zone(
+                p,
+                cx,
+                Slot::Encode,
                 GLYPH_UPLOAD,
                 "Select the encode to patch",
                 "The HEVC encode that's missing its HDR10 signalling. Drag a video here, or browse.",
-                crate::pick_encode_handler(vm),
-                vm.set_encode.clone(),
-                vm.enc_trigger.clone(),
-                Some((vm.set_output.clone(), vm.ui.container)),
-                vm.drag_hover,
-                vm.set_drag_hover.clone(),
-            )
-            .with_key("enc-dropzone"),
-        );
+            ),
+        ));
         return (
             page(children),
-            Some(footer("Select the encode that needs HDR10", None)),
+            footer(pal, "Select the encode that needs HDR10", None),
         );
     }
 
-    let enc_probe = valid_probe(&vm.enc_probe, &vm.encode);
+    let enc_probe = p.enc_probe.ready();
 
-    // Encode card with a "No HDR10" badge.
-    children.push(
-        body_strong("Encode to patch")
-            .margin(Thickness {
-                left: 2.0,
-                top: 0.0,
-                right: 2.0,
-                bottom: 9.0,
-            })
-            .with_key("enc-header")
-            .into(),
-    );
-    let badge = enc_probe.map(|p| {
-        if p.has_hdr10() {
-            pill(
-                "HDR10 PRESENT",
-                ThemeRef::SystemSuccessBackground,
-                ThemeRef::SystemSuccess,
-            )
+    children.push(KeyedView::new(
+        "enc-header",
+        body_strong("Encode to patch").margin(Thickness::new(2.0, 0.0, 2.0, 9.0)),
+    ));
+    let badge = enc_probe.map(|probe| {
+        if probe.has_hdr10() {
+            pill("HDR10 PRESENT", pal.success_bg, pal.success)
         } else {
-            pill(
-                "NO HDR10",
-                ThemeRef::SystemCautionBackground,
-                ThemeRef::SystemCaution,
-            )
+            pill("NO HDR10", pal.caution_bg, pal.caution)
         }
     });
-    children.push(
+    children.push(KeyedView::new(
+        "enc-card",
         file_card(
-            // Per the user: an accent-tinted video-clip icon here (not the mockup's amber
-            // warning) — the "No HDR10" badge already carries the caution.
-            icon_block(
-                GLYPH_FILM,
-                ThemeRef::SystemAttentionBackground,
-                ThemeRef::AccentText,
-                40.0,
-            ),
-            &file_name(&vm.encode),
-            &file_detail(&vm.encode, enc_probe),
+            // An accent-tinted video-clip icon here (not the mockup's amber warning): the
+            // "No HDR10" badge already carries the caution.
+            icon_block(GLYPH_FILM, pal, 40.0),
+            &file_name(&p.encode),
+            &file_detail(&p.encode, enc_probe),
             badge,
-            button("Change")
-                .on_click(crate::pick_encode_handler(vm))
-                .into(),
-        )
-        .with_key("enc-card"),
-    );
+            Button::new()
+                .on_click(cx.message(Message::Pick(Slot::Encode)))
+                .content("Change"),
+            pal,
+        ),
+    ));
 
     // Output card. The shown (and patched) path derives its extension from the container
-    // selection at render time — the stored path's own extension is never used directly.
-    children.push(section("Output").with_key("out-header"));
-    let container = vm.ui.container;
-    let out_display = effective_output(&vm.output, container);
-    let save_row = {
-        let mut cells: Vec<Element> = vec![
-            vstack((
-                body_strong("Save as"),
-                caption(compact_path(&out_display)).foreground(ThemeRef::SecondaryText),
-            ))
-            .spacing(1.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0)
-            .into(),
-        ];
-        cells.push(
-            button("Choose\u{2026}")
-                .icon(Symbol::Save)
-                .on_click(crate::pick_output_handler(vm))
-                .grid_column(1)
-                // `on_click` is wired at mount only; the handler captures the container (the
-                // save dialog's preselected type) and the current output name (the dialog's
-                // prefilled file name), so a change to either must remount it.
-                .with_key(format!("out-choose-{}", file_name(&out_display)))
-                .into(),
-        );
-        padded(
-            grid(cells)
-                .columns([GridLength::Star(1.0), GridLength::Auto])
-                .column_spacing(13.0),
-            Thickness {
-                left: 16.0,
-                top: 13.0,
-                right: 16.0,
-                bottom: 13.0,
-            },
-        )
-    };
-    children.push(card(save_row).with_key("out-card"));
+    // selection at render time; the stored path's own extension is never used directly.
+    children.push(KeyedView::new("out-header", section("Output")));
+    let out_display = effective_output(&p.output, p.container);
+    children.push(KeyedView::new(
+        "out-card",
+        card().content(
+            Border::new()
+                .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
+                .content(
+                    Grid::new()
+                        .columns([GridLength::Star(1.0), GridLength::Auto])
+                        .column_spacing(13.0)
+                        .children((
+                            StackPanel::new()
+                                .spacing(1.0)
+                                .vertical_alignment(VerticalAlignment::Center)
+                                .grid_column(0)
+                                .children((
+                                    body_strong("Save as"),
+                                    caption(compact_path(&out_display))
+                                        .foreground(pal.text_secondary),
+                                )),
+                            Button::new()
+                                .grid_column(1)
+                                .automation_name("Choose\u{2026}")
+                                .on_click(cx.message(Message::PickOutput))
+                                .content(icon_label(Symbol::Save, "Choose\u{2026}")),
+                        )),
+                ),
+        ),
+    ));
 
-    // A missing external tool blocks the run — say so here, before the user reaches the
+    // A missing external tool blocks the run: say so here, before the user reaches the
     // (disabled) Patch button, instead of failing mid-run.
-    let missing = missing_tools(vm);
+    let missing = p.missing_tools();
     if !missing.is_empty() {
         let body = missing
             .iter()
             .map(|t| format!("{}: {}", t.label(), t.install_hint()))
             .collect::<Vec<_>>()
             .join("\n");
-        children.push(
-            InfoBar::new("Missing tools for this patch")
-                .message(body)
-                .error()
-                .is_open(true)
-                .is_closable(false)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 14.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("missing-tools")
-                .into(),
-        );
+        children.push(KeyedView::new(
+            "missing-tools",
+            banner(
+                "Missing tools for this patch",
+                body,
+                InfoBarSeverity::Error,
+                top(14.0),
+            ),
+        ));
     }
 
-    // "No re-encoding" note.
-    children.push(
-        InfoBar::new("No re-encoding")
-            .message(match container {
+    children.push(KeyedView::new(
+        "enc-note",
+        banner(
+            "No re-encoding",
+            match p.container {
                 Container::Mkv => {
                     "Only the SPS VUI and an HDR10 SEI are written. All audio & subtitle tracks are carried over untouched."
                 }
                 Container::Mp4 => {
                     "Only the SPS VUI and an HDR10 SEI are written. MP4 can't hold every track type: audio is carried over untouched, text subtitles are converted, the rest is left out."
                 }
-            })
-            .informational()
-            .is_open(true)
-            .is_closable(false)
-            .margin(Thickness {
-                left: 0.0,
-                top: 14.0,
-                right: 0.0,
-                bottom: 0.0,
-            })
-            .with_key("enc-note")
-            .into(),
-    );
+            },
+            InfoBarSeverity::Informational,
+            top(14.0),
+        ),
+    ));
 
     // Run error from a previous attempt.
-    if let MutationState::Error(e) = &vm.run {
-        children.push(
-            InfoBar::new("Patch failed")
-                .message(e.clone())
-                .error()
-                .is_open(true)
-                .is_closable(false)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 14.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("run-error")
-                .into(),
-        );
+    if let Run::Failed(e) = &p.run {
+        children.push(KeyedView::new(
+            "run-error",
+            banner("Patch failed", e.clone(), InfoBarSeverity::Error, top(14.0)),
+        ));
     }
 
     let action = accent_action(
-        vm,
-        "patch",
+        pal,
+        cx,
         "Patch HDR10",
         GLYPH_SPARKLE,
         false,
-        !vm.output.is_empty() && missing.is_empty(),
-        crate::run_handler(vm),
+        !p.output.is_empty() && missing.is_empty(),
+        Message::Patch,
     );
-    (page(children), Some(footer("", Some(action))))
-}
-
-/// The tools the current wizard inputs require that aren't available (empty until an encode
-/// is picked). Drives the stage-2 warning and the disabled Patch button.
-fn missing_tools(vm: &Vm) -> Vec<Tool> {
-    if vm.encode.is_empty() {
-        return Vec::new();
-    }
-    let toolset = Toolset::discover(&Settings::load().tool_overrides);
-    nvhvc_core::pipeline::required_tools(std::path::Path::new(&vm.encode), vm.ui.container)
-        .into_iter()
-        .filter(|t| !toolset.resolution(*t).is_found())
-        .collect()
+    (page(children), footer(pal, "", Some(action)))
 }
 
 /// The centred processing view (spinner, stage label, progress bar). At the Done stage the
-/// spinner gives way to a green checkmark and the view is held briefly (the worker sleeps
-/// before delivering the result) so completion registers; the stage key in `main` changes
-/// with it, so the swap is a clean subtree remount.
-fn processing_view(vm: &Vm) -> Element {
-    let idx = vm.progress.min(5);
-    let done = idx == 5;
+/// spinner gives way to a green checkmark, held briefly (the worker sleeps before delivering
+/// the result) so completion registers.
+fn processing_view(pal: &Palette, stage: usize) -> View {
+    let idx = stage.min(5);
     let label = [
         "Probing source metadata",
         "Extracting HEVC stream",
@@ -1520,205 +1188,164 @@ fn processing_view(vm: &Vm) -> Element {
         "Done",
     ][idx];
     let pct = (idx as f64 / 5.0 * 100.0).round();
-    let indicator: Element = if done {
+    let indicator: View = if idx == 5 {
         // Same footprint as the ring: a green circle with a check, like the result hero.
-        border(
-            glyph(GLYPH_CHECK, 26.0)
-                .foreground(ThemeRef::SystemSuccess)
-                .horizontal_alignment(HorizontalAlignment::Center)
-                .vertical_alignment(VerticalAlignment::Center),
-        )
-        .corner_radius(28.0)
-        .background(ThemeRef::SystemSuccessBackground)
-        .width(56.0)
-        .height(56.0)
-        .horizontal_alignment(HorizontalAlignment::Center)
-        .into()
-    } else {
-        ProgressRing::indeterminate().width(56.0).height(56.0).into()
-    };
-    vstack((
-        indicator,
-        text_block(label)
-            .font_size(18.0)
-            .semibold()
+        Border::new()
+            .corner_radius(28.0)
+            .background(pal.success_bg)
+            .width(56.0)
+            .height(56.0)
             .horizontal_alignment(HorizontalAlignment::Center)
-            .margin(Thickness {
-                left: 0.0,
-                top: 24.0,
-                right: 0.0,
-                bottom: 0.0,
-            }),
-        caption("Lossless bitstream edit · timing preserved exactly")
-            .foreground(ThemeRef::SecondaryText)
-            .horizontal_alignment(HorizontalAlignment::Center),
-        vstack((
-            // Explicit thickness — the stock bar renders a couple of pixels thin.
-            ProgressBar::new(idx as f64).range(0.0, 5.0).height(6.0),
-            grid((
-                caption(format!("Stage {} of 6", idx + 1))
-                    .foreground(ThemeRef::TertiaryText)
-                    .grid_column(0),
-                caption(format!("{pct}%"))
-                    .foreground(ThemeRef::TertiaryText)
-                    .grid_column(1),
-            ))
-            .columns([GridLength::Star(1.0), GridLength::Auto]),
+            .content(glyph(GLYPH_CHECK, 26.0, pal.success))
+    } else {
+        ProgressRing::new()
+            .is_indeterminate(true)
+            .is_active(true)
+            .width(56.0)
+            .height(56.0)
+            .into()
+    };
+    StackPanel::new()
+        .spacing(5.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
+        .children((
+            indicator,
+            text(label, 18.0)
+                .font_weight(FontWeight::SEMI_BOLD)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .margin(top(24.0)),
+            caption("Lossless bitstream edit · timing preserved exactly")
+                .foreground(pal.text_secondary)
+                .horizontal_alignment(HorizontalAlignment::Center),
+            StackPanel::new()
+                .spacing(8.0)
+                .width(320.0)
+                .margin(top(22.0))
+                .children((
+                    // Explicit thickness: the stock bar renders a couple of pixels thin.
+                    ProgressBar::new()
+                        .minimum(0.0)
+                        .maximum(5.0)
+                        .value(idx as f64)
+                        .height(6.0),
+                    Grid::new()
+                        .columns([GridLength::Star(1.0), GridLength::Auto])
+                        .children((
+                            caption(format!("Stage {} of 6", idx + 1))
+                                .foreground(pal.text_tertiary)
+                                .grid_column(0),
+                            caption(format!("{pct}%"))
+                                .foreground(pal.text_tertiary)
+                                .grid_column(1),
+                        )),
+                )),
         ))
-        .spacing(8.0)
-        .width(320.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 22.0,
-            right: 0.0,
-            bottom: 0.0,
-        }),
-    ))
-    .spacing(5.0)
-    .horizontal_alignment(HorizontalAlignment::Center)
-    .vertical_alignment(VerticalAlignment::Center)
-    .into()
 }
 
 // ===================== Stage 3: Result =====================
 
-pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
-    let mut children: Vec<Element> = Vec::new();
+fn stage_result(p: &Patcher, cx: &Cx, summary: &RunSummary) -> (View, View) {
+    let pal = &p.palette;
+    let mut children = Vec::new();
 
-    // Success header. Sparkles on the accent tint: the green checkmark moved to the
+    // Success header. Sparkles on the accent tint: the green checkmark belongs to the
     // processing view's completion hold, so the result hero celebrates instead of
     // re-confirming.
-    children.push(
-        vstack((
-            border(
-                glyph(GLYPH_SPARKLES, 30.0)
-                    .foreground(ThemeRef::AccentText)
+    children.push(KeyedView::new(
+        "res-hero",
+        StackPanel::new()
+            .spacing(5.0)
+            .margin(Thickness::new(0.0, 4.0, 0.0, 24.0))
+            .children((
+                Border::new()
+                    .corner_radius(34.0)
+                    .background(pal.attention_bg)
+                    .width(68.0)
+                    .height(68.0)
                     .horizontal_alignment(HorizontalAlignment::Center)
-                    .vertical_alignment(VerticalAlignment::Center),
-            )
-            .corner_radius(34.0)
-            .background(ThemeRef::SystemAttentionBackground)
-            .width(68.0)
-            .height(68.0)
-            .horizontal_alignment(HorizontalAlignment::Center),
-            text_block("HDR10 metadata embedded")
-                .font_size(20.0)
-                .semibold()
-                .horizontal_alignment(HorizontalAlignment::Center)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 14.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                }),
-            // Two manually-centred lines: TextBlock has no TextAlignment, so a wrapped
-            // block would left-align its second line.
-            text_block("Your encode now carries the source's HDR10 signalling,")
-                .font_size(13.0)
-                .foreground(ThemeRef::SecondaryText)
+                    .content(glyph(GLYPH_SPARKLES, 30.0, pal.accent_text)),
+                text("HDR10 metadata embedded", 20.0)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .horizontal_alignment(HorizontalAlignment::Center)
+                    .margin(top(14.0)),
+                // Two manually centred lines: TextBlock has no TextAlignment, so a wrapped
+                // block would left-align its second line.
+                text(
+                    "Your encode now carries the source's HDR10 signalling,",
+                    13.0,
+                )
+                .foreground(pal.text_secondary)
                 .horizontal_alignment(HorizontalAlignment::Center),
-            text_block("losslessly, with every frame's timing preserved.")
-                .font_size(13.0)
-                .foreground(ThemeRef::SecondaryText)
-                .horizontal_alignment(HorizontalAlignment::Center),
-        ))
-        .spacing(5.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 4.0,
-            right: 0.0,
-            bottom: 24.0,
-        })
-        .with_key("res-hero")
-        .into(),
-    );
+                text("losslessly, with every frame's timing preserved.", 13.0)
+                    .foreground(pal.text_secondary)
+                    .horizontal_alignment(HorizontalAlignment::Center),
+            )),
+    ));
 
     // Output file card with a Play button.
-    let out = summary.output.clone();
-    let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    let out = &summary.output;
+    let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
     let detail = format!(
         "{} · {} · {}",
-        compact_path(&out),
+        compact_path(out),
         human_size(size),
-        std::path::Path::new(&out)
+        std::path::Path::new(out)
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_uppercase)
             .unwrap_or_default()
     );
-    let play = {
-        let out = out.clone();
-        // Zero padding: with the default control padding the 38px button clips the glyph.
-        button("")
-            .icon(Symbol::Play)
-            .on_click(move || crate::open_path(&out))
-            .padding(0.0)
-            .width(38.0)
-            .height(34.0)
-    };
-    children.push(
+    children.push(KeyedView::new(
+        "res-card",
         file_card(
-            // Accent tint like the GTK result card (the green hero + ticks already say "done").
-            icon_block(
-                GLYPH_FILM,
-                ThemeRef::SystemAttentionBackground,
-                ThemeRef::AccentText,
-                42.0,
-            ),
-            &file_name(&summary.output),
+            icon_block(GLYPH_FILM, pal, 42.0),
+            &file_name(out),
             &detail,
             None,
-            play.into(),
-        )
-        .with_key("res-card"),
-    );
+            icon_button(
+                Symbol::Play,
+                "Play",
+                38.0,
+                34.0,
+                cx.message(Message::PlayOutput),
+            ),
+            pal,
+        ),
+    ));
 
     // Summary card.
-    children.push(section("Summary").with_key("sum-header"));
-    let meta = valid_probe(&vm.src_probe, &vm.source).map(|p| {
-        vm.ui
-            .override_for(&vm.source)
-            .unwrap_or_else(|| p.hdr.to_metadata())
-    });
-    let mut rows: Vec<Element> = Vec::new();
-    let mut push_row = |icon: &'static str, icon_fg: ThemeRef, label: &str, value: String| {
+    children.push(KeyedView::new("sum-header", section("Summary")));
+    let mut rows = Vec::new();
+    let mut push_row = |g: &str, g_color: Color, label: &str, value: String| {
         if !rows.is_empty() {
-            rows.push(divider().with_key(format!("div-{}", rows.len())));
+            rows.push(KeyedView::new(format!("div-{}", rows.len()), divider(pal)));
         }
-        let key = format!("sum-{}", rows.len());
-        rows.push(
-            padded(
-                grid((
-                    glyph(icon, 15.0)
-                        .foreground(icon_fg)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(0),
-                    body(label)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(1),
-                    text_block(value)
-                        .font_size(13.0)
-                        .foreground(ThemeRef::SecondaryText)
-                        .horizontal_alignment(HorizontalAlignment::Right)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(2),
-                ))
-                .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-                .column_spacing(13.0),
-                Thickness {
-                    left: 16.0,
-                    top: 14.0,
-                    right: 16.0,
-                    bottom: 14.0,
-                },
-            )
-            .with_key(key)
-            .into(),
-        );
+        rows.push(KeyedView::new(
+            format!("sum-{}", rows.len()),
+            Border::new()
+                .padding(Thickness::new(16.0, 14.0, 16.0, 14.0))
+                .content(
+                    Grid::new()
+                        .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
+                        .column_spacing(13.0)
+                        .children((
+                            in_column(0, glyph(g, 15.0, g_color)),
+                            body(label)
+                                .vertical_alignment(VerticalAlignment::Center)
+                                .grid_column(1),
+                            text(value, 13.0)
+                                .foreground(pal.text_secondary)
+                                .horizontal_alignment(HorizontalAlignment::Right)
+                                .vertical_alignment(VerticalAlignment::Center)
+                                .grid_column(2),
+                        )),
+                ),
+        ));
     };
     push_row(
         GLYPH_CHECK,
-        ThemeRef::SystemSuccess,
+        pal.success,
         "HDR10 SEI inserted",
         match summary.sei_insertions {
             0 => "already present".to_owned(),
@@ -1728,21 +1355,16 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     );
     push_row(
         GLYPH_CHECK,
-        ThemeRef::SystemSuccess,
+        pal.success,
         "SPS VUI colour rewritten",
         format!("{} SPS · bit-exact", summary.sps_patched),
     );
-    if let Some(m) = &meta {
-        push_row(
-            GLYPH_COLOR,
-            ThemeRef::AccentText,
-            "Colour",
-            colour_summary(m),
-        );
+    if let Some(m) = p.effective_metadata() {
+        push_row(GLYPH_COLOR, pal.accent_text, "Colour", colour_summary(&m));
     }
     push_row(
         GLYPH_CLOCK,
-        ThemeRef::AccentText,
+        pal.accent_text,
         "Timing",
         match summary.frames {
             Some(n) => format!("{n} frames preserved exactly"),
@@ -1751,1034 +1373,375 @@ pub fn stage_result(vm: &Vm, summary: &RunSummary) -> (Element, Element) {
     );
     push_row(
         GLYPH_AUDIO,
-        ThemeRef::AccentText,
+        pal.accent_text,
         "Tracks carried over",
         summary
             .tracks
             .clone()
             .unwrap_or_else(|| "audio & subtitles untouched".to_owned()),
     );
-    children.push(card(vstack(rows).spacing(0.0)).with_key("sum-card"));
+    children.push(KeyedView::new(
+        "sum-card",
+        card().content(StackPanel::new().keyed_children(rows)),
+    ));
 
     // MP4 output can't hold every track type; list what was left behind (mirrors GTK).
     if !summary.dropped_tracks.is_empty() {
-        children.push(
-            InfoBar::new("Some tracks were left out")
-                .message(format!(
+        children.push(KeyedView::new(
+            "res-dropped",
+            banner(
+                "Some tracks were left out",
+                format!(
                     "Not carried into MP4 (unsupported there): {}.\nChoose Matroska output to keep every track.",
                     summary.dropped_tracks.join(", ")
-                ))
-                .warning()
-                .is_open(true)
-                .is_closable(false)
-                .margin(Thickness {
-                    left: 0.0,
-                    top: 16.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                })
-                .with_key("res-dropped")
-                .into(),
-        );
+                ),
+                InfoBarSeverity::Warning,
+                top(16.0),
+            ),
+        ));
     }
 
     // Footer: Patch another (left) · Open output folder (accent).
-    let upd = vm.upd.clone();
-    let (set_source, set_encode, set_output) = (
-        vm.set_source.clone(),
-        vm.set_encode.clone(),
-        vm.set_output.clone(),
-    );
-    let another = button("Patch another")
-        .subtle()
-        .icon(Symbol::Refresh)
-        .on_click(move || {
-            set_source.call(String::new());
-            set_encode.call(String::new());
-            set_output.call(String::new());
-            upd.call(|s| Ui {
-                theme: s.theme,
-                run_token: s.run_token,
-                ack_token: s.run_token,
-                tools_rev: s.tools_rev,
-                // A fresh wizard re-reads the persisted default (mirrors GTK's reset).
-                container: Container::from_setting(Settings::load().default_container.as_deref()),
-                ..Ui::default()
-            });
-        });
-    let out = summary.output.clone();
-    let open_folder = accent_action(
-        vm,
-        "open-folder",
-        "Open output folder",
-        GLYPH_FOLDER_OPEN,
-        false,
-        true,
-        move || crate::reveal_in_folder(&out),
-    );
-    let bar = border(
-        grid((
-            another
-                .grid_column(0)
-                .horizontal_alignment(HorizontalAlignment::Left),
-            open_folder.grid_column(1),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Auto]),
-    )
-    // Padding on the Border — a Grid drops it (see `padded`).
-    .padding(Thickness {
-        left: 22.0,
-        top: 16.0,
-        right: 22.0,
-        bottom: 16.0,
-    })
-    .border_thickness(Thickness {
-        left: 0.0,
-        top: 1.0,
-        right: 0.0,
-        bottom: 0.0,
-    })
-    .border_brush(ThemeRef::DividerStroke)
-    .background(ThemeRef::LayerFill)
-    .into();
+    let bar = Border::new()
+        .padding(Thickness::new(22.0, 16.0, 22.0, 16.0))
+        .border_thickness(Thickness::new(0.0, 1.0, 0.0, 0.0))
+        .border_brush(pal.divider)
+        .background(pal.layer)
+        .content(
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .children((
+                    Button::new()
+                        .style(ButtonStyle::Subtle)
+                        .horizontal_alignment(HorizontalAlignment::Left)
+                        .grid_column(0)
+                        .automation_name("Patch another")
+                        .on_click(cx.message(Message::PatchAnother))
+                        .content(icon_label(Symbol::Refresh, "Patch another")),
+                    in_column(
+                        1,
+                        accent_action(
+                            pal,
+                            cx,
+                            "Open output folder",
+                            GLYPH_FOLDER_OPEN,
+                            false,
+                            true,
+                            Message::RevealOutput,
+                        ),
+                    ),
+                )),
+        );
 
     (page(children), bar)
 }
 
 // ===================== Preferences overlay =====================
 
-/// The Preferences dialog rendered as a smoke-layer overlay on top of the app.
-pub fn prefs_overlay(vm: &Vm) -> Element {
+/// The Preferences dialog, a smoke-layer overlay on top of the app.
+fn prefs_overlay(p: &Patcher, cx: &Cx) -> View {
+    let pal = &p.palette;
     let toolset = Toolset::discover(&Settings::load().tool_overrides);
 
-    // Stable keys + a fixed element type per row (see the metadata-row loop): a keyed row
-    // that swaps type when its editor opens desyncs the reconciler at the tail of the list,
-    // duplicating the last row (MP4Box here).
-    let mut rows: Vec<Element> = Vec::new();
+    let mut rows = Vec::new();
     for (i, (tool, resolution)) in toolset.all().into_iter().enumerate() {
         if i > 0 {
-            rows.push(divider().with_key(format!("div-{i}")));
+            rows.push(KeyedView::new(format!("div-{i}"), divider(pal)));
         }
-        rows.push(tool_row(vm, i, tool, resolution).with_key(format!("tool-{i}")));
+        rows.push(KeyedView::new(
+            format!("tool-{i}"),
+            tool_row(p, cx, i, tool, resolution),
+        ));
     }
 
-    // Default output container: persisted immediately on change, and applied to the run in
-    // progress too — unless the user already picked an output file explicitly (their pick
-    // wins). Per-file switching happens in the Save as dialog instead.
-    let container_pref_row = {
-        let items: Vec<String> = Container::ALL
-            .iter()
-            .map(|c| c.label().to_owned())
-            .collect();
-        let current = Container::from_setting(Settings::load().default_container.as_deref());
-        let selected = Container::ALL
-            .iter()
-            .position(|&c| c == current)
-            .unwrap_or(0) as i32;
-        let upd = vm.upd.clone();
-        padded(
-            grid((
-                vstack((
-                    body("Default output container"),
-                    // "Save as" is set off like inline code (mono chip), mirroring the
-                    // GTK subtitle's <tt> run.
-                    hstack((
-                        caption("You can still switch it per file in the")
-                            .foreground(ThemeRef::SecondaryText)
-                            .vertical_alignment(VerticalAlignment::Center),
-                        border(
-                            caption("Save as")
-                                .font_family("Consolas")
-                                .foreground(ThemeRef::SecondaryText),
-                        )
-                        .background(Color {
-                            a: 26,
-                            r: 145,
-                            g: 145,
-                            b: 145,
-                        })
-                        .corner_radius(4.0)
-                        .padding(Thickness {
-                            left: 5.0,
-                            top: 0.0,
-                            right: 5.0,
-                            bottom: 1.0,
-                        })
-                        .vertical_alignment(VerticalAlignment::Center),
-                        caption("dialog")
-                            .foreground(ThemeRef::SecondaryText)
-                            .vertical_alignment(VerticalAlignment::Center),
-                    ))
-                    .spacing(4.0),
-                ))
-                .spacing(1.0)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0),
-                ComboBox::new(items)
-                    .selected_index(selected)
-                    .on_selection_changed(move |i: i32| {
-                        let Some(&c) = Container::ALL.get(i as usize) else {
-                            return;
-                        };
-                        let mut settings = Settings::load();
-                        settings.default_container = Some(c.as_setting().to_owned());
-                        let _ = settings.save();
-                        upd.call(move |mut s| {
-                            if s.output_chosen_for.is_none() {
-                                s.container = c;
-                            }
-                            s
-                        });
-                    })
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_column(1),
-            ))
-            .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(13.0),
-            Thickness {
-                left: 16.0,
-                top: 13.0,
-                right: 16.0,
-                bottom: 13.0,
-            },
-        )
-    };
-
-    let body_col = vstack((
-        body_strong("External tools"),
-        card(vstack(rows).spacing(0.0)).margin(Thickness {
-            left: 0.0,
-            top: 10.0,
-            right: 0.0,
-            bottom: 0.0,
-        }),
-        section("Output"),
-        card(
-            vstack((
-                container_pref_row.with_key("out-container"),
-                divider().with_key("out-div"),
-                suffix_row(vm).with_key("out-suffix"),
-                divider().with_key("out-div2"),
-                folder_row(vm).with_key("out-folder"),
-            ))
-            .spacing(0.0),
-        ),
-    ))
-    .spacing(3.0);
-
-    let upd = vm.upd.clone();
-    let done = button("Done")
-        .accent()
-        .on_click(move || {
-            upd.call(|mut s| {
-                s.prefs_open = false;
-                s.tool_edit = None;
-                s.folder_edit = None;
-                s.suffix_edit = None;
-                s
-            });
-        })
-        .horizontal_alignment(HorizontalAlignment::Stretch);
-
-    let dialog = border(
-        vstack((
-            text_block("Preferences")
-                .font_size(20.0)
-                .semibold()
-                .margin(Thickness {
-                    left: 24.0,
-                    top: 23.0,
-                    right: 24.0,
-                    bottom: 5.0,
-                }),
-            scroll_viewer(body_col.margin(Thickness {
-                left: 24.0,
-                top: 10.0,
-                right: 24.0,
-                bottom: 24.0,
-            }))
-            .max_height(420.0),
-            border(done.padding(Thickness {
-                left: 12.0,
-                top: 8.0,
-                right: 12.0,
-                bottom: 8.0,
-            }))
-            .border_thickness(Thickness {
-                left: 0.0,
-                top: 1.0,
-                right: 0.0,
-                bottom: 0.0,
-            })
-            .border_brush(ThemeRef::DividerStroke)
-            .padding(Thickness::uniform(20.0)),
-        ))
-        .spacing(0.0),
-    )
-    .corner_radius(8.0)
-    .background(ThemeRef::SolidBackground)
-    .border_brush(ThemeRef::SurfaceStroke)
-    .border_thickness(Thickness::uniform(1.0))
-    .width(524.0)
-    .horizontal_alignment(HorizontalAlignment::Center)
-    .vertical_alignment(VerticalAlignment::Center);
-
-    border(dialog)
-        .background(ThemeRef::SmokeFill)
-        .horizontal_alignment(HorizontalAlignment::Stretch)
-        .vertical_alignment(VerticalAlignment::Stretch)
-        .into()
-}
-
-// ===================== App menu overlay =====================
-
-/// The "…" app menu, mirroring the GTK popover: a three-way theme icon switcher on top, then
-/// icon menu entries (Preferences / Help / About). A custom overlay layer rather than a native
-/// `MenuFlyout` — flyout items can't carry icons, custom content, or the segmented theme row.
-/// A full-window transparent click-catcher behind the panel dismisses it.
-pub fn menu_overlay(vm: &Vm) -> Element {
-    // Click-catchers with a notch left uncovered over the "…" button in the breadcrumb row:
-    // a click there would reach BOTH the catcher and the button, and close-then-toggle nets
-    // out to "menu never closes". The notch lets the button's toggle be the only handler in
-    // its corner. Three pieces: the full titlebar strip, the breadcrumb row minus the notch,
-    // and everything below.
-    // Transparent (not None) backgrounds: a null background isn't hit-testable in WinUI.
-    let catcher = |key: &'static str| {
-        let close = vm.upd.clone();
-        border(text_block(""))
-            .background(Color::transparent())
-            .horizontal_alignment(HorizontalAlignment::Stretch)
-            .on_tapped(move || {
-                close.call(|mut s| {
-                    s.menu_open = false;
-                    s
-                });
-            })
-            .with_key(key)
-    };
-    let catcher_strip: Element = catcher("catch-strip")
-        .vertical_alignment(VerticalAlignment::Top)
-        .height(32.0)
-        .into();
-    let catcher_row: Element = catcher("catch-row")
-        .vertical_alignment(VerticalAlignment::Top)
-        .height(48.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 32.0,
-            right: 90.0, // the notch: the "…" button spans ~12..52px from the right edge
-            bottom: 0.0,
-        })
-        .into();
-    let catcher_main: Element = catcher("catcher")
-        .vertical_alignment(VerticalAlignment::Stretch)
-        .margin(Thickness {
-            left: 0.0,
-            top: 80.0,
-            right: 0.0,
-            bottom: 0.0,
-        })
-        .into();
-
-    // --- Theme switcher: three equal segments, selected = accent. ---
-    // Two nested borders so no background ever changes brush-binding KIND (Direct↔Theme
-    // recreates the element mid-interaction — see the menu-item comment): the OUTER border
-    // flips Theme(Accent)↔Theme(SubtleFill) for selection, the INNER flips Direct greys for
-    // hover/pressed. Mixing them on one border broke the accent overlay on click.
-    let theme_btn = |mode: ThemeMode, g: &'static str, label: &'static str, col: i32| -> Element {
-        let selected = vm.ui.theme == mode;
-        let hovered = vm.ui.hovered_action == Some(label);
-        let pressed = vm.ui.pressed_action == Some(label);
-        let fg = || -> BrushBinding {
-            if selected {
-                ThemeRef::custom("TextOnAccentFillColorPrimaryBrush").into()
-            } else {
-                ThemeRef::PrimaryText.into()
-            }
-        };
-        let upd = vm.upd.clone();
-        let enter = vm.upd.clone();
-        let exit = vm.upd.clone();
-        let press = vm.upd.clone();
-        let release = vm.upd.clone();
-        let content = vstack((
-            glyph(g, 16.0)
-                .foreground(fg())
-                .horizontal_alignment(HorizontalAlignment::Center),
-            text_block(label)
-                .font_size(11.0)
-                .foreground(fg())
-                .horizontal_alignment(HorizontalAlignment::Center),
-        ))
+    let body_col = StackPanel::new()
         .spacing(3.0)
-        // Dimmed content is the "held down" cue (covers glyph + label alike).
-        .opacity(if pressed { 0.6 } else { 1.0 });
-        let inner = border(content)
-            .corner_radius(4.0)
-            .background(match (pressed, hovered) {
-                (true, _) => Color {
-                    a: 64,
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                },
-                (false, true) => Color {
-                    a: 34,
-                    r: 145,
-                    g: 145,
-                    b: 145,
-                },
-                (false, false) => Color::transparent(),
-            })
-            .padding(Thickness {
-                left: 0.0,
-                top: 8.0,
-                right: 0.0,
-                bottom: 6.0,
-            })
-            .on_tapped(move || {
-                apply_theme(mode);
-                upd.call(move |mut s| {
-                    s.theme = mode;
-                    s
-                });
-            })
-            .on_pointer_entered(move |_| {
-                enter.call(move |mut s| {
-                    s.hovered_action = Some(label);
-                    s
-                });
-            })
-            .on_pointer_exited(move || {
-                exit.call(|mut s| {
-                    s.hovered_action = None;
-                    s.pressed_action = None;
-                    s
-                });
-            })
-            .on_pointer_pressed(move |_| {
-                press.call(move |mut s| {
-                    s.pressed_action = Some(label);
-                    s
-                });
-            })
-            .on_pointer_released(move |_| {
-                release.call(|mut s| {
-                    s.pressed_action = None;
-                    s
-                });
-            });
-        border(inner)
-            .corner_radius(4.0)
-            .background(if selected {
-                BrushBinding::from(ThemeRef::Accent)
-            } else {
-                BrushBinding::from(ThemeRef::SubtleFill)
-            })
-            .grid_column(col)
-            .with_key(label)
-            .into()
-    };
-    let theme_row: Element = grid((
-        theme_btn(ThemeMode::System, "\u{E7F8}", "System", 0),
-        theme_btn(ThemeMode::Light, "\u{E706}", "Light", 1),
-        theme_btn(ThemeMode::Dark, "\u{E708}", "Dark", 2),
-    ))
-    .columns([
-        GridLength::Star(1.0),
-        GridLength::Star(1.0),
-        GridLength::Star(1.0),
-    ])
-    .column_spacing(4.0)
-    .margin(Thickness {
-        left: 4.0,
-        top: 4.0,
-        right: 4.0,
-        bottom: 6.0,
-    })
-    .with_key("themes")
-    .into();
+        .margin(Thickness::new(24.0, 10.0, 24.0, 24.0))
+        .children((
+            body_strong("External tools"),
+            card()
+                .margin(top(10.0))
+                .content(StackPanel::new().keyed_children(rows)),
+            section("Output"),
+            card().content(StackPanel::new().children((
+                container_pref_row(pal, cx),
+                divider(pal),
+                suffix_row(p, cx),
+                divider(pal),
+                folder_row(p, cx),
+            ))),
+        ));
 
-    // --- Icon menu entries; hover via the shared `hovered_action` tracking. ---
-    let item = |id: &'static str,
-                g: &'static str,
-                label: &'static str,
-                action: Box<dyn Fn()>|
-     -> Element {
-        let hovered = vm.ui.hovered_action == Some(id);
-        let pressed = vm.ui.pressed_action == Some(id);
-        let close = vm.upd.clone();
-        let enter = vm.upd.clone();
-        let exit = vm.upd.clone();
-        let press = vm.upd.clone();
-        let release = vm.upd.clone();
-        border(
-            hstack((
-                glyph(g, 15.0).vertical_alignment(VerticalAlignment::Center),
-                text_block(label)
-                    .font_size(13.0)
-                    .vertical_alignment(VerticalAlignment::Center),
-            ))
-            .spacing(11.0)
-            // Dimmed content while held — the Fluent "pressed" cue.
-            .opacity(if pressed { 0.6 } else { 1.0 }),
-        )
-        .corner_radius(4.0)
-        // All states are Direct colors: flipping a background between a Direct color and a
-        // ThemeRef swaps the brush-binding kind, which recreates the element mid-hover and
-        // fires a spurious PointerExited (hover never sticks). A neutral translucent grey
-        // reads correctly on both the dark and light panel; pressed goes dimmer than hover.
-        .background(match (pressed, hovered) {
-            (true, _) => Color {
-                a: 20,
-                r: 145,
-                g: 145,
-                b: 145,
-            },
-            (false, true) => Color {
-                a: 34,
-                r: 145,
-                g: 145,
-                b: 145,
-            },
-            (false, false) => Color::transparent(),
-        })
-        .padding(Thickness {
-            left: 10.0,
-            top: 9.0,
-            right: 10.0,
-            bottom: 9.0,
-        })
-        .on_tapped(move || {
-            action();
-            close.call(|mut s| {
-                s.menu_open = false;
-                s.hovered_action = None;
-                s.pressed_action = None;
-                s
-            });
-        })
-        .on_pointer_entered(move |_| {
-            enter.call(move |mut s| {
-                s.hovered_action = Some(id);
-                s
-            });
-        })
-        .on_pointer_exited(move || {
-            exit.call(|mut s| {
-                s.hovered_action = None;
-                s.pressed_action = None;
-                s
-            });
-        })
-        .on_pointer_pressed(move |_| {
-            press.call(move |mut s| {
-                s.pressed_action = Some(id);
-                s
-            });
-        })
-        .on_pointer_released(move |_| {
-            release.call(|mut s| {
-                s.pressed_action = None;
-                s
-            });
-        })
-        .with_key(id)
-        .into()
-    };
-    let prefs_upd = vm.upd.clone();
-    let about_upd = vm.upd.clone();
-    let entries: Vec<Element> = vec![
-        theme_row,
-        border(text_block(""))
-            .height(1.0)
-            .background(ThemeRef::DividerStroke)
-            .margin(Thickness {
-                left: 4.0,
-                top: 2.0,
-                right: 4.0,
-                bottom: 2.0,
-            })
-            .with_key("sep")
-            .into(),
-        item(
-            "menu-prefs",
-            "\u{E713}",
-            "Preferences",
-            Box::new(move || {
-                prefs_upd.call(|mut s| {
-                    s.prefs_open = true;
-                    s
-                });
-            }),
-        ),
-        item(
-            "menu-help",
-            "\u{E897}",
-            "Help",
-            // Same target as the GTK Help entry.
-            Box::new(|| crate::open_path("https://github.com/Mahir007/nvhvc_hdr10-tool")),
-        ),
-        item(
-            "menu-about",
-            "\u{E946}",
-            "About nvhvc",
-            Box::new(move || {
-                about_upd.call(|mut s| {
-                    s.about_open = true;
-                    s
-                });
-            }),
-        ),
-    ];
-
-    let panel: Element = border(vstack(entries).spacing(1.0))
-        // In-app acrylic per the mockup's translucent flyout (falls back visually to a plain
-        // panel if the resource is unavailable on this OS).
-        .background(ThemeRef::custom("AcrylicBackgroundFillColorDefaultBrush"))
+    let dialog = Border::new()
         .corner_radius(8.0)
-        .border_brush(ThemeRef::SurfaceStroke)
-        .border_thickness(Thickness::uniform(1.0))
-        .padding(Thickness::uniform(5.0))
-        .width(240.0)
-        .horizontal_alignment(HorizontalAlignment::Right)
-        .vertical_alignment(VerticalAlignment::Top)
-        // Anchored under the "…" button at the right end of the breadcrumb row.
-        .margin(Thickness {
-            left: 0.0,
-            top: 82.0,
-            right: 12.0,
-            bottom: 0.0,
-        })
-        .with_key("panel")
-        .into();
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        .width(524.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
+        .content(
+            StackPanel::new().children((
+                text("Preferences", 20.0)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .margin(Thickness::new(24.0, 23.0, 24.0, 5.0)),
+                ScrollViewer::new().max_height(420.0).content(body_col),
+                Border::new()
+                    .border_thickness(Thickness::new(0.0, 1.0, 0.0, 0.0))
+                    .border_brush(pal.divider)
+                    .padding(20.0)
+                    .content(
+                        Button::new()
+                            .style(ButtonStyle::Accent)
+                            .horizontal_alignment(HorizontalAlignment::Stretch)
+                            .on_click(cx.message(Message::ClosePrefs))
+                            // 12,8,12,8 padding overall.
+                            .content(
+                                TextBlock::new()
+                                    .text("Done")
+                                    .margin(Thickness::new(1.0, 3.0, 1.0, 2.0)),
+                            ),
+                    ),
+            )),
+        );
 
-    grid(vec![catcher_strip, catcher_row, catcher_main, panel]).into()
-}
-
-/// The overwrite confirmation, as a smoke overlay so the destructive Replace button can be
-/// red (reactor's `ContentDialog` exposes no button styling). Replace sits on the LEFT —
-/// deliberately away from the pointer's resting spot — and Cancel is the safe right-hand button.
-pub fn overwrite_overlay(vm: &Vm, launch: impl Fn() + 'static) -> Element {
-    let name = file_name(&vm.output);
-
-    // A red Border (not a Button): a reactor Button's PointerOver visual state overrides a
-    // locally-set Background, so a red button reverts to grey on hover. A Border has no visual
-    // states, so it stays reliably red — hover feedback (a lighter red) comes from the shared
-    // `hovered_action` tracking instead. Replace being a deliberate tap target rather than a
-    // one-keystroke default is a feature. Cancel stays a real button.
-    // `launch()` clears `confirm_overwrite` itself (in the same update that starts the run).
-    let hovered = vm.ui.hovered_action == Some("replace");
-    let pressed = vm.ui.pressed_action == Some("replace");
-    let enter = vm.upd.clone();
-    let exit = vm.upd.clone();
-    let press = vm.upd.clone();
-    let release = vm.upd.clone();
-    let replace = border(
-        text_block("Replace")
-            .semibold()
-            .foreground(Color::rgb(255, 255, 255))
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .vertical_alignment(VerticalAlignment::Center)
-            .opacity(if pressed { 0.7 } else { 1.0 }),
-    )
-    .background(match (pressed, hovered) {
-        (true, _) => Color::rgb(160, 35, 23),      // darker while held
-        (false, true) => Color::rgb(215, 63, 48),  // lighter critical red on hover
-        (false, false) => Color::rgb(196, 43, 28), // Fluent SystemFillColorCritical
-    })
-    .corner_radius(4.0)
-    .on_tapped(launch)
-    .on_pointer_entered(move |_| {
-        enter.call(|mut s| {
-            s.hovered_action = Some("replace");
-            s
-        });
-    })
-    .on_pointer_exited(move || {
-        exit.call(|mut s| {
-            s.hovered_action = None;
-            s.pressed_action = None;
-            s
-        });
-    })
-    .on_pointer_pressed(move |_| {
-        press.call(|mut s| {
-            s.pressed_action = Some("replace");
-            s
-        });
-    })
-    .on_pointer_released(move |_| {
-        release.call(|mut s| {
-            s.pressed_action = None;
-            s
-        });
-    })
-    .horizontal_alignment(HorizontalAlignment::Stretch)
-    .vertical_alignment(VerticalAlignment::Stretch)
-    .grid_column(0)
-    .with_key("replace");
-
-    let upd = vm.upd.clone();
-    let cancel = button("Cancel")
-        .on_click(move || {
-            upd.call(|mut s| {
-                s.confirm_overwrite = false;
-                s
-            });
-        })
-        .horizontal_alignment(HorizontalAlignment::Stretch)
-        .grid_column(1)
-        .with_key("cancel");
-
-    let buttons = grid((replace, cancel))
-        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-        .column_spacing(8.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 20.0,
-            right: 0.0,
-            bottom: 0.0,
-        });
-
-    let card = border(
-        vstack((
-            text_block(format!("Replace \u{201C}{name}\u{201D}?"))
-                .font_size(18.0)
-                .semibold(),
-            text_block(
-                "A file with this name already exists.\nReplacing it will overwrite its contents.",
-            )
-            .font_size(13.0)
-            .foreground(ThemeRef::SecondaryText)
-            .wrap(),
-            buttons,
-        ))
-        .spacing(6.0),
-    )
-    .corner_radius(8.0)
-    .background(ThemeRef::SolidBackground)
-    .border_brush(ThemeRef::SurfaceStroke)
-    .border_thickness(Thickness::uniform(1.0))
-    .padding(Thickness::uniform(24.0))
-    .width(400.0)
-    .horizontal_alignment(HorizontalAlignment::Center)
-    .vertical_alignment(VerticalAlignment::Center);
-
-    border(card)
-        .background(ThemeRef::SmokeFill)
+    Border::new()
+        .background(pal.smoke)
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .vertical_alignment(VerticalAlignment::Stretch)
-        .into()
+        .content(dialog)
 }
 
-/// The "Default output filename suffix" row in Preferences — or its inline editor when open.
-/// The suffix goes between the encode's name and the extension when auto-naming the output;
-/// clearing the field resets to [`DEFAULT_OUTPUT_SUFFIX`]. Both branches return a vstack so
-/// the reconciler never sees the row swap element type.
-fn suffix_row(vm: &Vm) -> Element {
-    if let Some(draft) = &vm.ui.suffix_edit {
-        let upd = vm.upd.clone();
-        let input = text_box(draft.clone())
-            .placeholder_text(DEFAULT_OUTPUT_SUFFIX)
-            .on_text_changed(move |v: String| {
-                upd.call(move |mut s| {
-                    if let Some(d) = s.suffix_edit.as_mut() {
-                        *d = v;
-                    }
-                    s
-                });
-            });
-        let upd = vm.upd.clone();
-        let cancel = button("Cancel").on_click(move || {
-            upd.call(|mut s| {
-                s.suffix_edit = None;
-                s
-            });
-        });
-        let upd = vm.upd.clone();
-        let draft_now = draft.clone();
-        let set = button("Set").accent().on_click(move || {
-            // Kept verbatim (a leading space is meaningful in a suffix); only a blank
-            // entry resets to the default.
-            let value = draft_now.clone();
-            let mut settings = Settings::load();
-            settings.default_output_suffix = if value.trim().is_empty() {
-                None
-            } else {
-                Some(value)
-            };
-            let _ = settings.save();
-            upd.call(|mut s| {
-                s.suffix_edit = None;
-                s
-            });
-        });
-        let editor = border(
-            vstack((
-                caption("Default output filename suffix (leave empty for the default)")
-                    .semibold(),
-                grid((
-                    input.grid_column(0),
-                    cancel.grid_column(1),
-                    set.grid_column(2),
-                ))
-                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
-                .column_spacing(8.0),
-            ))
-            .spacing(8.0),
+/// "Default output container": persisted on change; per-file switching happens in the Save as
+/// dialog instead.
+fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
+    let current = Container::from_setting(Settings::load().default_container.as_deref());
+    let selected = Container::ALL
+        .iter()
+        .position(|&c| c == current)
+        .unwrap_or(0);
+    let note = |s: &str| {
+        caption(s)
+            .foreground(pal.text_secondary)
+            .vertical_alignment(VerticalAlignment::Center)
+    };
+    Border::new()
+        .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
+        .content(
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .column_spacing(13.0)
+                .children((
+                    StackPanel::new()
+                        .spacing(1.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(0)
+                        .children((
+                            body("Default output container"),
+                            // "Save as" is set off like inline code (mono chip), mirroring the
+                            // GTK subtitle's monospace run.
+                            StackPanel::new()
+                                .orientation(Orientation::Horizontal)
+                                .spacing(4.0)
+                                .children((
+                                    note("You can still switch it per file in the"),
+                                    Border::new()
+                                        .background(grey(26))
+                                        .corner_radius(4.0)
+                                        .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
+                                        .vertical_alignment(VerticalAlignment::Center)
+                                        .content(
+                                            caption(monospace("Save as"))
+                                                .foreground(pal.text_secondary)
+                                                .automation_name("Save as"),
+                                        ),
+                                    note("dialog"),
+                                )),
+                        )),
+                    ComboBox::new()
+                        .items_source(Container::ALL.iter().map(|c| c.label()))
+                        .selected_index(selected)
+                        .on_selection_changed(cx.callback(|i: Option<usize>| {
+                            Message::SetContainer(i.and_then(|i| Container::ALL.get(i).copied()))
+                        }))
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(1),
+                )),
         )
-        .background(ThemeRef::SystemAttentionBackground)
-        .padding(Thickness {
-            left: 15.0,
-            top: 14.0,
-            right: 15.0,
-            bottom: 14.0,
-        });
-        return vstack(vec![Element::from(editor.with_key("suffix-edit"))])
-            .spacing(0.0)
-            .into();
-    }
+}
 
-    let settings = Settings::load();
-    let current = settings
+/// A Preferences row: title, detail line and an Edit button.
+fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, edit: Message) -> View {
+    Border::new()
+        .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
+        .content(
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .column_spacing(13.0)
+                .children((
+                    StackPanel::new()
+                        .spacing(1.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(0)
+                        .children((body(title), caption(detail).foreground(pal.text_secondary))),
+                    Button::new()
+                        .grid_column(1)
+                        .automation_name(format!("Edit {title}"))
+                        .on_click(cx.message(edit))
+                        .content(icon_label(Symbol::Edit, "Edit")),
+                )),
+        )
+}
+
+/// A Preferences inline editor: caption, text box, optional Browse, Cancel and Set.
+fn pref_editor(
+    pal: &Palette,
+    cx: &Cx,
+    editor: PrefEditor,
+    heading: String,
+    draft: &str,
+    placeholder: &str,
+    browse: bool,
+) -> View {
+    let mut cells = vec![KeyedView::new(
+        "input",
+        TextBox::new()
+            .text(draft)
+            .placeholder_text(placeholder)
+            .text_wrapping(TextWrapping::Wrap)
+            .on_text_changed(cx.callback(move |text| Message::PrefDraft(editor, text)))
+            .grid_column(0),
+    )];
+    if browse {
+        cells.push(KeyedView::new(
+            "browse",
+            Button::new()
+                .grid_column(1)
+                .on_click(cx.message(Message::BrowseFolder))
+                .content("Browse\u{2026}"),
+        ));
+    }
+    let base = if browse { 2 } else { 1 };
+    cells.push(KeyedView::new(
+        "cancel",
+        Button::new()
+            .grid_column(base)
+            .on_click(cx.message(Message::CancelPref(editor)))
+            .content("Cancel"),
+    ));
+    cells.push(KeyedView::new(
+        "set",
+        Button::new()
+            .style(ButtonStyle::Accent)
+            .grid_column(base + 1)
+            .on_click(cx.message(Message::SavePref(editor)))
+            .content("Set"),
+    ));
+    let mut columns = vec![GridLength::Star(1.0), GridLength::Auto, GridLength::Auto];
+    if browse {
+        columns.push(GridLength::Auto);
+    }
+    // Accent-soft so the row being edited stands out (mockup tint).
+    Border::new()
+        .background(pal.attention_bg)
+        .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
+        .content(
+            StackPanel::new().spacing(8.0).children((
+                caption(heading).font_weight(FontWeight::SEMI_BOLD),
+                Grid::new()
+                    .columns(columns)
+                    .column_spacing(8.0)
+                    .keyed_children(cells),
+            )),
+        )
+}
+
+/// "Default output filename suffix", or its editor. The suffix goes between the encode's name
+/// and the extension when auto-naming the output; clearing it resets to
+/// [`DEFAULT_OUTPUT_SUFFIX`].
+fn suffix_row(p: &Patcher, cx: &Cx) -> View {
+    if let Some(draft) = &p.suffix_edit {
+        return pref_editor(
+            &p.palette,
+            cx,
+            PrefEditor::Suffix,
+            "Default output filename suffix (leave empty for the default)".to_owned(),
+            draft,
+            DEFAULT_OUTPUT_SUFFIX,
+            false,
+        );
+    }
+    let current = Settings::load()
         .default_output_suffix
-        .clone()
         .filter(|s| !s.trim().is_empty());
     let detail = current
         .clone()
         .unwrap_or_else(|| DEFAULT_OUTPUT_SUFFIX.to_owned());
-    let upd = vm.upd.clone();
-    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
-        let current = current.clone().unwrap_or_default();
-        upd.call(move |mut s| {
-            s.suffix_edit = Some(current);
-            s
-        });
-    });
-    let row = padded(
-        grid((
-            vstack((
-                body("Default output filename suffix"),
-                caption(detail).foreground(ThemeRef::SecondaryText),
-            ))
-            .spacing(1.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0),
-            edit.grid_column(1),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Auto])
-        .column_spacing(13.0),
-        Thickness {
-            left: 16.0,
-            top: 13.0,
-            right: 16.0,
-            bottom: 13.0,
-        },
-    );
-    vstack(vec![Element::from(row)]).spacing(0.0).into()
+    pref_row(
+        &p.palette,
+        cx,
+        "Default output filename suffix",
+        detail,
+        Message::EditPref(PrefEditor::Suffix, current.unwrap_or_default()),
+    )
 }
 
-/// The "Default output folder" row in Preferences — or its inline editor when open. Auto-named
-/// outputs are saved there; clearing the field resets to "same folder as the encode". Both
-/// branches return a vstack so the reconciler never sees the row swap element type.
-fn folder_row(vm: &Vm) -> Element {
-    if let Some(draft) = &vm.ui.folder_edit {
-        let upd = vm.upd.clone();
-        let input = text_box(draft.clone())
-            .placeholder_text(r"C:\path\to\output\folder")
-            .on_text_changed(move |v: String| {
-                upd.call(move |mut s| {
-                    if let Some(d) = s.folder_edit.as_mut() {
-                        *d = v;
-                    }
-                    s
-                });
-            });
-        let upd = vm.upd.clone();
-        let browse = button("Browse\u{2026}").on_click(move || {
-            if let Some(path) = crate::pick_folder() {
-                upd.call(move |mut s| {
-                    if let Some(d) = s.folder_edit.as_mut() {
-                        *d = path;
-                    }
-                    s
-                });
-            }
-        });
-        let upd = vm.upd.clone();
-        let cancel = button("Cancel").on_click(move || {
-            upd.call(|mut s| {
-                s.folder_edit = None;
-                s
-            });
-        });
-        let upd = vm.upd.clone();
-        let draft_now = draft.clone();
-        let set = button("Set").accent().on_click(move || {
-            let value = draft_now.trim().to_owned();
-            let mut settings = Settings::load();
-            settings.default_output_dir = if value.is_empty() {
-                None
-            } else {
-                Some(std::path::PathBuf::from(value))
-            };
-            let _ = settings.save();
-            upd.call(|mut s| {
-                s.folder_edit = None;
-                s
-            });
-        });
-        let editor = border(
-            vstack((
-                caption("Default output folder (leave empty to save next to the encode)")
-                    .semibold(),
-                grid((
-                    input.grid_column(0),
-                    browse.grid_column(1),
-                    cancel.grid_column(2),
-                    set.grid_column(3),
-                ))
-                .columns([
-                    GridLength::Star(1.0),
-                    GridLength::Auto,
-                    GridLength::Auto,
-                    GridLength::Auto,
-                ])
-                .column_spacing(8.0),
-            ))
-            .spacing(8.0),
-        )
-        .background(ThemeRef::SystemAttentionBackground)
-        .padding(Thickness {
-            left: 15.0,
-            top: 14.0,
-            right: 15.0,
-            bottom: 14.0,
-        });
-        return vstack(vec![Element::from(editor.with_key("folder-edit"))])
-            .spacing(0.0)
-            .into();
+/// "Default output folder", or its editor. Auto-named outputs are saved there; clearing it
+/// resets to "same folder as the encode".
+fn folder_row(p: &Patcher, cx: &Cx) -> View {
+    if let Some(draft) = &p.folder_edit {
+        return pref_editor(
+            &p.palette,
+            cx,
+            PrefEditor::Folder,
+            "Default output folder (leave empty to save next to the encode)".to_owned(),
+            draft,
+            r"C:\path\to\output\folder",
+            true,
+        );
     }
-
-    let settings = Settings::load();
-    let current = settings
+    let current = Settings::load()
         .default_output_dir
-        .as_ref()
         .filter(|d| !d.as_os_str().is_empty())
         .map(|d| d.display().to_string());
     let detail = current
         .clone()
         .unwrap_or_else(|| "Same folder as the encode".to_owned());
-    let upd = vm.upd.clone();
-    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
-        let current = current.clone().unwrap_or_default();
-        upd.call(move |mut s| {
-            s.folder_edit = Some(current);
-            s
-        });
-    });
-    let row = padded(
-        grid((
-            vstack((
-                body("Default output folder"),
-                caption(detail).foreground(ThemeRef::SecondaryText),
-            ))
-            .spacing(1.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0),
-            edit.grid_column(1),
-        ))
-        .columns([GridLength::Star(1.0), GridLength::Auto])
-        .column_spacing(13.0),
-        Thickness {
-            left: 16.0,
-            top: 13.0,
-            right: 16.0,
-            bottom: 13.0,
-        },
-    );
-    vstack(vec![Element::from(row)]).spacing(0.0).into()
+    pref_row(
+        &p.palette,
+        cx,
+        "Default output folder",
+        detail,
+        Message::EditPref(PrefEditor::Folder, current.unwrap_or_default()),
+    )
 }
 
-/// One tool row in Preferences: status dot, name + resolution detail, Edit button —
-/// or the inline custom-path editor when this row is being edited.
-fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Element {
-    if let Some((i, draft)) = &vm.ui.tool_edit
+/// One tool row in Preferences: status dot, name + resolution detail, Edit button, or the
+/// inline custom-path editor when this row is being edited.
+fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolution) -> View {
+    let pal = &p.palette;
+    if let Some((i, draft)) = &p.tool_edit
         && *i == index
     {
-        {
-            let upd = vm.upd.clone();
-            let input = text_box(draft.clone())
-                .placeholder_text(r"C:\path\to\executable.exe")
-                .on_text_changed(move |v: String| {
-                    upd.call(move |mut s| {
-                        if let Some((_, d)) = s.tool_edit.as_mut() {
-                            *d = v;
-                        }
-                        s
-                    });
-                });
-            let upd = vm.upd.clone();
-            let cancel = button("Cancel").on_click(move || {
-                upd.call(|mut s| {
-                    s.tool_edit = None;
-                    s
-                });
-            });
-            let upd = vm.upd.clone();
-            let draft_now = draft.clone();
-            let set = button("Set").accent().on_click(move || {
-                let value = draft_now.trim().to_owned();
-                let mut settings = Settings::load();
-                set_tool_override(&mut settings, tool, &value);
-                let _ = settings.save();
-                upd.call(|mut s| {
-                    s.tool_edit = None;
-                    s.tools_rev += 1;
-                    s
-                });
-            });
-            let editor = border(
-                vstack((
-                    caption(format!(
-                        "Custom {} executable (empty resets to auto-detect)",
-                        tool.label()
-                    ))
-                    .semibold(),
-                    grid((
-                        input.grid_column(0),
-                        cancel.grid_column(1),
-                        set.grid_column(2),
-                    ))
-                    .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
-                    .column_spacing(8.0),
-                ))
-                .spacing(8.0),
-            )
-            // Accent-soft so the row being edited visibly stands out (mockup tint).
-            .background(ThemeRef::SystemAttentionBackground)
-            .padding(Thickness {
-                left: 15.0,
-                top: 14.0,
-                right: 15.0,
-                bottom: 14.0,
-            });
-            // vstack wrapper: same element type as the view branch (see the row loop).
-            return vstack(vec![Element::from(editor.with_key("edit"))])
-                .spacing(0.0)
-                .into();
-        }
+        return pref_editor(
+            pal,
+            cx,
+            PrefEditor::Tool(index),
+            format!(
+                "Custom {} executable (empty resets to auto-detect)",
+                tool.label()
+            ),
+            draft,
+            r"C:\path\to\executable.exe",
+            false,
+        );
     }
 
-    // green = found on PATH · blue (accent) = custom user path · purple = install dir.
-    let (dot, detail): (BrushBinding, String) = match resolution {
-        Resolution::OnPath(p) => (
-            ThemeRef::SystemSuccess.into(),
-            format!("On PATH · {}", p.display()),
-        ),
+    // green = on PATH · accent = custom user path · purple = install dir · red = missing.
+    let (dot, detail): (Brush, String) = match resolution {
+        Resolution::OnPath(p) => (pal.success.into(), format!("On PATH · {}", p.display())),
         Resolution::Override(p) => (
-            ThemeRef::Accent.into(),
+            ThemeBrush::Accent.into(),
             format!("Custom path · {}", p.display()),
         ),
         Resolution::Fallback(p) => (
@@ -2786,11 +1749,11 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
             format!("Install dir · {}", p.display()),
         ),
         Resolution::OverrideMissing(p) => (
-            ThemeRef::SystemCritical.into(),
+            ThemeBrush::SystemCritical.into(),
             format!("Custom path not found · {}", p.display()),
         ),
         Resolution::NotFound => (
-            ThemeRef::SystemCritical.into(),
+            ThemeBrush::SystemCritical.into(),
             format!("Not found · {}", tool.install_hint()),
         ),
     };
@@ -2798,67 +1761,261 @@ fn tool_row(vm: &Vm, index: usize, tool: Tool, resolution: &Resolution) -> Eleme
         .path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let upd = vm.upd.clone();
-    let edit = button("Edit").icon(Symbol::Edit).on_click(move || {
-        let current = current.clone();
-        upd.call(move |mut s| {
-            s.tool_edit = Some((index, current));
-            s
-        });
-    });
-    let row = padded(
-        grid((
-            border(text_block(""))
-                .width(9.0)
-                .height(9.0)
-                .corner_radius(4.5)
-                .background(dot)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0),
-            vstack((
-                text_block(tool.label()).font_size(13.0).semibold(),
-                caption(detail).foreground(ThemeRef::TertiaryText),
-            ))
-            .spacing(0.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(1),
-            edit.grid_column(2),
-        ))
-        .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-        .column_spacing(12.0),
-        Thickness {
-            left: 15.0,
-            top: 14.0,
-            right: 15.0,
-            bottom: 14.0,
-        },
-    );
-    vstack(vec![Element::from(row.with_key("view"))])
-        .spacing(0.0)
-        .into()
+    Border::new()
+        .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
+        .content(
+            Grid::new()
+                .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
+                .column_spacing(12.0)
+                .children((
+                    Border::new()
+                        .width(9.0)
+                        .height(9.0)
+                        .corner_radius(4.5)
+                        .background(dot)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(0),
+                    StackPanel::new()
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(1)
+                        .children((
+                            text(tool.label(), 13.0).font_weight(FontWeight::SEMI_BOLD),
+                            caption(detail).foreground(pal.text_tertiary),
+                        )),
+                    Button::new()
+                        .grid_column(2)
+                        .automation_name(format!("Edit {}", tool.label()))
+                        .on_click(cx.message(Message::EditPref(PrefEditor::Tool(index), current)))
+                        .content(icon_label(Symbol::Edit, "Edit")),
+                )),
+        )
 }
 
-/// Writes (or clears, when `value` is empty) a tool's custom path in settings.
-fn set_tool_override(settings: &mut Settings, tool: Tool, value: &str) {
-    let path = if value.is_empty() {
-        None
-    } else {
-        Some(std::path::PathBuf::from(value))
+// ===================== App menu overlay =====================
+
+/// The "…" app menu, mirroring the GTK popover: a three-way theme switcher on top, then icon
+/// menu entries (Preferences / Help / About). A custom overlay rather than a native flyout: menu
+/// flyout items can't carry icons or custom rows, and a rich flyout can't be closed when an
+/// entry is picked. Transparent click-catchers behind the panel dismiss it.
+fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
+    let pal = &p.palette;
+    // The catchers leave a notch over the "…" button so its own click toggles the menu shut
+    // (a click there would otherwise reach both and net out to "never closes"). Three pieces:
+    // the title bar strip, the breadcrumb row minus the notch, and everything below.
+    // Transparent (not unset) backgrounds: a null background isn't hit-testable.
+    let catcher = |height: Option<f64>, margin: Thickness| -> View {
+        let catcher = Border::new()
+            .background(Color::transparent())
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .margin(margin)
+            .on_pointer_pressed(cx.callback(|_: PointerEventInfo| Message::CloseMenu));
+        match height {
+            Some(h) => catcher
+                .height(h)
+                .vertical_alignment(VerticalAlignment::Top)
+                .into(),
+            None => catcher
+                .vertical_alignment(VerticalAlignment::Stretch)
+                .into(),
+        }
     };
-    let o = &mut settings.tool_overrides;
-    match tool {
-        Tool::Ffmpeg => o.ffmpeg = path,
-        Tool::Ffprobe => o.ffprobe = path,
-        Tool::Mkvmerge => o.mkvmerge = path,
-        Tool::Mkvextract => o.mkvextract = path,
-        Tool::Mp4box => o.mp4box = path,
-    }
+
+    // Theme switcher: three equal segments, selected = accent.
+    let theme_button = |mode: ThemeMode, g: &str, label: &str, column: i32| -> View {
+        let selected = p.theme == mode;
+        let fg = if selected {
+            pal.text_on_accent
+        } else {
+            pal.text_primary
+        };
+        Border::new()
+            .corner_radius(4.0)
+            .background(if selected {
+                Brush::from(ThemeBrush::Accent)
+            } else {
+                Brush::from(pal.subtle)
+            })
+            .grid_column(column)
+            .content(
+                Button::new()
+                    .style(ButtonStyle::Subtle)
+                    .resource_overrides(subtle_states(
+                        Color::transparent(),
+                        grey(34),
+                        Color::argb(64, 0, 0, 0),
+                        fg,
+                        0.6,
+                    ))
+                    .horizontal_alignment(HorizontalAlignment::Stretch)
+                    .vertical_alignment(VerticalAlignment::Stretch)
+                    .automation_name(label)
+                    .on_click(cx.message(Message::SetTheme(mode)))
+                    .content(
+                        // 0,8,0,6 padding overall.
+                        StackPanel::new()
+                            .spacing(3.0)
+                            .margin(Thickness::new(0.0, 2.0, 0.0, -1.0))
+                            .children((
+                                Border::new()
+                                    .horizontal_alignment(HorizontalAlignment::Center)
+                                    .content(icon(g, 16.0)),
+                                text(label, 11.0).horizontal_alignment(HorizontalAlignment::Center),
+                            )),
+                    ),
+            )
+    };
+    let theme_row = Grid::new()
+        .columns(vec![GridLength::Star(1.0); 3])
+        .column_spacing(4.0)
+        .margin(Thickness::new(4.0, 4.0, 4.0, 6.0))
+        .children((
+            theme_button(ThemeMode::System, "\u{E7F8}", "System", 0),
+            theme_button(ThemeMode::Light, "\u{E706}", "Light", 1),
+            theme_button(ThemeMode::Dark, "\u{E708}", "Dark", 2),
+        ));
+
+    let item = |g: &str, label: &str, message: Message| -> View {
+        Button::new()
+            .style(ButtonStyle::Subtle)
+            .resource_overrides(subtle_states(
+                Color::transparent(),
+                grey(34),
+                grey(20),
+                pal.text_primary,
+                0.6,
+            ))
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .horizontal_content_alignment(HorizontalAlignment::Left)
+            .automation_name(label)
+            .on_click(cx.message(message))
+            .content(
+                // 10,9,10,9 padding overall.
+                StackPanel::new()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(11.0)
+                    .margin(Thickness::new(-2.0, 3.0, -2.0, 2.0))
+                    .children((
+                        icon(g, 15.0),
+                        text(label, 13.0).vertical_alignment(VerticalAlignment::Center),
+                    )),
+            )
+    };
+
+    let panel = Border::new()
+        .background(pal.menu_bg)
+        .corner_radius(8.0)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        .padding(5.0)
+        .width(240.0)
+        .horizontal_alignment(HorizontalAlignment::Right)
+        .vertical_alignment(VerticalAlignment::Top)
+        // Anchored under the "…" button at the right end of the breadcrumb row.
+        .margin(Thickness::new(0.0, 82.0, 12.0, 0.0))
+        .content(
+            StackPanel::new().spacing(1.0).children((
+                theme_row,
+                Border::new()
+                    .height(1.0)
+                    .background(pal.divider)
+                    .margin(Thickness::new(4.0, 2.0, 4.0, 2.0)),
+                item("\u{E713}", "Preferences", Message::OpenPrefs),
+                item("\u{E897}", "Help", Message::OpenHelp),
+                item("\u{E946}", "About nvhvc", Message::OpenAbout),
+            )),
+        );
+
+    Grid::new().children((
+        catcher(Some(32.0), Thickness::new(0.0, 0.0, 0.0, 0.0)),
+        // The notch: the "…" button spans ~12..52px from the right edge.
+        catcher(Some(48.0), Thickness::new(0.0, 32.0, 90.0, 0.0)),
+        catcher(None, top(80.0)),
+        panel,
+    ))
 }
 
-/// The mutation's probe result, but only if it belongs to `path`.
-pub fn valid_probe<'a>(state: &'a MutationState<FileProbe>, path: &str) -> Option<&'a FileProbe> {
-    match state {
-        MutationState::Success(p) if p.path == path => Some(p),
-        _ => None,
-    }
+// ===================== Dialogs =====================
+
+/// The overwrite confirmation, a smoke overlay so the destructive Replace button can be red.
+/// Replace sits on the left, away from the pointer's resting spot; Cancel is the safe
+/// right-hand button.
+fn overwrite_overlay(p: &Patcher, cx: &Cx) -> View {
+    let pal = &p.palette;
+    let name = file_name(&p.output);
+    let red = Color::rgb(196, 43, 28); // Fluent SystemFillColorCritical
+    let hover = Color::rgb(215, 63, 48);
+    let pressed = Color::rgb(160, 35, 23);
+    let white = Color::rgb(255, 255, 255);
+    let replace = Button::new()
+        .resource_overrides(
+            ResourceOverrides::new()
+                .set("ButtonBackground", red)
+                .set("ButtonBorderBrush", red)
+                .set("ButtonBackgroundPointerOver", hover)
+                .set("ButtonBorderBrushPointerOver", hover)
+                .set("ButtonBackgroundPressed", pressed)
+                .set("ButtonBorderBrushPressed", pressed)
+                .set("ButtonForeground", white)
+                .set("ButtonForegroundPointerOver", white)
+                .set("ButtonForegroundPressed", faded(white, 0.7)),
+        )
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .grid_column(0)
+        .on_click(cx.message(Message::ConfirmReplace))
+        .content(text("Replace", 14.0).font_weight(FontWeight::SEMI_BOLD));
+    let cancel = Button::new()
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .grid_column(1)
+        .on_click(cx.message(Message::CancelReplace))
+        .content("Cancel");
+
+    let dialog = Border::new()
+        .corner_radius(8.0)
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        .padding(24.0)
+        .width(400.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
+        .content(StackPanel::new().spacing(6.0).children((
+            text(format!("Replace \u{201C}{name}\u{201D}?"), 18.0)
+                .font_weight(FontWeight::SEMI_BOLD),
+            text(
+                "A file with this name already exists.\nReplacing it will overwrite its contents.",
+                13.0,
+            )
+            .foreground(pal.text_secondary),
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+                .column_spacing(8.0)
+                .margin(top(20.0))
+                .children((replace, cancel)),
+        )));
+
+    Border::new()
+        .background(pal.smoke)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .content(dialog)
+}
+
+fn about_dialog(p: &Patcher, cx: &Cx) -> View {
+    ContentDialog::new()
+        .title("About nvhvc")
+        .close_button_text("OK")
+        .is_open(p.about_open)
+        .on_closed(cx.callback(|_: ContentDialogResult| Message::AboutClosed))
+        // Two balanced ~60-char lines keep the dialog comfortably wide.
+        .content(
+            TextBlock::new()
+                .text(format!(
+                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
+                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
+                     exactly.\n\nGPL-3.0",
+                    nvhvc_core::VERSION
+                ))
+                .text_wrapping(TextWrapping::Wrap),
+        )
 }

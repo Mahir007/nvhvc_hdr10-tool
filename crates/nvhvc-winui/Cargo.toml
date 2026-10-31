@@ -1,6 +1,4 @@
-# Standalone workspace (excluded from the repo's main workspace) so the experimental
-# windows-reactor git dependency on microsoft/windows-rs never affects other crates'
-# builds (notably the Linux GTK front-end).
+# Standalone workspace (excluded from the repo's main workspace).
 [workspace]
 
 [package]
@@ -8,21 +6,25 @@ name = "nvhvc-winui"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
+# windows-reactor 0.100 needs Rust 1.95.
 rust-version = "1.95"
 repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
-description = "WinUI3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Windows)."
+description = "WinUI 3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Windows)."
 
 [dependencies]
 nvhvc-core = { path = "../nvhvc-core" }
-windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92" }
-# Same git source as windows-reactor so the windows-core types are compatible. Used for the native
-# file open/save dialogs (Win32 common item dialog).
-windows = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92", features = [
+windows-reactor = "0.100"
+# Native file dialogs and the system accent colour. windows 0.62 carries its own windows-core;
+# none of its types are passed to reactor.
+windows = { version = "0.62", features = [
+    "Foundation",
+    "UI_ViewManagement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
-    "Win32_System_Com",
-    "Win32_Foundation",
 ] }
 
 [build-dependencies]
-windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "1e9fc92" }
+windows-reactor-setup = "0.100"

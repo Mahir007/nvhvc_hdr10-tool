@@ -1,7 +1,6 @@
 //! UI state model for the wizard. The pure presentation model (metadata rows, drafts,
 //! value formatting) lives in `nvhvc_core::uimodel` and is shared with the GTK front-end.
 
-use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 
 pub use nvhvc_core::pipeline::Container;
@@ -13,8 +12,7 @@ pub use nvhvc_core::uimodel::{
 
 /// The output path the pipeline will actually write: the stored (picked or derived) path with
 /// its extension following the wizard's container selection. The stored path's own extension
-/// is never shown or used directly, which keeps container switching free of stale-closure
-/// hazards — everything derives at render/run time.
+/// is never shown or used directly; everything derives at render/run time.
 pub fn effective_output(output: &str, container: Container) -> String {
     if output.is_empty() {
         return String::new();
@@ -81,8 +79,6 @@ impl FileProbe {
 /// The outcome of a pipeline run, reduced to what the result screen shows.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RunSummary {
-    /// Matches the `run_token` of the launch that produced it (guards stale results).
-    pub token: u32,
     pub output: String,
     pub sps_patched: usize,
     pub sei_insertions: usize,
@@ -93,75 +89,45 @@ pub struct RunSummary {
     pub dropped_tracks: Vec<String>,
 }
 
-/// An open metadata-row editor. Tagged with the source path so a drag-dropped
-/// file swap (which can't touch this UI-thread state) invalidates it automatically.
+/// An open metadata-row editor and its unsaved values.
 #[derive(Clone, PartialEq)]
 pub struct EditState {
-    pub path: String,
     pub row: usize,
     pub draft: Draft,
 }
 
-/// All UI-thread wizard state (one `use_reducer` slot).
-///
-/// The picked file *paths* live in `use_async_state` slots instead (their setters are
-/// `Send + Sync`, which drag-and-drop handlers require); anything here that depends on a
-/// path carries that path so it self-invalidates when the file changes under it.
-#[derive(Clone, PartialEq, Default)]
-pub struct Ui {
-    pub stage: Stage,
-    /// Edited HDR10 metadata for a given source path; `None` = detected values as-is.
-    pub overrides: Option<(String, Hdr10Metadata)>,
-    /// The metadata row editor currently open, if any.
-    pub editing: Option<EditState>,
-    pub prefs_open: bool,
-    pub about_open: bool,
-    /// Preferences: tool row being edited (index into `Toolset::all()`) and its draft text.
-    pub tool_edit: Option<(usize, String)>,
-    /// Preferences: draft text of the default-output-folder editor, when open.
-    pub folder_edit: Option<String>,
-    /// Preferences: draft text of the output-filename-suffix editor, when open.
-    pub suffix_edit: Option<String>,
-    /// The output path the user explicitly chose via the save dialog (which already warns
-    /// about overwriting). Auto-derived names that already exist get our own confirmation.
-    pub output_chosen_for: Option<String>,
-    /// The output container for this wizard run. Starts at the persisted default; the
-    /// stage-2 dropdown and a save-dialog pick with an explicit .mkv/.mp4 both change it.
-    pub container: Container,
-    /// An overwrite confirmation dialog is showing for the current run request.
-    pub confirm_overwrite: bool,
-    pub theme: ThemeMode,
-    /// Incremented for every pipeline launch; the matching [`RunSummary::token`] marks
-    /// the result screen as current.
-    pub run_token: u32,
-    /// Results with `token <= ack_token` are dismissed (Back from the result screen).
-    pub ack_token: u32,
-    /// Bumped when custom tool paths change so Preferences re-discovers the toolset.
-    pub tools_rev: u32,
-    /// The custom (Border-based) action button the pointer is over, by id. Reactor buttons
-    /// repaint their background from theme visual states on hover, so custom-styled buttons
-    /// are Borders and track their hover here instead.
-    pub hovered_action: Option<&'static str>,
-    /// Like `hovered_action`, but the control the pointer is currently pressed on
-    /// (darker fill + dimmed content while held).
-    pub pressed_action: Option<&'static str>,
-    /// The app menu ("…") overlay is showing.
-    pub menu_open: bool,
+/// Where a picked file's ffprobe stands.
+#[derive(Clone, Default, PartialEq)]
+pub enum Probe {
+    #[default]
+    Idle,
+    Loading,
+    Ready(FileProbe),
+    Failed(String),
 }
 
-impl Ui {
-    /// The effective metadata override for `source`, if one is set and still valid.
-    pub fn override_for(&self, source: &str) -> Option<Hdr10Metadata> {
-        match &self.overrides {
-            Some((p, m)) if p == source => Some(*m),
+impl Probe {
+    pub fn ready(&self) -> Option<&FileProbe> {
+        match self {
+            Probe::Ready(p) => Some(p),
             _ => None,
         }
     }
+}
 
-    /// The open editor for `source`, if any and still valid.
-    pub fn editing_for(&self, source: &str) -> Option<&EditState> {
-        self.editing.as_ref().filter(|e| e.path == source)
-    }
+/// The pipeline run for the current wizard.
+#[derive(Clone, Default, PartialEq)]
+pub enum Run {
+    #[default]
+    Idle,
+    /// `stage` is the 0..=5 progress index; 5 is the Done hold before the result screen.
+    Running {
+        token: u32,
+        stage: usize,
+    },
+    Failed(String),
+    /// Shown as the result screen until Back or "Patch another" dismisses it.
+    Done(RunSummary),
 }
 
 /// `"~\…\scratch\source.mkv · 518 MB · 3840×2160 · HEVC · HDR10"`-style card detail line.
