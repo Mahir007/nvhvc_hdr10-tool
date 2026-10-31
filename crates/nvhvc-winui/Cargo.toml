@@ -1,18 +1,19 @@
-# Standalone workspace (excluded from the repo's main workspace).
-[workspace]
-
 [package]
 name = "nvhvc-winui"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 # windows-reactor 0.100 needs Rust 1.95.
 rust-version = "1.95"
-repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
+repository.workspace = true
 description = "WinUI 3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Windows)."
 
 [dependencies]
-nvhvc-core = { path = "../nvhvc-core" }
+nvhvc-core.workspace = true
+
+# WinUI is Windows-only; on other platforms this crate builds a tiny stub so the workspace still
+# compiles everywhere (mirrors nvhvc-gtk on Windows).
+[target.'cfg(windows)'.dependencies]
 windows-reactor = "0.100"
 # Native file dialogs and the system accent colour. windows 0.62 carries its own windows-core;
 # none of its types are passed to reactor.
