@@ -65,8 +65,10 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
   other WSL distros without asking.
 - Keep cargo output and test outputs on ext4 (`CARGO_TARGET_DIR=$HOME/nvhvc-target`, `/tmp`).
   The `/mnt/p` checkout is on 9P, which is slow for builds and MP4 assembly.
-- Build nvhvc-winui on Windows from `P:\nvhvc_hdr10-tool` with PowerShell 7 (`pwsh.exe`), never
-  Windows PowerShell 5.1: `cargo build -p nvhvc-winui`. Type-check it from Linux first with
+- Build and run nvhvc-winui on Windows through the devenv:
+  `/mnt/p/nvhvc_hdr10-tool-devenv/dev.sh cargo build -p nvhvc-winui`. It runs from
+  `P:\nvhvc_hdr10-tool` in PowerShell 7. Plain `cargo` uses scoop's Rust and writes outside the
+  project and `-devenv` folders. Never use Windows PowerShell 5.1. Type-check from Linux first with
   `cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc`.
 - Don't build from the junction path under `C:\Users`; cargo rebuilds whenever the path spelling
   changes.
