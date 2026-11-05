@@ -31,21 +31,6 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 - From 1.0 on, PRs are squash-merged. The PR title becomes the commit subject, so it follows
   Conventional Commits and the milestone name moves to the PR body.
 
-## Writing commit messages, PR bodies and docs
-
-- A commit body says why: the cause, the constraint, or a behaviour change the diff doesn't make
-  obvious. Skip it if the subject says enough; most docs commits need none.
-- Don't restate the subject or the diff, list the files or tests touched, or list every component
-  a feature adds. Findings go in the doc, not the commit. Test setup details go in a comment in
-  the test.
-- Docs read like a person documenting their own tool. Don't sell ("exact", "seamlessly",
-  "powerful"), don't explain what the reader already knows, say each thing once, use short
-  sentences and little bold or italic. No "bold lead-in: sentence" list items.
-- The README is for users: what it does, install, quick start near the top, usage,
-  troubleshooting. Build, CI, release and packaging internals go in `docs/building.md` or
-  `CONTRIBUTING.md`. Leave out implementation details a user wouldn't act on.
-- Check every claim in the docs against the code before writing it.
-
 ## Pipeline
 
 - Preserve the encode's timing. The patch only touches non-VCL NAL units, so the original
@@ -82,8 +67,6 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
   other WSL distros without asking.
 - Keep cargo output and test outputs on ext4 (`CARGO_TARGET_DIR=$HOME/nvhvc-target`, `/tmp`).
   The `/mnt/p` checkout is on 9P, which is slow for builds and MP4 assembly.
-- Anything on the Windows side (builds, installs, edits, deletes, and reads not clearly part of
-  the request) needs the user's approval first, with a one-line reason.
 - Build nvhvc-winui on Windows from `P:\nvhvc_hdr10-tool` with PowerShell 7 (`pwsh.exe`), never
   Windows PowerShell 5.1: `cargo build -p nvhvc-winui`. Type-check it from Linux first with
   `cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc`.
