@@ -83,8 +83,7 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 - Keep cargo output and test outputs on ext4 (`CARGO_TARGET_DIR=$HOME/nvhvc-target`, `/tmp`).
   The `/mnt/p` checkout is on 9P, which is slow for builds and MP4 assembly.
 - Anything on the Windows side (builds, installs, edits, deletes, and reads not clearly part of
-  the request) needs the user's approval first, with a one-line reason. Log every Windows action
-  in `windows-changes.ods` at the checkout root (git-excluded).
+  the request) needs the user's approval first, with a one-line reason.
 - Build nvhvc-winui on Windows from `P:\nvhvc_hdr10-tool` with PowerShell 7 (`pwsh.exe`), never
   Windows PowerShell 5.1: `cargo build -p nvhvc-winui`. Type-check it from Linux first with
   `cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc`.
