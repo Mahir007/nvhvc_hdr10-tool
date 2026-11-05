@@ -1,6 +1,7 @@
 # Agent rules for nvhvc_hdr10-tool
 
-`AGENTS.md` is a symlink to this file.
+`AGENTS.md` has these rules plus the owner's global `CLAUDE.md`, for agents that can't read that
+file. Change it whenever either one changes.
 
 nvhvc patches HDR10 signalling into NVENC HEVC encodes without re-encoding: it rewrites the SPS
 VUI colour fields and inserts mastering-display and content-light-level SEI. Crates:
