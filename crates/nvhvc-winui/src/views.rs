@@ -1525,38 +1525,40 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
             .foreground(pal.text_secondary)
             .vertical_alignment(VerticalAlignment::Center)
     };
+    // The hint is a few pixels wider than the text column beside the widest combo entry. It
+    // spans both columns so that the excess runs into the column gap instead of being clipped.
     Border::new()
         .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
         .content(
             Grid::new()
                 .columns([GridLength::Star(1.0), GridLength::Auto])
+                .rows([GridLength::Auto, GridLength::Auto])
                 .column_spacing(13.0)
+                .row_spacing(1.0)
                 .children((
+                    body("Default output container").grid_column(0).grid_row(0),
+                    // "Save as" is set off like inline code (mono chip), mirroring the GTK
+                    // subtitle's monospace run.
                     StackPanel::new()
-                        .spacing(1.0)
-                        .vertical_alignment(VerticalAlignment::Center)
+                        .orientation(Orientation::Horizontal)
+                        .spacing(4.0)
+                        .horizontal_alignment(HorizontalAlignment::Left)
                         .grid_column(0)
+                        .grid_column_span(2)
+                        .grid_row(1)
                         .children((
-                            body("Default output container"),
-                            // "Save as" is set off like inline code (mono chip), mirroring the
-                            // GTK subtitle's monospace run.
-                            StackPanel::new()
-                                .orientation(Orientation::Horizontal)
-                                .spacing(4.0)
-                                .children((
-                                    note("You can still switch it per file in the"),
-                                    Border::new()
-                                        .background(grey(26))
-                                        .corner_radius(4.0)
-                                        .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
-                                        .vertical_alignment(VerticalAlignment::Center)
-                                        .content(
-                                            caption(monospace("Save as"))
-                                                .foreground(pal.text_secondary)
-                                                .automation_name("Save as"),
-                                        ),
-                                    note("dialog"),
-                                )),
+                            note("You can still switch it per file in the"),
+                            Border::new()
+                                .background(grey(26))
+                                .corner_radius(4.0)
+                                .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
+                                .vertical_alignment(VerticalAlignment::Center)
+                                .content(
+                                    caption(monospace("Save as"))
+                                        .foreground(pal.text_secondary)
+                                        .automation_name("Save as"),
+                                ),
+                            note("dialog"),
                         )),
                     ComboBox::new()
                         .items_source(Container::ALL.iter().map(|c| c.label()))
@@ -1565,7 +1567,9 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
                             Message::SetContainer(i.and_then(|i| Container::ALL.get(i).copied()))
                         }))
                         .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(1),
+                        .grid_column(1)
+                        .grid_row(0)
+                        .grid_row_span(2),
                 )),
         )
 }
