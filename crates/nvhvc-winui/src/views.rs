@@ -1737,11 +1737,12 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
         );
     }
 
-    // green = on PATH · accent = custom user path · purple = install dir · red = missing.
+    // green = on PATH · blue = custom user path · purple = install dir · red = missing. The
+    // blue and purple are fixed colours: a custom-path dot must not follow the accent.
     let (dot, detail): (Brush, String) = match resolution {
         Resolution::OnPath(p) => (pal.success.into(), format!("On PATH · {}", p.display())),
         Resolution::Override(p) => (
-            ThemeBrush::Accent.into(),
+            Color::rgb(0, 120, 212).into(),
             format!("Custom path · {}", p.display()),
         ),
         Resolution::Fallback(p) => (
