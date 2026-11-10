@@ -89,7 +89,7 @@ pub enum Message {
     OpenPrefs,
     OpenHelp,
     OpenAbout,
-    AboutClosed,
+    CloseAbout,
 
     ClosePrefs,
     SetContainer(Option<Container>),
@@ -394,7 +394,7 @@ impl Component for Patcher {
                 self.menu_open = false;
                 self.about_open = true;
             }
-            Message::AboutClosed => self.about_open = false,
+            Message::CloseAbout => self.about_open = false,
 
             Message::ClosePrefs => {
                 self.prefs_open = false;

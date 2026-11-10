@@ -304,10 +304,12 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
         KeyedView::new("app", main),
         // Over the breadcrumb row, in the client area: see `menu_button`.
         menu_button(p, cx),
-        KeyedView::new("about", about_dialog(p, cx)),
     ];
     if p.prefs_open {
         layers.push(KeyedView::new("prefs", prefs_overlay(p, cx)));
+    }
+    if p.about_open {
+        layers.push(KeyedView::new("about", about_overlay(p, cx)));
     }
     if p.confirm_overwrite {
         layers.push(KeyedView::new("overwrite", overwrite_overlay(p, cx)));
@@ -2055,21 +2057,51 @@ fn overwrite_overlay(p: &Patcher, cx: &Cx) -> View {
         .content(dialog)
 }
 
-fn about_dialog(p: &Patcher, cx: &Cx) -> View {
-    ContentDialog::new()
-        .title("About nvhvc")
-        .close_button_text("OK")
-        .is_open(p.about_open)
-        .on_closed(cx.callback(|_: ContentDialogResult| Message::AboutClosed))
-        // Two balanced ~60-char lines keep the dialog comfortably wide.
+/// The About dialog, a smoke overlay like the other two. A ContentDialog takes the system's
+/// theme, not the window's, so it came up dark in a light window (and the reverse).
+fn about_overlay(p: &Patcher, cx: &Cx) -> View {
+    let pal = &p.palette;
+    let dialog = Border::new()
+        .corner_radius(8.0)
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        // Fits the longer body line with a few pixels to spare.
+        .width(456.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
         .content(
-            TextBlock::new()
-                .text(format!(
-                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
-                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
-                     exactly.\n\nGPL-3.0",
-                    nvhvc_core::VERSION
-                ))
-                .text_wrapping(TextWrapping::Wrap),
-        )
+            StackPanel::new().children((
+                StackPanel::new().spacing(12.0).margin(24.0).children((
+                    text("About nvhvc", 20.0).font_weight(FontWeight::SEMI_BOLD),
+                    // Two balanced lines, broken by hand so "re-encoding" isn't split.
+                    body(format!(
+                        "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
+                         re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
+                         exactly.\n\nGPL-3.0",
+                        nvhvc_core::VERSION
+                    )),
+                )),
+                Border::new()
+                    .border_thickness(Thickness::new(0.0, 1.0, 0.0, 0.0))
+                    .border_brush(pal.divider)
+                    .padding(24.0)
+                    .content(
+                        Grid::new()
+                            .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+                            .column_spacing(8.0)
+                            .children((Button::new()
+                                .horizontal_alignment(HorizontalAlignment::Stretch)
+                                .grid_column(1)
+                                .on_click(cx.message(Message::CloseAbout))
+                                .content("OK"),)),
+                    ),
+            )),
+        );
+
+    Border::new()
+        .background(pal.smoke)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .content(dialog)
 }
