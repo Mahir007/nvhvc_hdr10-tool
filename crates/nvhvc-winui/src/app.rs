@@ -31,6 +31,13 @@ pub enum PrefEditor {
     Suffix,
 }
 
+/// A button that is recreated when its colours change and needs keyboard focus handed back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FocusTarget {
+    Menu,
+    Theme(ThemeMode),
+}
+
 /// Reported from worker threads through [`Events`].
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -150,6 +157,13 @@ pub struct Patcher {
     pub confirm_overwrite: bool,
 
     pub menu_open: bool,
+    pub menu_ref: ElementRef<Button>,
+    /// The theme switcher's buttons, in `views::theme_index` order.
+    pub theme_refs: [ElementRef<Button>; 3],
+    /// The button to focus after the next render, with a serial that changes per request. The
+    /// menu and theme buttons are recreated when clicked (their colours change, see
+    /// `views::restyled`), which would otherwise drop focus mid-keyboard-navigation.
+    pub refocus: Option<(u32, FocusTarget)>,
     pub prefs_open: bool,
     pub about_open: bool,
     /// Preferences: the tool row being edited and its draft path.
@@ -193,6 +207,9 @@ impl Component for Patcher {
             run_token: 0,
             confirm_overwrite: false,
             menu_open: false,
+            menu_ref: ElementRef::new(),
+            theme_refs: std::array::from_fn(|_| ElementRef::new()),
+            refocus: None,
             prefs_open: false,
             about_open: false,
             tool_edit: None,
@@ -347,9 +364,17 @@ impl Component for Patcher {
                 }
             }
 
-            Message::ToggleMenu => self.menu_open = !self.menu_open,
-            Message::CloseMenu => self.menu_open = false,
+            Message::ToggleMenu => {
+                self.menu_open = !self.menu_open;
+                self.focus(FocusTarget::Menu);
+            }
+            // Dismissed by clicking away: focus returns to the button, as with a flyout.
+            Message::CloseMenu => {
+                self.menu_open = false;
+                self.focus(FocusTarget::Menu);
+            }
             Message::SetTheme(mode) => {
+                self.focus(FocusTarget::Theme(mode));
                 self.theme = mode;
                 self.palette = Palette::new(scheme_for(mode), self.accent);
                 let mut settings = Settings::load();
@@ -530,6 +555,11 @@ impl Patcher {
         self.tool_edit = None;
         self.folder_edit = None;
         self.suffix_edit = None;
+    }
+
+    fn focus(&mut self, target: FocusTarget) {
+        let serial = self.refocus.map_or(0, |(serial, _)| serial.wrapping_add(1));
+        self.refocus = Some((serial, target));
     }
 
     fn open_pref(&mut self, editor: PrefEditor, current: String) {

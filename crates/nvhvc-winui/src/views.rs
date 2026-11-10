@@ -12,7 +12,7 @@ use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
 use nvhvc_core::tools::{Resolution, Tool, Toolset};
 
-use crate::app::{Message, Patcher, PrefEditor, Slot};
+use crate::app::{FocusTarget, Message, Patcher, PrefEditor, Slot};
 use crate::model::*;
 use crate::palette::{Palette, faded, grey};
 
@@ -74,6 +74,25 @@ fn unpad() -> Thickness {
     Thickness::new(-11.0, -5.0, -11.0, -6.0)
 }
 
+/// A key that changes whenever `overrides` do.
+fn style_key(overrides: &ResourceOverrides) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    format!("{overrides:?}").hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Recreates `button` whenever its `overrides` change.
+///
+/// WinUI reads a Button's lightweight-styling resources when the button is created and again
+/// only on a theme change. Changing them on a live button leaves it in its old colours, so a
+/// button whose overrides follow app state (menu open, selected theme, palette) is keyed on
+/// them. The new button doesn't show hover until the pointer next moves, and doesn't inherit
+/// keyboard focus: see [`Patcher::refocus`].
+fn restyled(overrides: &ResourceOverrides, button: impl Into<View>) -> View {
+    Grid::new().keyed_children([KeyedView::new(style_key(overrides), button)])
+}
+
 /// A standalone glyph in `color`, centred in its slot.
 ///
 /// FontIcon has no foreground and TextBlock no font family, so the colour comes from a disabled
@@ -81,16 +100,18 @@ fn unpad() -> Thickness {
 /// `HyperlinkButtonForegroundDisabled` resource. The negative margin cancels the button's
 /// padding so the glyph keeps its own layout box.
 fn glyph(g: &str, size: f64, color: Color) -> View {
-    Button::new()
-        .style(ButtonStyle::TextLink)
-        .is_enabled(false)
-        .resource_overrides(
-            ResourceOverrides::new().set("HyperlinkButtonForegroundDisabled", color),
-        )
-        .margin(unpad())
-        .horizontal_alignment(HorizontalAlignment::Center)
-        .vertical_alignment(VerticalAlignment::Center)
-        .content(icon(g, size))
+    let overrides = ResourceOverrides::new().set("HyperlinkButtonForegroundDisabled", color);
+    restyled(
+        &overrides,
+        Button::new()
+            .style(ButtonStyle::TextLink)
+            .is_enabled(false)
+            .resource_overrides(overrides.clone())
+            .margin(unpad())
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .vertical_alignment(VerticalAlignment::Center)
+            .content(icon(g, size)),
+    )
 }
 
 /// A Button's content as the stock icon + label pair.
@@ -234,6 +255,17 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     );
     let on_scheme = cx.callback(Message::ColorScheme);
     cx.on_color_scheme(on_scheme);
+    if let Some((serial, target)) = p.refocus {
+        let button = match target {
+            FocusTarget::Menu => p.menu_ref.clone(),
+            FocusTarget::Theme(mode) => p.theme_refs[theme_index(mode)].clone(),
+        };
+        // Runs once per serial, after the recreated button is on screen.
+        cx.use_effect("refocus", serial, move || {
+            let _ = button.request_focus();
+            None
+        });
+    }
 
     let shown = p.shown_stage();
     let processing = p.processing();
@@ -271,7 +303,7 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     let mut layers = vec![
         KeyedView::new("app", main),
         // Over the breadcrumb row, in the client area: see `menu_button`.
-        KeyedView::new("menu-btn", menu_button(p, cx)),
+        menu_button(p, cx),
         KeyedView::new("about", about_dialog(p, cx)),
     ];
     if p.prefs_open {
@@ -300,24 +332,22 @@ fn title_bar(cx: &Cx, shown: Stage, processing: bool) -> View {
 /// The "…" app-menu toggle, over the right end of the breadcrumb row. It sits in the client
 /// area rather than the title bar, where the strip's non-client input handling made every
 /// custom control drag the window. Fill ladder per the design: hover (brightest) > open
-/// (persistent, between) > pressed (dimmest, glyph dimmed).
-fn menu_button(p: &Patcher, cx: &Cx) -> View {
+/// (persistent, between) > pressed (dimmest, glyph dimmed). The open fill is the button's
+/// resting colour, so the button is keyed on its colours like [`restyled`] ones.
+fn menu_button(p: &Patcher, cx: &Cx) -> KeyedView {
     let rest = if p.menu_open {
         grey(26)
     } else {
         Color::transparent()
     };
-    Button::new()
+    let overrides = subtle_states(rest, grey(40), grey(16), p.palette.text_primary, 0.55);
+    let key = format!("menu-btn-{}", style_key(&overrides));
+    let button = Button::new()
         .style(ButtonStyle::Subtle)
+        .element_ref(&p.menu_ref)
         // Corners stay at the stock 4px: a CornerRadius resource override (for the 5px the
         // custom control had) brings WinUI down a few seconds after it's applied.
-        .resource_overrides(subtle_states(
-            rest,
-            grey(40),
-            grey(16),
-            p.palette.text_primary,
-            0.55,
-        ))
+        .resource_overrides(overrides)
         .width(40.0)
         .height(32.0)
         .horizontal_alignment(HorizontalAlignment::Right)
@@ -328,7 +358,8 @@ fn menu_button(p: &Patcher, cx: &Cx) -> View {
         .margin(Thickness::new(0.0, 40.0, 12.0, 0.0))
         .automation_name("App menu")
         .on_click(cx.message(Message::ToggleMenu))
-        .content(icon(GLYPH_MORE, 14.0))
+        .content(icon(GLYPH_MORE, 14.0));
+    KeyedView::new(key, button)
 }
 
 /// The "Source › Encode › Result" step indicator under the title bar.
@@ -426,26 +457,28 @@ fn accent_action(
     } else {
         [glyph_view, label_view]
     };
-    Button::new()
-        .style(ButtonStyle::Accent)
-        .is_enabled(enabled)
-        .opacity(if enabled { 1.0 } else { 0.4 })
-        .resource_overrides(
-            ResourceOverrides::new()
-                .set("AccentButtonBackgroundDisabled", pal.accent_fill)
-                .set("AccentButtonForegroundDisabled", pal.text_on_accent),
-        )
-        .automation_name(label)
-        .on_click(cx.message(message))
-        .content(
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .horizontal_alignment(HorizontalAlignment::Center)
-                // With the button's own 1px border and 11,5,11,6 padding: 22,9,22,9 overall.
-                .margin(Thickness::new(10.0, 3.0, 10.0, 2.0))
-                .children(cells),
-        )
+    let overrides = ResourceOverrides::new()
+        .set("AccentButtonBackgroundDisabled", pal.accent_fill)
+        .set("AccentButtonForegroundDisabled", pal.text_on_accent);
+    restyled(
+        &overrides,
+        Button::new()
+            .style(ButtonStyle::Accent)
+            .is_enabled(enabled)
+            .opacity(if enabled { 1.0 } else { 0.4 })
+            .resource_overrides(overrides.clone())
+            .automation_name(label)
+            .on_click(cx.message(message))
+            .content(
+                StackPanel::new()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(8.0)
+                    .horizontal_alignment(HorizontalAlignment::Center)
+                    // With the button's own 1px border and 11,5,11,6 padding: 22,9,22,9 overall.
+                    .margin(Thickness::new(10.0, 3.0, 10.0, 2.0))
+                    .children(cells),
+            ),
+    )
 }
 
 // ===================== Drop zone =====================
@@ -1798,6 +1831,15 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
 
 // ===================== App menu overlay =====================
 
+/// Where a theme's button sits in the switcher and in [`Patcher::theme_refs`].
+fn theme_index(mode: ThemeMode) -> usize {
+    match mode {
+        ThemeMode::System => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+    }
+}
+
 /// The "…" app menu, mirroring the GTK popover: a three-way theme switcher on top, then icon
 /// menu entries (Preferences / Help / About). A custom overlay rather than a native flyout: menu
 /// flyout items can't carry icons or custom rows, and a rich flyout can't be closed when an
@@ -1833,6 +1875,13 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         } else {
             pal.text_primary
         };
+        let overrides = subtle_states(
+            Color::transparent(),
+            grey(34),
+            Color::argb(64, 0, 0, 0),
+            fg,
+            0.6,
+        );
         Border::new()
             .corner_radius(4.0)
             .background(if selected {
@@ -1841,16 +1890,12 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
                 Brush::from(pal.subtle)
             })
             .grid_column(column)
-            .content(
+            .content(restyled(
+                &overrides,
                 Button::new()
                     .style(ButtonStyle::Subtle)
-                    .resource_overrides(subtle_states(
-                        Color::transparent(),
-                        grey(34),
-                        Color::argb(64, 0, 0, 0),
-                        fg,
-                        0.6,
-                    ))
+                    .element_ref(&p.theme_refs[theme_index(mode)])
+                    .resource_overrides(overrides.clone())
                     .horizontal_alignment(HorizontalAlignment::Stretch)
                     .vertical_alignment(VerticalAlignment::Stretch)
                     .automation_name(label)
@@ -1867,7 +1912,7 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
                                 text(label, 11.0).horizontal_alignment(HorizontalAlignment::Center),
                             )),
                     ),
-            )
+            ))
     };
     let theme_row = Grid::new()
         .columns(vec![GridLength::Star(1.0); 3])
@@ -1880,30 +1925,34 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         ));
 
     let item = |g: &str, label: &str, message: Message| -> View {
-        Button::new()
-            .style(ButtonStyle::Subtle)
-            .resource_overrides(subtle_states(
-                Color::transparent(),
-                grey(34),
-                grey(20),
-                pal.text_primary,
-                0.6,
-            ))
-            .horizontal_alignment(HorizontalAlignment::Stretch)
-            .horizontal_content_alignment(HorizontalAlignment::Left)
-            .automation_name(label)
-            .on_click(cx.message(message))
-            .content(
-                // 10,9,10,9 padding overall.
-                StackPanel::new()
-                    .orientation(Orientation::Horizontal)
-                    .spacing(11.0)
-                    .margin(Thickness::new(-2.0, 3.0, -2.0, 2.0))
-                    .children((
-                        icon(g, 15.0),
-                        text(label, 13.0).vertical_alignment(VerticalAlignment::Center),
-                    )),
-            )
+        let overrides = subtle_states(
+            Color::transparent(),
+            grey(34),
+            grey(20),
+            pal.text_primary,
+            0.6,
+        );
+        restyled(
+            &overrides,
+            Button::new()
+                .style(ButtonStyle::Subtle)
+                .resource_overrides(overrides.clone())
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .horizontal_content_alignment(HorizontalAlignment::Left)
+                .automation_name(label)
+                .on_click(cx.message(message))
+                .content(
+                    // 10,9,10,9 padding overall.
+                    StackPanel::new()
+                        .orientation(Orientation::Horizontal)
+                        .spacing(11.0)
+                        .margin(Thickness::new(-2.0, 3.0, -2.0, 2.0))
+                        .children((
+                            icon(g, 15.0),
+                            text(label, 13.0).vertical_alignment(VerticalAlignment::Center),
+                        )),
+                ),
+        )
     };
 
     let panel = Border::new()
