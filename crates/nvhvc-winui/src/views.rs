@@ -241,6 +241,13 @@ fn top(px: f64) -> Thickness {
 
 // ===================== Window =====================
 
+/// The height of a title bar with content in it.
+const TITLE_BAR_HEIGHT: f64 = 48.0;
+const MENU_BUTTON_WIDTH: f64 = 40.0;
+/// From the window's right edge to the "…" button's: the caption buttons plus the space the
+/// title bar keeps beside them. Measured; the menu panel and its click-catchers line up on it.
+const MENU_BUTTON_RIGHT: f64 = 192.0;
+
 pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     cx.window_title("HDR10 Patcher");
     cx.window_visuals(
@@ -298,18 +305,14 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
         ])
         .columns([GridLength::Star(1.0)])
         .keyed_children([
-            KeyedView::new("titlebar", title_bar(cx, shown, processing)),
+            KeyedView::new("titlebar", title_bar(p, cx, shown, processing)),
             KeyedView::new("crumbs", in_row(1, breadcrumb(&p.palette, shown))),
             KeyedView::new(format!("content-{stage_key}"), in_row(2, content)),
             KeyedView::new(format!("footer-{stage_key}"), in_row(3, footer)),
         ]);
 
     // Overlay layers stack in the same grid cell; later children draw on top.
-    let mut layers = vec![
-        KeyedView::new("app", main),
-        // Over the breadcrumb row, in the client area: see `menu_button`.
-        menu_button(p, cx),
-    ];
+    let mut layers = vec![KeyedView::new("app", main)];
     if p.prefs_open {
         layers.push(KeyedView::new("prefs", prefs_overlay(p, cx)));
     }
@@ -328,48 +331,44 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     Grid::new().keyed_children(layers)
 }
 
-/// The window title bar: app title and back button.
-fn title_bar(cx: &Cx, shown: Stage, processing: bool) -> View {
+/// The window title bar: app title, back button, and the "…" app menu beside the caption
+/// buttons.
+fn title_bar(p: &Patcher, cx: &Cx, shown: Stage, processing: bool) -> View {
     TitleBar::new()
+        // A title bar with content in it is 48px tall; this makes the caption buttons match.
+        .preferred_height(WindowTitleBarHeight::Tall)
         .title("HDR10 Patcher")
         .is_back_button_visible(shown != Stage::Source && !processing)
         .is_back_button_enabled(true)
         .on_back_requested(cx.message(Message::Back))
         .grid_row(0)
-        .into()
+        .slot(TitleBarSlot::RightHeader, menu_button(p, cx))
 }
 
-/// The "…" app-menu toggle, over the right end of the breadcrumb row. It sits in the client
-/// area rather than the title bar, where the strip's non-client input handling made every
-/// custom control drag the window. Fill ladder per the design: hover (brightest) > open
-/// (persistent, between) > pressed (dimmest, glyph dimmed). The open fill is the button's
-/// resting colour, so the button is keyed on its colours like [`restyled`] ones.
-fn menu_button(p: &Patcher, cx: &Cx) -> KeyedView {
+/// The "…" app-menu toggle. Fill ladder per the design: hover (brightest) > open (persistent,
+/// between) > pressed (dimmest, glyph dimmed). The open fill is the button's resting colour.
+fn menu_button(p: &Patcher, cx: &Cx) -> View {
     let rest = if p.menu_open {
         grey(26)
     } else {
         Color::transparent()
     };
     let overrides = subtle_states(rest, grey(40), grey(16), p.palette.text_primary, 0.55);
-    let key = format!("menu-btn-{}", style_key(&overrides));
-    let button = Button::new()
-        .style(ButtonStyle::Subtle)
-        .element_ref(&p.menu_ref)
-        // Corners stay at the stock 4px: a CornerRadius resource override (for the 5px the
-        // custom control had) brings WinUI down a few seconds after it's applied.
-        .resource_overrides(overrides)
-        .width(40.0)
-        .height(32.0)
-        .horizontal_alignment(HorizontalAlignment::Right)
-        .vertical_alignment(VerticalAlignment::Top)
-        // Vertically centred on the breadcrumb row: the title bar is 32px and the row ~48px
-        // (16+20+12), so a 32px button starts at 40. Right margin matches the menu panel's so
-        // their edges align.
-        .margin(Thickness::new(0.0, 40.0, 12.0, 0.0))
-        .automation_name("App menu")
-        .on_click(cx.message(Message::ToggleMenu))
-        .content(icon(GLYPH_MORE, 14.0));
-    KeyedView::new(key, button)
+    restyled(
+        &overrides,
+        Button::new()
+            .style(ButtonStyle::Subtle)
+            .element_ref(&p.menu_ref)
+            // Corners stay at the stock 4px: a CornerRadius resource override (for the 5px the
+            // custom control had) brings WinUI down a few seconds after it's applied.
+            .resource_overrides(overrides.clone())
+            .width(MENU_BUTTON_WIDTH)
+            .height(32.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .automation_name("App menu")
+            .on_click(cx.message(Message::ToggleMenu))
+            .content(icon(GLYPH_MORE, 14.0)),
+    )
 }
 
 /// The "Source › Encode › Result" step indicator under the title bar.
@@ -405,8 +404,7 @@ fn breadcrumb(pal: &Palette, shown: Stage) -> View {
     Border::new()
         .border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0))
         .border_brush(pal.divider)
-        // Roomier than the mockup's 12px top: the row also hosts the 32px "…" menu button.
-        .padding(Thickness::new(24.0, 16.0, 24.0, 12.0))
+        .padding(Thickness::new(24.0, 12.0, 24.0, 12.0))
         .content(
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
@@ -1837,9 +1835,9 @@ fn theme_index(mode: ThemeMode) -> usize {
 /// entry is picked. Transparent click-catchers behind the panel dismiss it.
 fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
     let pal = &p.palette;
-    // The catchers leave a notch over the "…" button so its own click toggles the menu shut
-    // (a click there would otherwise reach both and net out to "never closes"). Three pieces:
-    // the title bar strip, the breadcrumb row minus the notch, and everything below.
+    // The catchers stop short of the "…" button so its own click toggles the menu shut (a
+    // click there would otherwise reach both and net out to "never closes"). Two pieces: the
+    // title bar left of the button, and everything below the title bar.
     // Transparent (not unset) backgrounds: a null background isn't hit-testable.
     let catcher = |height: Option<f64>, margin: Thickness| -> View {
         let catcher = Border::new()
@@ -1955,8 +1953,13 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         .width(240.0)
         .horizontal_alignment(HorizontalAlignment::Right)
         .vertical_alignment(VerticalAlignment::Top)
-        // Anchored under the "…" button at the right end of the breadcrumb row.
-        .margin(Thickness::new(0.0, 82.0, 12.0, 0.0))
+        // Under the "…" button, right edges aligned.
+        .margin(Thickness::new(
+            0.0,
+            TITLE_BAR_HEIGHT + 2.0,
+            MENU_BUTTON_RIGHT,
+            0.0,
+        ))
         .content(
             StackPanel::new().spacing(1.0).children((
                 theme_row,
@@ -1971,10 +1974,11 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         );
 
     Grid::new().children((
-        catcher(Some(32.0), Thickness::new(0.0, 0.0, 0.0, 0.0)),
-        // The notch: the "…" button spans ~12..52px from the right edge.
-        catcher(Some(48.0), Thickness::new(0.0, 32.0, 90.0, 0.0)),
-        catcher(None, top(80.0)),
+        catcher(
+            Some(TITLE_BAR_HEIGHT),
+            Thickness::new(0.0, 0.0, MENU_BUTTON_RIGHT + MENU_BUTTON_WIDTH + 4.0, 0.0),
+        ),
+        catcher(None, top(TITLE_BAR_HEIGHT)),
         panel,
     ))
 }
