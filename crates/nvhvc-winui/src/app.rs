@@ -22,13 +22,20 @@ pub enum Slot {
     Encode,
 }
 
-/// The inline editors in Preferences.
+/// The values Preferences edits in a dialog.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PrefEditor {
-    /// A tool's custom path (index into `Toolset::all()`).
-    Tool(usize),
+    /// A tool's custom path.
+    Tool(Tool),
     Folder,
     Suffix,
+}
+
+/// The open Preferences editor dialog and what has been typed into it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PrefEdit {
+    pub editor: PrefEditor,
+    pub draft: String,
 }
 
 /// A button that is recreated when its colours change and needs keyboard focus handed back.
@@ -36,6 +43,8 @@ pub enum PrefEditor {
 pub enum FocusTarget {
     Menu,
     Theme(ThemeMode),
+    /// The text box of the Preferences editor dialog, so typing can start at once.
+    PrefInput,
 }
 
 /// Reported from worker threads through [`Events`].
@@ -93,11 +102,11 @@ pub enum Message {
 
     ClosePrefs,
     SetContainer(Option<Container>),
-    EditPref(PrefEditor, String),
-    PrefDraft(PrefEditor, String),
+    EditPref(PrefEditor),
+    PrefDraft(String),
     BrowseFolder,
-    SavePref(PrefEditor),
-    CancelPref(PrefEditor),
+    SavePref,
+    CancelPref,
 }
 
 /// Worker threads (pipeline progress, system colour changes) report through a channel. One
@@ -166,10 +175,9 @@ pub struct Patcher {
     pub refocus: Option<(u32, FocusTarget)>,
     pub prefs_open: bool,
     pub about_open: bool,
-    /// Preferences: the tool row being edited and its draft path.
-    pub tool_edit: Option<(usize, String)>,
-    pub folder_edit: Option<String>,
-    pub suffix_edit: Option<String>,
+    /// The Preferences editor dialog, while one is open.
+    pub pref_edit: Option<PrefEdit>,
+    pub pref_input_ref: ElementRef<TextBox>,
 }
 
 impl Component for Patcher {
@@ -212,9 +220,8 @@ impl Component for Patcher {
             refocus: None,
             prefs_open: false,
             about_open: false,
-            tool_edit: None,
-            folder_edit: None,
-            suffix_edit: None,
+            pref_edit: None,
+            pref_input_ref: ElementRef::new(),
         }
     }
 
@@ -398,9 +405,7 @@ impl Component for Patcher {
 
             Message::ClosePrefs => {
                 self.prefs_open = false;
-                self.tool_edit = None;
-                self.folder_edit = None;
-                self.suffix_edit = None;
+                self.pref_edit = None;
             }
             Message::SetContainer(Some(container)) => {
                 // Persisted immediately, and applied to the wizard too unless the user already
@@ -416,26 +421,31 @@ impl Component for Patcher {
                 }
             }
             Message::SetContainer(None) => {}
-            Message::EditPref(editor, current) => self.open_pref(editor, current),
-            Message::PrefDraft(editor, text) => {
-                if let Some(draft) = self.pref_draft(editor) {
-                    *draft = text;
+            Message::EditPref(editor) => {
+                self.pref_edit = Some(PrefEdit {
+                    editor,
+                    draft: pref_value(editor),
+                });
+                self.focus(FocusTarget::PrefInput);
+            }
+            Message::PrefDraft(text) => {
+                if let Some(edit) = &mut self.pref_edit {
+                    edit.draft = text;
                 }
             }
             Message::BrowseFolder => {
                 if let Some(path) = platform::pick_folder()
-                    && let Some(draft) = &mut self.folder_edit
+                    && let Some(edit) = &mut self.pref_edit
                 {
-                    *draft = path;
+                    edit.draft = path;
                 }
             }
-            Message::SavePref(editor) => {
-                if let Some(value) = self.pref_draft(editor).cloned() {
-                    save_pref(editor, value);
+            Message::SavePref => {
+                if let Some(edit) = self.pref_edit.take() {
+                    save_pref(edit.editor, edit.draft);
                 }
-                self.close_pref(editor);
             }
-            Message::CancelPref(editor) => self.close_pref(editor),
+            Message::CancelPref => self.pref_edit = None,
         }
     }
 
@@ -552,41 +562,12 @@ impl Patcher {
         self.menu_open = false;
         self.prefs_open = false;
         self.about_open = false;
-        self.tool_edit = None;
-        self.folder_edit = None;
-        self.suffix_edit = None;
+        self.pref_edit = None;
     }
 
     fn focus(&mut self, target: FocusTarget) {
         let serial = self.refocus.map_or(0, |(serial, _)| serial.wrapping_add(1));
         self.refocus = Some((serial, target));
-    }
-
-    fn open_pref(&mut self, editor: PrefEditor, current: String) {
-        match editor {
-            PrefEditor::Tool(index) => self.tool_edit = Some((index, current)),
-            PrefEditor::Folder => self.folder_edit = Some(current),
-            PrefEditor::Suffix => self.suffix_edit = Some(current),
-        }
-    }
-
-    fn close_pref(&mut self, editor: PrefEditor) {
-        match editor {
-            PrefEditor::Tool(_) => self.tool_edit = None,
-            PrefEditor::Folder => self.folder_edit = None,
-            PrefEditor::Suffix => self.suffix_edit = None,
-        }
-    }
-
-    fn pref_draft(&mut self, editor: PrefEditor) -> Option<&mut String> {
-        match editor {
-            PrefEditor::Tool(index) => match &mut self.tool_edit {
-                Some((i, draft)) if *i == index => Some(draft),
-                _ => None,
-            },
-            PrefEditor::Folder => self.folder_edit.as_mut(),
-            PrefEditor::Suffix => self.suffix_edit.as_mut(),
-        }
     }
 }
 
@@ -668,15 +649,41 @@ fn stage_index(stage: PipeStage) -> usize {
     }
 }
 
+/// What a Preferences editor starts from: the saved value, or empty when it is unset.
+fn pref_value(editor: PrefEditor) -> String {
+    let mut settings = Settings::load();
+    match editor {
+        // The saved override, even when it doesn't resolve, so a wrong path can be corrected.
+        // Without one, where the tool was found.
+        PrefEditor::Tool(tool) => tool_override(&mut settings, tool)
+            .clone()
+            .or_else(|| {
+                Toolset::discover(&settings.tool_overrides)
+                    .resolution(tool)
+                    .path()
+                    .map(Into::into)
+            })
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        PrefEditor::Folder => settings
+            .default_output_dir
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
+        PrefEditor::Suffix => settings
+            .default_output_suffix
+            .filter(|suffix| !suffix.trim().is_empty())
+            .unwrap_or_default(),
+    }
+}
+
 /// Persists a Preferences editor's value.
 fn save_pref(editor: PrefEditor, value: String) {
     let mut settings = Settings::load();
     match editor {
-        PrefEditor::Tool(index) => {
-            let toolset = Toolset::discover(&settings.tool_overrides);
-            if let Some((tool, _)) = toolset.all().into_iter().nth(index) {
-                set_tool_override(&mut settings, tool, value.trim());
-            }
+        PrefEditor::Tool(tool) => {
+            let value = value.trim();
+            *tool_override(&mut settings, tool) = (!value.is_empty()).then(|| value.into());
         }
         PrefEditor::Folder => {
             let value = value.trim();
@@ -691,15 +698,14 @@ fn save_pref(editor: PrefEditor, value: String) {
     let _ = settings.save();
 }
 
-/// Writes (or clears, when `value` is empty) a tool's custom path in settings.
-fn set_tool_override(settings: &mut Settings, tool: Tool, value: &str) {
-    let path = (!value.is_empty()).then(|| std::path::PathBuf::from(value));
+/// A tool's custom path in settings; `None` means auto-detect.
+fn tool_override(settings: &mut Settings, tool: Tool) -> &mut Option<std::path::PathBuf> {
     let o = &mut settings.tool_overrides;
     match tool {
-        Tool::Ffmpeg => o.ffmpeg = path,
-        Tool::Ffprobe => o.ffprobe = path,
-        Tool::Mkvmerge => o.mkvmerge = path,
-        Tool::Mkvextract => o.mkvextract = path,
-        Tool::Mp4box => o.mp4box = path,
+        Tool::Ffmpeg => &mut o.ffmpeg,
+        Tool::Ffprobe => &mut o.ffprobe,
+        Tool::Mkvmerge => &mut o.mkvmerge,
+        Tool::Mkvextract => &mut o.mkvextract,
+        Tool::Mp4box => &mut o.mp4box,
     }
 }

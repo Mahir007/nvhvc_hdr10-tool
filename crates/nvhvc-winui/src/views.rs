@@ -12,7 +12,7 @@ use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
 use nvhvc_core::tools::{Resolution, Tool, Toolset};
 
-use crate::app::{FocusTarget, Message, Patcher, PrefEditor, Slot};
+use crate::app::{FocusTarget, Message, Patcher, PrefEdit, PrefEditor, Slot};
 use crate::model::*;
 use crate::palette::{Palette, faded, grey};
 
@@ -256,13 +256,18 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     let on_scheme = cx.callback(Message::ColorScheme);
     cx.on_color_scheme(on_scheme);
     if let Some((serial, target)) = p.refocus {
-        let button = match target {
-            FocusTarget::Menu => p.menu_ref.clone(),
-            FocusTarget::Theme(mode) => p.theme_refs[theme_index(mode)].clone(),
-        };
-        // Runs once per serial, after the recreated button is on screen.
+        let (menu, themes, input) = (
+            p.menu_ref.clone(),
+            p.theme_refs.clone(),
+            p.pref_input_ref.clone(),
+        );
+        // Runs once per serial, after the control it names is on screen.
         cx.use_effect("refocus", serial, move || {
-            let _ = button.request_focus();
+            let _ = match target {
+                FocusTarget::Menu => menu.request_focus(),
+                FocusTarget::Theme(mode) => themes[theme_index(mode)].request_focus(),
+                FocusTarget::PrefInput => input.request_focus(),
+            };
             None
         });
     }
@@ -307,6 +312,9 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     ];
     if p.prefs_open {
         layers.push(KeyedView::new("prefs", prefs_overlay(p, cx)));
+    }
+    if let Some(edit) = &p.pref_edit {
+        layers.push(KeyedView::new("pref-edit", pref_edit_overlay(p, cx, edit)));
     }
     if p.about_open {
         layers.push(KeyedView::new("about", about_overlay(p, cx)));
@@ -1485,7 +1493,7 @@ fn prefs_overlay(p: &Patcher, cx: &Cx) -> View {
         }
         rows.push(KeyedView::new(
             format!("tool-{i}"),
-            tool_row(p, cx, i, tool, resolution),
+            tool_row(p, cx, tool, resolution),
         ));
     }
 
@@ -1609,8 +1617,8 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
         )
 }
 
-/// A Preferences row: title, detail line and an Edit button.
-fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, edit: Message) -> View {
+/// A Preferences row: title, detail line and an Edit button that opens `editor`.
+fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, editor: PrefEditor) -> View {
     Border::new()
         .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
         .content(
@@ -1626,156 +1634,141 @@ fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, edit: Message) 
                     Button::new()
                         .grid_column(1)
                         .automation_name(format!("Edit {title}"))
-                        .on_click(cx.message(edit))
+                        .on_click(cx.message(Message::EditPref(editor)))
                         .content(icon_label(Symbol::Edit, "Edit")),
                 )),
         )
 }
 
-/// A Preferences inline editor: caption, text box, optional Browse, Cancel and Set.
-fn pref_editor(
-    pal: &Palette,
-    cx: &Cx,
-    editor: PrefEditor,
-    heading: String,
-    draft: &str,
-    placeholder: &str,
-    browse: bool,
-) -> View {
-    let mut cells = vec![KeyedView::new(
+/// The editor for one Preferences value: a smoke overlay over Preferences with a text box,
+/// Browse for the folder, and Set / Cancel. Mirrors GTK's AlertDialog editors. Not a
+/// ContentDialog: that takes the system theme, not the window's.
+fn pref_edit_overlay(p: &Patcher, cx: &Cx, edit: &PrefEdit) -> View {
+    let pal = &p.palette;
+    let (title, hint, placeholder) = match edit.editor {
+        PrefEditor::Tool(tool) => (
+            format!("Custom {} executable", tool.label()),
+            "Point at your own build, or leave empty to auto-detect.",
+            r"C:\path\to\executable.exe",
+        ),
+        PrefEditor::Folder => (
+            "Default output folder".to_owned(),
+            "Auto-named outputs are saved here. Leave empty to save next to the encode.",
+            r"C:\path\to\output\folder",
+        ),
+        PrefEditor::Suffix => (
+            "Default output filename suffix".to_owned(),
+            "Added to the encode's file name, before the extension. Leave empty for the default.",
+            DEFAULT_OUTPUT_SUFFIX,
+        ),
+    };
+
+    let mut input = vec![KeyedView::new(
         "input",
         TextBox::new()
-            .text(draft)
+            .element_ref(&p.pref_input_ref)
+            .text(edit.draft.as_str())
             .placeholder_text(placeholder)
             .text_wrapping(TextWrapping::Wrap)
-            .on_text_changed(cx.callback(move |text| Message::PrefDraft(editor, text)))
+            .automation_name(title.as_str())
+            .on_text_changed(cx.callback(Message::PrefDraft))
             .grid_column(0),
     )];
-    if browse {
-        cells.push(KeyedView::new(
+    if edit.editor == PrefEditor::Folder {
+        input.push(KeyedView::new(
             "browse",
             Button::new()
+                .vertical_alignment(VerticalAlignment::Top)
                 .grid_column(1)
                 .on_click(cx.message(Message::BrowseFolder))
                 .content("Browse\u{2026}"),
         ));
     }
-    let base = if browse { 2 } else { 1 };
-    cells.push(KeyedView::new(
-        "cancel",
-        Button::new()
-            .grid_column(base)
-            .on_click(cx.message(Message::CancelPref(editor)))
-            .content("Cancel"),
-    ));
-    cells.push(KeyedView::new(
-        "set",
-        Button::new()
-            .style(ButtonStyle::Accent)
-            .grid_column(base + 1)
-            .on_click(cx.message(Message::SavePref(editor)))
-            .content("Set"),
-    ));
-    let mut columns = vec![GridLength::Star(1.0), GridLength::Auto, GridLength::Auto];
-    if browse {
-        columns.push(GridLength::Auto);
-    }
-    // Accent-soft so the row being edited stands out (mockup tint).
-    Border::new()
-        .background(pal.attention_bg)
-        .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
+
+    // Set on the left, Cancel on the right, as in the overwrite prompt.
+    let buttons = Grid::new()
+        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+        .column_spacing(8.0)
+        .margin(top(18.0))
+        .children((
+            Button::new()
+                .style(ButtonStyle::Accent)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .grid_column(0)
+                .on_click(cx.message(Message::SavePref))
+                .content("Set"),
+            Button::new()
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .grid_column(1)
+                .on_click(cx.message(Message::CancelPref))
+                .content("Cancel"),
+        ));
+
+    let dialog = Border::new()
+        .corner_radius(8.0)
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        .padding(24.0)
+        .width(440.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
         .content(
-            StackPanel::new().spacing(8.0).children((
-                caption(heading).font_weight(FontWeight::SEMI_BOLD),
+            StackPanel::new().spacing(6.0).children((
+                text(title, 18.0).font_weight(FontWeight::SEMI_BOLD),
+                text(hint, 13.0).foreground(pal.text_secondary),
                 Grid::new()
-                    .columns(columns)
+                    .columns([GridLength::Star(1.0), GridLength::Auto])
                     .column_spacing(8.0)
-                    .keyed_children(cells),
+                    .margin(top(10.0))
+                    .keyed_children(input),
+                buttons,
             )),
-        )
+        );
+
+    Border::new()
+        .background(pal.smoke)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .content(dialog)
 }
 
-/// "Default output filename suffix", or its editor. The suffix goes between the encode's name
-/// and the extension when auto-naming the output; clearing it resets to
-/// [`DEFAULT_OUTPUT_SUFFIX`].
+/// "Default output filename suffix". The suffix goes between the encode's name and the
+/// extension when auto-naming the output; clearing it resets to [`DEFAULT_OUTPUT_SUFFIX`].
 fn suffix_row(p: &Patcher, cx: &Cx) -> View {
-    if let Some(draft) = &p.suffix_edit {
-        return pref_editor(
-            &p.palette,
-            cx,
-            PrefEditor::Suffix,
-            "Default output filename suffix (leave empty for the default)".to_owned(),
-            draft,
-            DEFAULT_OUTPUT_SUFFIX,
-            false,
-        );
-    }
-    let current = Settings::load()
+    let detail = Settings::load()
         .default_output_suffix
-        .filter(|s| !s.trim().is_empty());
-    let detail = current
-        .clone()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_OUTPUT_SUFFIX.to_owned());
     pref_row(
         &p.palette,
         cx,
         "Default output filename suffix",
         detail,
-        Message::EditPref(PrefEditor::Suffix, current.unwrap_or_default()),
+        PrefEditor::Suffix,
     )
 }
 
-/// "Default output folder", or its editor. Auto-named outputs are saved there; clearing it
-/// resets to "same folder as the encode".
+/// "Default output folder". Auto-named outputs are saved there; clearing it resets to "same
+/// folder as the encode".
 fn folder_row(p: &Patcher, cx: &Cx) -> View {
-    if let Some(draft) = &p.folder_edit {
-        return pref_editor(
-            &p.palette,
-            cx,
-            PrefEditor::Folder,
-            "Default output folder (leave empty to save next to the encode)".to_owned(),
-            draft,
-            r"C:\path\to\output\folder",
-            true,
-        );
-    }
-    let current = Settings::load()
+    let detail = Settings::load()
         .default_output_dir
         .filter(|d| !d.as_os_str().is_empty())
-        .map(|d| d.display().to_string());
-    let detail = current
-        .clone()
+        .map(|d| d.display().to_string())
         .unwrap_or_else(|| "Same folder as the encode".to_owned());
     pref_row(
         &p.palette,
         cx,
         "Default output folder",
         detail,
-        Message::EditPref(PrefEditor::Folder, current.unwrap_or_default()),
+        PrefEditor::Folder,
     )
 }
 
-/// One tool row in Preferences: status dot, name + resolution detail, Edit button, or the
-/// inline custom-path editor when this row is being edited.
-fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolution) -> View {
+/// One tool row in Preferences: status dot, name + resolution detail, Edit button.
+fn tool_row(p: &Patcher, cx: &Cx, tool: Tool, resolution: &Resolution) -> View {
     let pal = &p.palette;
-    if let Some((i, draft)) = &p.tool_edit
-        && *i == index
-    {
-        return pref_editor(
-            pal,
-            cx,
-            PrefEditor::Tool(index),
-            format!(
-                "Custom {} executable (empty resets to auto-detect)",
-                tool.label()
-            ),
-            draft,
-            r"C:\path\to\executable.exe",
-            false,
-        );
-    }
-
     // green = on PATH · blue = custom user path · purple = install dir · red = missing. The
     // blue and purple are fixed colours: a custom-path dot must not follow the accent.
     let (dot, detail): (Brush, String) = match resolution {
@@ -1797,10 +1790,6 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
             format!("Not found · {}", tool.install_hint()),
         ),
     };
-    let current = resolution
-        .path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
     Border::new()
         .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
         .content(
@@ -1825,7 +1814,7 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
                     Button::new()
                         .grid_column(2)
                         .automation_name(format!("Edit {}", tool.label()))
-                        .on_click(cx.message(Message::EditPref(PrefEditor::Tool(index), current)))
+                        .on_click(cx.message(Message::EditPref(PrefEditor::Tool(tool))))
                         .content(icon_label(Symbol::Edit, "Edit")),
                 )),
         )
