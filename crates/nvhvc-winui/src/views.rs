@@ -12,7 +12,7 @@ use nvhvc_core::hevc::patch::Hdr10Metadata;
 use nvhvc_core::naming;
 use nvhvc_core::tools::{Resolution, Tool, Toolset};
 
-use crate::app::{Message, Patcher, PrefEditor, Slot};
+use crate::app::{FocusTarget, Message, Patcher, PrefEdit, PrefEditor, Slot};
 use crate::model::*;
 use crate::palette::{Palette, faded, grey};
 
@@ -74,6 +74,25 @@ fn unpad() -> Thickness {
     Thickness::new(-11.0, -5.0, -11.0, -6.0)
 }
 
+/// A key that changes whenever `overrides` do.
+fn style_key(overrides: &ResourceOverrides) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    format!("{overrides:?}").hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Recreates `button` whenever its `overrides` change.
+///
+/// WinUI reads a Button's lightweight-styling resources when the button is created and again
+/// only on a theme change. Changing them on a live button leaves it in its old colours, so a
+/// button whose overrides follow app state (menu open, selected theme, palette) is keyed on
+/// them. The new button doesn't show hover until the pointer next moves, and doesn't inherit
+/// keyboard focus: see [`Patcher::refocus`].
+fn restyled(overrides: &ResourceOverrides, button: impl Into<View>) -> View {
+    Grid::new().keyed_children([KeyedView::new(style_key(overrides), button)])
+}
+
 /// A standalone glyph in `color`, centred in its slot.
 ///
 /// FontIcon has no foreground and TextBlock no font family, so the colour comes from a disabled
@@ -81,16 +100,18 @@ fn unpad() -> Thickness {
 /// `HyperlinkButtonForegroundDisabled` resource. The negative margin cancels the button's
 /// padding so the glyph keeps its own layout box.
 fn glyph(g: &str, size: f64, color: Color) -> View {
-    Button::new()
-        .style(ButtonStyle::TextLink)
-        .is_enabled(false)
-        .resource_overrides(
-            ResourceOverrides::new().set("HyperlinkButtonForegroundDisabled", color),
-        )
-        .margin(unpad())
-        .horizontal_alignment(HorizontalAlignment::Center)
-        .vertical_alignment(VerticalAlignment::Center)
-        .content(icon(g, size))
+    let overrides = ResourceOverrides::new().set("HyperlinkButtonForegroundDisabled", color);
+    restyled(
+        &overrides,
+        Button::new()
+            .style(ButtonStyle::TextLink)
+            .is_enabled(false)
+            .resource_overrides(overrides.clone())
+            .margin(unpad())
+            .horizontal_alignment(HorizontalAlignment::Center)
+            .vertical_alignment(VerticalAlignment::Center)
+            .content(icon(g, size)),
+    )
 }
 
 /// A Button's content as the stock icon + label pair.
@@ -234,6 +255,22 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     );
     let on_scheme = cx.callback(Message::ColorScheme);
     cx.on_color_scheme(on_scheme);
+    if let Some((serial, target)) = p.refocus {
+        let (menu, themes, input) = (
+            p.menu_ref.clone(),
+            p.theme_refs.clone(),
+            p.pref_input_ref.clone(),
+        );
+        // Runs once per serial, after the control it names is on screen.
+        cx.use_effect("refocus", serial, move || {
+            let _ = match target {
+                FocusTarget::Menu => menu.request_focus(),
+                FocusTarget::Theme(mode) => themes[theme_index(mode)].request_focus(),
+                FocusTarget::PrefInput => input.request_focus(),
+            };
+            None
+        });
+    }
 
     let shown = p.shown_stage();
     let processing = p.processing();
@@ -271,11 +308,16 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     let mut layers = vec![
         KeyedView::new("app", main),
         // Over the breadcrumb row, in the client area: see `menu_button`.
-        KeyedView::new("menu-btn", menu_button(p, cx)),
-        KeyedView::new("about", about_dialog(p, cx)),
+        menu_button(p, cx),
     ];
     if p.prefs_open {
         layers.push(KeyedView::new("prefs", prefs_overlay(p, cx)));
+    }
+    if let Some(edit) = &p.pref_edit {
+        layers.push(KeyedView::new("pref-edit", pref_edit_overlay(p, cx, edit)));
+    }
+    if p.about_open {
+        layers.push(KeyedView::new("about", about_overlay(p, cx)));
     }
     if p.confirm_overwrite {
         layers.push(KeyedView::new("overwrite", overwrite_overlay(p, cx)));
@@ -300,24 +342,22 @@ fn title_bar(cx: &Cx, shown: Stage, processing: bool) -> View {
 /// The "…" app-menu toggle, over the right end of the breadcrumb row. It sits in the client
 /// area rather than the title bar, where the strip's non-client input handling made every
 /// custom control drag the window. Fill ladder per the design: hover (brightest) > open
-/// (persistent, between) > pressed (dimmest, glyph dimmed).
-fn menu_button(p: &Patcher, cx: &Cx) -> View {
+/// (persistent, between) > pressed (dimmest, glyph dimmed). The open fill is the button's
+/// resting colour, so the button is keyed on its colours like [`restyled`] ones.
+fn menu_button(p: &Patcher, cx: &Cx) -> KeyedView {
     let rest = if p.menu_open {
         grey(26)
     } else {
         Color::transparent()
     };
-    Button::new()
+    let overrides = subtle_states(rest, grey(40), grey(16), p.palette.text_primary, 0.55);
+    let key = format!("menu-btn-{}", style_key(&overrides));
+    let button = Button::new()
         .style(ButtonStyle::Subtle)
+        .element_ref(&p.menu_ref)
         // Corners stay at the stock 4px: a CornerRadius resource override (for the 5px the
         // custom control had) brings WinUI down a few seconds after it's applied.
-        .resource_overrides(subtle_states(
-            rest,
-            grey(40),
-            grey(16),
-            p.palette.text_primary,
-            0.55,
-        ))
+        .resource_overrides(overrides)
         .width(40.0)
         .height(32.0)
         .horizontal_alignment(HorizontalAlignment::Right)
@@ -328,7 +368,8 @@ fn menu_button(p: &Patcher, cx: &Cx) -> View {
         .margin(Thickness::new(0.0, 40.0, 12.0, 0.0))
         .automation_name("App menu")
         .on_click(cx.message(Message::ToggleMenu))
-        .content(icon(GLYPH_MORE, 14.0))
+        .content(icon(GLYPH_MORE, 14.0));
+    KeyedView::new(key, button)
 }
 
 /// The "Source › Encode › Result" step indicator under the title bar.
@@ -426,26 +467,28 @@ fn accent_action(
     } else {
         [glyph_view, label_view]
     };
-    Button::new()
-        .style(ButtonStyle::Accent)
-        .is_enabled(enabled)
-        .opacity(if enabled { 1.0 } else { 0.4 })
-        .resource_overrides(
-            ResourceOverrides::new()
-                .set("AccentButtonBackgroundDisabled", pal.accent_fill)
-                .set("AccentButtonForegroundDisabled", pal.text_on_accent),
-        )
-        .automation_name(label)
-        .on_click(cx.message(message))
-        .content(
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .horizontal_alignment(HorizontalAlignment::Center)
-                // With the button's own 1px border and 11,5,11,6 padding: 22,9,22,9 overall.
-                .margin(Thickness::new(10.0, 3.0, 10.0, 2.0))
-                .children(cells),
-        )
+    let overrides = ResourceOverrides::new()
+        .set("AccentButtonBackgroundDisabled", pal.accent_fill)
+        .set("AccentButtonForegroundDisabled", pal.text_on_accent);
+    restyled(
+        &overrides,
+        Button::new()
+            .style(ButtonStyle::Accent)
+            .is_enabled(enabled)
+            .opacity(if enabled { 1.0 } else { 0.4 })
+            .resource_overrides(overrides.clone())
+            .automation_name(label)
+            .on_click(cx.message(message))
+            .content(
+                StackPanel::new()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(8.0)
+                    .horizontal_alignment(HorizontalAlignment::Center)
+                    // With the button's own 1px border and 11,5,11,6 padding: 22,9,22,9 overall.
+                    .margin(Thickness::new(10.0, 3.0, 10.0, 2.0))
+                    .children(cells),
+            ),
+    )
 }
 
 // ===================== Drop zone =====================
@@ -1450,7 +1493,7 @@ fn prefs_overlay(p: &Patcher, cx: &Cx) -> View {
         }
         rows.push(KeyedView::new(
             format!("tool-{i}"),
-            tool_row(p, cx, i, tool, resolution),
+            tool_row(p, cx, tool, resolution),
         ));
     }
 
@@ -1525,38 +1568,40 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
             .foreground(pal.text_secondary)
             .vertical_alignment(VerticalAlignment::Center)
     };
+    // The hint is a few pixels wider than the text column beside the widest combo entry. It
+    // spans both columns so that the excess runs into the column gap instead of being clipped.
     Border::new()
         .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
         .content(
             Grid::new()
                 .columns([GridLength::Star(1.0), GridLength::Auto])
+                .rows([GridLength::Auto, GridLength::Auto])
                 .column_spacing(13.0)
+                .row_spacing(1.0)
                 .children((
+                    body("Default output container").grid_column(0).grid_row(0),
+                    // "Save as" is set off like inline code (mono chip), mirroring the GTK
+                    // subtitle's monospace run.
                     StackPanel::new()
-                        .spacing(1.0)
-                        .vertical_alignment(VerticalAlignment::Center)
+                        .orientation(Orientation::Horizontal)
+                        .spacing(4.0)
+                        .horizontal_alignment(HorizontalAlignment::Left)
                         .grid_column(0)
+                        .grid_column_span(2)
+                        .grid_row(1)
                         .children((
-                            body("Default output container"),
-                            // "Save as" is set off like inline code (mono chip), mirroring the
-                            // GTK subtitle's monospace run.
-                            StackPanel::new()
-                                .orientation(Orientation::Horizontal)
-                                .spacing(4.0)
-                                .children((
-                                    note("You can still switch it per file in the"),
-                                    Border::new()
-                                        .background(grey(26))
-                                        .corner_radius(4.0)
-                                        .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
-                                        .vertical_alignment(VerticalAlignment::Center)
-                                        .content(
-                                            caption(monospace("Save as"))
-                                                .foreground(pal.text_secondary)
-                                                .automation_name("Save as"),
-                                        ),
-                                    note("dialog"),
-                                )),
+                            note("You can still switch it per file in the"),
+                            Border::new()
+                                .background(grey(26))
+                                .corner_radius(4.0)
+                                .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
+                                .vertical_alignment(VerticalAlignment::Center)
+                                .content(
+                                    caption(monospace("Save as"))
+                                        .foreground(pal.text_secondary)
+                                        .automation_name("Save as"),
+                                ),
+                            note("dialog"),
                         )),
                     ComboBox::new()
                         .items_source(Container::ALL.iter().map(|c| c.label()))
@@ -1565,13 +1610,15 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
                             Message::SetContainer(i.and_then(|i| Container::ALL.get(i).copied()))
                         }))
                         .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(1),
+                        .grid_column(1)
+                        .grid_row(0)
+                        .grid_row_span(2),
                 )),
         )
 }
 
-/// A Preferences row: title, detail line and an Edit button.
-fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, edit: Message) -> View {
+/// A Preferences row: title, detail line and an Edit button that opens `editor`.
+fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, editor: PrefEditor) -> View {
     Border::new()
         .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
         .content(
@@ -1587,161 +1634,147 @@ fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, edit: Message) 
                     Button::new()
                         .grid_column(1)
                         .automation_name(format!("Edit {title}"))
-                        .on_click(cx.message(edit))
+                        .on_click(cx.message(Message::EditPref(editor)))
                         .content(icon_label(Symbol::Edit, "Edit")),
                 )),
         )
 }
 
-/// A Preferences inline editor: caption, text box, optional Browse, Cancel and Set.
-fn pref_editor(
-    pal: &Palette,
-    cx: &Cx,
-    editor: PrefEditor,
-    heading: String,
-    draft: &str,
-    placeholder: &str,
-    browse: bool,
-) -> View {
-    let mut cells = vec![KeyedView::new(
+/// The editor for one Preferences value: a smoke overlay over Preferences with a text box,
+/// Browse for the folder, and Set / Cancel. Mirrors GTK's AlertDialog editors. Not a
+/// ContentDialog: that takes the system theme, not the window's.
+fn pref_edit_overlay(p: &Patcher, cx: &Cx, edit: &PrefEdit) -> View {
+    let pal = &p.palette;
+    let (title, hint, placeholder) = match edit.editor {
+        PrefEditor::Tool(tool) => (
+            format!("Custom {} executable", tool.label()),
+            "Point at your own build, or leave empty to auto-detect.",
+            r"C:\path\to\executable.exe",
+        ),
+        PrefEditor::Folder => (
+            "Default output folder".to_owned(),
+            "Auto-named outputs are saved here. Leave empty to save next to the encode.",
+            r"C:\path\to\output\folder",
+        ),
+        PrefEditor::Suffix => (
+            "Default output filename suffix".to_owned(),
+            "Added to the encode's file name, before the extension. Leave empty for the default.",
+            DEFAULT_OUTPUT_SUFFIX,
+        ),
+    };
+
+    let mut input = vec![KeyedView::new(
         "input",
         TextBox::new()
-            .text(draft)
+            .element_ref(&p.pref_input_ref)
+            .text(edit.draft.as_str())
             .placeholder_text(placeholder)
             .text_wrapping(TextWrapping::Wrap)
-            .on_text_changed(cx.callback(move |text| Message::PrefDraft(editor, text)))
+            .automation_name(title.as_str())
+            .on_text_changed(cx.callback(Message::PrefDraft))
             .grid_column(0),
     )];
-    if browse {
-        cells.push(KeyedView::new(
+    if edit.editor == PrefEditor::Folder {
+        input.push(KeyedView::new(
             "browse",
             Button::new()
+                .vertical_alignment(VerticalAlignment::Top)
                 .grid_column(1)
                 .on_click(cx.message(Message::BrowseFolder))
                 .content("Browse\u{2026}"),
         ));
     }
-    let base = if browse { 2 } else { 1 };
-    cells.push(KeyedView::new(
-        "cancel",
-        Button::new()
-            .grid_column(base)
-            .on_click(cx.message(Message::CancelPref(editor)))
-            .content("Cancel"),
-    ));
-    cells.push(KeyedView::new(
-        "set",
-        Button::new()
-            .style(ButtonStyle::Accent)
-            .grid_column(base + 1)
-            .on_click(cx.message(Message::SavePref(editor)))
-            .content("Set"),
-    ));
-    let mut columns = vec![GridLength::Star(1.0), GridLength::Auto, GridLength::Auto];
-    if browse {
-        columns.push(GridLength::Auto);
-    }
-    // Accent-soft so the row being edited stands out (mockup tint).
-    Border::new()
-        .background(pal.attention_bg)
-        .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
+
+    // Set on the left, Cancel on the right, as in the overwrite prompt.
+    let buttons = Grid::new()
+        .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+        .column_spacing(8.0)
+        .margin(top(18.0))
+        .children((
+            Button::new()
+                .style(ButtonStyle::Accent)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .grid_column(0)
+                .on_click(cx.message(Message::SavePref))
+                .content("Set"),
+            Button::new()
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .grid_column(1)
+                .on_click(cx.message(Message::CancelPref))
+                .content("Cancel"),
+        ));
+
+    let dialog = Border::new()
+        .corner_radius(8.0)
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        .padding(24.0)
+        .width(440.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
         .content(
-            StackPanel::new().spacing(8.0).children((
-                caption(heading).font_weight(FontWeight::SEMI_BOLD),
+            StackPanel::new().spacing(6.0).children((
+                text(title, 18.0).font_weight(FontWeight::SEMI_BOLD),
+                text(hint, 13.0).foreground(pal.text_secondary),
                 Grid::new()
-                    .columns(columns)
+                    .columns([GridLength::Star(1.0), GridLength::Auto])
                     .column_spacing(8.0)
-                    .keyed_children(cells),
+                    .margin(top(10.0))
+                    .keyed_children(input),
+                buttons,
             )),
-        )
+        );
+
+    Border::new()
+        .background(pal.smoke)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .content(dialog)
 }
 
-/// "Default output filename suffix", or its editor. The suffix goes between the encode's name
-/// and the extension when auto-naming the output; clearing it resets to
-/// [`DEFAULT_OUTPUT_SUFFIX`].
+/// "Default output filename suffix". The suffix goes between the encode's name and the
+/// extension when auto-naming the output; clearing it resets to [`DEFAULT_OUTPUT_SUFFIX`].
 fn suffix_row(p: &Patcher, cx: &Cx) -> View {
-    if let Some(draft) = &p.suffix_edit {
-        return pref_editor(
-            &p.palette,
-            cx,
-            PrefEditor::Suffix,
-            "Default output filename suffix (leave empty for the default)".to_owned(),
-            draft,
-            DEFAULT_OUTPUT_SUFFIX,
-            false,
-        );
-    }
-    let current = Settings::load()
+    let detail = Settings::load()
         .default_output_suffix
-        .filter(|s| !s.trim().is_empty());
-    let detail = current
-        .clone()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_OUTPUT_SUFFIX.to_owned());
     pref_row(
         &p.palette,
         cx,
         "Default output filename suffix",
         detail,
-        Message::EditPref(PrefEditor::Suffix, current.unwrap_or_default()),
+        PrefEditor::Suffix,
     )
 }
 
-/// "Default output folder", or its editor. Auto-named outputs are saved there; clearing it
-/// resets to "same folder as the encode".
+/// "Default output folder". Auto-named outputs are saved there; clearing it resets to "same
+/// folder as the encode".
 fn folder_row(p: &Patcher, cx: &Cx) -> View {
-    if let Some(draft) = &p.folder_edit {
-        return pref_editor(
-            &p.palette,
-            cx,
-            PrefEditor::Folder,
-            "Default output folder (leave empty to save next to the encode)".to_owned(),
-            draft,
-            r"C:\path\to\output\folder",
-            true,
-        );
-    }
-    let current = Settings::load()
+    let detail = Settings::load()
         .default_output_dir
         .filter(|d| !d.as_os_str().is_empty())
-        .map(|d| d.display().to_string());
-    let detail = current
-        .clone()
+        .map(|d| d.display().to_string())
         .unwrap_or_else(|| "Same folder as the encode".to_owned());
     pref_row(
         &p.palette,
         cx,
         "Default output folder",
         detail,
-        Message::EditPref(PrefEditor::Folder, current.unwrap_or_default()),
+        PrefEditor::Folder,
     )
 }
 
-/// One tool row in Preferences: status dot, name + resolution detail, Edit button, or the
-/// inline custom-path editor when this row is being edited.
-fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolution) -> View {
+/// One tool row in Preferences: status dot, name + resolution detail, Edit button.
+fn tool_row(p: &Patcher, cx: &Cx, tool: Tool, resolution: &Resolution) -> View {
     let pal = &p.palette;
-    if let Some((i, draft)) = &p.tool_edit
-        && *i == index
-    {
-        return pref_editor(
-            pal,
-            cx,
-            PrefEditor::Tool(index),
-            format!(
-                "Custom {} executable (empty resets to auto-detect)",
-                tool.label()
-            ),
-            draft,
-            r"C:\path\to\executable.exe",
-            false,
-        );
-    }
-
-    // green = on PATH · accent = custom user path · purple = install dir · red = missing.
+    // green = on PATH · blue = custom user path · purple = install dir · red = missing. The
+    // blue and purple are fixed colours: a custom-path dot must not follow the accent.
     let (dot, detail): (Brush, String) = match resolution {
         Resolution::OnPath(p) => (pal.success.into(), format!("On PATH · {}", p.display())),
         Resolution::Override(p) => (
-            ThemeBrush::Accent.into(),
+            Color::rgb(0, 120, 212).into(),
             format!("Custom path · {}", p.display()),
         ),
         Resolution::Fallback(p) => (
@@ -1757,10 +1790,6 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
             format!("Not found · {}", tool.install_hint()),
         ),
     };
-    let current = resolution
-        .path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
     Border::new()
         .padding(Thickness::new(15.0, 14.0, 15.0, 14.0))
         .content(
@@ -1785,13 +1814,22 @@ fn tool_row(p: &Patcher, cx: &Cx, index: usize, tool: Tool, resolution: &Resolut
                     Button::new()
                         .grid_column(2)
                         .automation_name(format!("Edit {}", tool.label()))
-                        .on_click(cx.message(Message::EditPref(PrefEditor::Tool(index), current)))
+                        .on_click(cx.message(Message::EditPref(PrefEditor::Tool(tool))))
                         .content(icon_label(Symbol::Edit, "Edit")),
                 )),
         )
 }
 
 // ===================== App menu overlay =====================
+
+/// Where a theme's button sits in the switcher and in [`Patcher::theme_refs`].
+fn theme_index(mode: ThemeMode) -> usize {
+    match mode {
+        ThemeMode::System => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+    }
+}
 
 /// The "…" app menu, mirroring the GTK popover: a three-way theme switcher on top, then icon
 /// menu entries (Preferences / Help / About). A custom overlay rather than a native flyout: menu
@@ -1828,6 +1866,13 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         } else {
             pal.text_primary
         };
+        let overrides = subtle_states(
+            Color::transparent(),
+            grey(34),
+            Color::argb(64, 0, 0, 0),
+            fg,
+            0.6,
+        );
         Border::new()
             .corner_radius(4.0)
             .background(if selected {
@@ -1836,16 +1881,12 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
                 Brush::from(pal.subtle)
             })
             .grid_column(column)
-            .content(
+            .content(restyled(
+                &overrides,
                 Button::new()
                     .style(ButtonStyle::Subtle)
-                    .resource_overrides(subtle_states(
-                        Color::transparent(),
-                        grey(34),
-                        Color::argb(64, 0, 0, 0),
-                        fg,
-                        0.6,
-                    ))
+                    .element_ref(&p.theme_refs[theme_index(mode)])
+                    .resource_overrides(overrides.clone())
                     .horizontal_alignment(HorizontalAlignment::Stretch)
                     .vertical_alignment(VerticalAlignment::Stretch)
                     .automation_name(label)
@@ -1862,7 +1903,7 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
                                 text(label, 11.0).horizontal_alignment(HorizontalAlignment::Center),
                             )),
                     ),
-            )
+            ))
     };
     let theme_row = Grid::new()
         .columns(vec![GridLength::Star(1.0); 3])
@@ -1875,30 +1916,34 @@ fn menu_overlay(p: &Patcher, cx: &Cx) -> View {
         ));
 
     let item = |g: &str, label: &str, message: Message| -> View {
-        Button::new()
-            .style(ButtonStyle::Subtle)
-            .resource_overrides(subtle_states(
-                Color::transparent(),
-                grey(34),
-                grey(20),
-                pal.text_primary,
-                0.6,
-            ))
-            .horizontal_alignment(HorizontalAlignment::Stretch)
-            .horizontal_content_alignment(HorizontalAlignment::Left)
-            .automation_name(label)
-            .on_click(cx.message(message))
-            .content(
-                // 10,9,10,9 padding overall.
-                StackPanel::new()
-                    .orientation(Orientation::Horizontal)
-                    .spacing(11.0)
-                    .margin(Thickness::new(-2.0, 3.0, -2.0, 2.0))
-                    .children((
-                        icon(g, 15.0),
-                        text(label, 13.0).vertical_alignment(VerticalAlignment::Center),
-                    )),
-            )
+        let overrides = subtle_states(
+            Color::transparent(),
+            grey(34),
+            grey(20),
+            pal.text_primary,
+            0.6,
+        );
+        restyled(
+            &overrides,
+            Button::new()
+                .style(ButtonStyle::Subtle)
+                .resource_overrides(overrides.clone())
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .horizontal_content_alignment(HorizontalAlignment::Left)
+                .automation_name(label)
+                .on_click(cx.message(message))
+                .content(
+                    // 10,9,10,9 padding overall.
+                    StackPanel::new()
+                        .orientation(Orientation::Horizontal)
+                        .spacing(11.0)
+                        .margin(Thickness::new(-2.0, 3.0, -2.0, 2.0))
+                        .children((
+                            icon(g, 15.0),
+                            text(label, 13.0).vertical_alignment(VerticalAlignment::Center),
+                        )),
+                ),
+        )
     };
 
     let panel = Border::new()
@@ -2001,21 +2046,51 @@ fn overwrite_overlay(p: &Patcher, cx: &Cx) -> View {
         .content(dialog)
 }
 
-fn about_dialog(p: &Patcher, cx: &Cx) -> View {
-    ContentDialog::new()
-        .title("About nvhvc")
-        .close_button_text("OK")
-        .is_open(p.about_open)
-        .on_closed(cx.callback(|_: ContentDialogResult| Message::AboutClosed))
-        // Two balanced ~60-char lines keep the dialog comfortably wide.
+/// The About dialog, a smoke overlay like the other two. A ContentDialog takes the system's
+/// theme, not the window's, so it came up dark in a light window (and the reverse).
+fn about_overlay(p: &Patcher, cx: &Cx) -> View {
+    let pal = &p.palette;
+    let dialog = Border::new()
+        .corner_radius(8.0)
+        .background(ThemeBrush::SolidBackground)
+        .border_brush(pal.surface_stroke)
+        .border_thickness(1.0)
+        // Fits the longer body line with a few pixels to spare.
+        .width(456.0)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
         .content(
-            TextBlock::new()
-                .text(format!(
-                    "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
-                     re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
-                     exactly.\n\nGPL-3.0",
-                    nvhvc_core::VERSION
-                ))
-                .text_wrapping(TextWrapping::Wrap),
-        )
+            StackPanel::new().children((
+                StackPanel::new().spacing(12.0).margin(24.0).children((
+                    text("About nvhvc", 20.0).font_weight(FontWeight::SEMI_BOLD),
+                    // Two balanced lines, broken by hand so "re-encoding" isn't split.
+                    body(format!(
+                        "nvhvc HDR10 patcher {}\n\nInjects HDR10 metadata into HEVC streams without \
+                         re-encoding:\nbit-exact SPS/VUI editing, frame timing preserved \
+                         exactly.\n\nGPL-3.0",
+                        nvhvc_core::VERSION
+                    )),
+                )),
+                Border::new()
+                    .border_thickness(Thickness::new(0.0, 1.0, 0.0, 0.0))
+                    .border_brush(pal.divider)
+                    .padding(24.0)
+                    .content(
+                        Grid::new()
+                            .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+                            .column_spacing(8.0)
+                            .children((Button::new()
+                                .horizontal_alignment(HorizontalAlignment::Stretch)
+                                .grid_column(1)
+                                .on_click(cx.message(Message::CloseAbout))
+                                .content("OK"),)),
+                    ),
+            )),
+        );
+
+    Border::new()
+        .background(pal.smoke)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .vertical_alignment(VerticalAlignment::Stretch)
+        .content(dialog)
 }
