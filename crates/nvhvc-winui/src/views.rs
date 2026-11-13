@@ -2023,6 +2023,8 @@ fn overwrite_overlay(p: &Patcher, cx: &Cx) -> View {
     let cancel = Button::new()
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .grid_column(1)
+        // Cancel is the default, as in GTK: Enter replaces only with Replace focused.
+        .key_accelerators(on_enter(cx, Message::CancelReplace))
         .on_click(cx.message(Message::CancelReplace))
         .content("Cancel");
 
