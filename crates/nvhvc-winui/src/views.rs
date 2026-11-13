@@ -1640,6 +1640,16 @@ fn pref_row(pal: &Palette, cx: &Cx, title: &str, detail: String, editor: PrefEdi
         )
 }
 
+/// Enter as a dialog's default action, for its default button. A focused button still takes
+/// Enter for itself.
+fn on_enter(cx: &Cx, message: Message) -> KeyAccelerators {
+    KeyAccelerators::new([KeyAccelerator::new(
+        AcceleratorKey::Enter,
+        AcceleratorModifiers::None,
+        cx.message(message),
+    )])
+}
+
 /// The editor for one Preferences value: a smoke overlay over Preferences with a text box,
 /// Browse for the folder, and Set / Cancel. Mirrors GTK's AlertDialog editors. Not a
 /// ContentDialog: that takes the system theme, not the window's.
@@ -1695,6 +1705,7 @@ fn pref_edit_overlay(p: &Patcher, cx: &Cx, edit: &PrefEdit) -> View {
                 .style(ButtonStyle::Accent)
                 .horizontal_alignment(HorizontalAlignment::Stretch)
                 .grid_column(0)
+                .key_accelerators(on_enter(cx, Message::SavePref))
                 .on_click(cx.message(Message::SavePref))
                 .content("Set"),
             Button::new()
@@ -2082,6 +2093,7 @@ fn about_overlay(p: &Patcher, cx: &Cx) -> View {
                             .children((Button::new()
                                 .horizontal_alignment(HorizontalAlignment::Stretch)
                                 .grid_column(1)
+                                .key_accelerators(on_enter(cx, Message::CloseAbout))
                                 .on_click(cx.message(Message::CloseAbout))
                                 .content("OK"),)),
                     ),
