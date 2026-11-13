@@ -15,16 +15,18 @@ nvhvc-core.workspace = true
 # compiles everywhere (mirrors nvhvc-gtk on Windows).
 [target.'cfg(windows)'.dependencies]
 windows-reactor = "0.100"
-# Native file dialogs and the system accent colour. windows 0.62 carries its own windows-core;
-# none of its types are passed to reactor.
+# Native file dialogs, the system accent colour and the Esc key hook. windows 0.62 carries its
+# own windows-core; none of its types are passed to reactor.
 windows = { version = "0.62", features = [
     "Foundation",
     "UI_ViewManagement",
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]

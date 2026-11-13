@@ -1,13 +1,20 @@
-//! Windows-side helpers: native file dialogs, Explorer, and the system accent colour.
+//! Windows-side helpers: native file dialogs, Explorer, the system accent colour and the Esc key.
+
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Foundation::TypedEventHandler;
 use windows::UI::ViewManagement::{UIColorType, UISettings};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, VK_ESCAPE};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FOS_PICKFOLDERS, FileOpenDialog, FileSaveDialog, IFileDialog, SIGDN_FILESYSPATH,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, HC_ACTION, MSG, PM_REMOVE, SetWindowsHookExW, WH_GETMESSAGE, WM_KEYDOWN,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 use windows_reactor::Color;
@@ -87,7 +94,10 @@ unsafe fn show_dialog(dialog: &IFileDialog) -> Option<String> {
         let owner = GetActiveWindow();
         let owner = (owner != HWND::default()).then_some(owner);
         // `Show` returns an error when the user cancels.
-        dialog.Show(owner).ok()?;
+        FILE_DIALOG_OPEN.store(true, Ordering::Relaxed);
+        let shown = dialog.Show(owner);
+        FILE_DIALOG_OPEN.store(false, Ordering::Relaxed);
+        shown.ok()?;
         let item = dialog.GetResult().ok()?;
         let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let path = pwstr.to_string().ok()?;
@@ -150,4 +160,45 @@ pub fn watch_colours(notify: impl Fn() + Send + 'static) -> Option<UISettings> {
         }))
         .ok()?;
     Some(settings)
+}
+
+/// A file dialog runs its message loop on the UI thread, so its Esc reaches [`message_proc`].
+static FILE_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+static ON_ESCAPE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Calls `notify` each time Esc is pressed in the app's window. Call once, on the UI thread.
+///
+/// reactor 0.100 has no key events and its accelerators have no Escape, so this is a message
+/// hook. It is on the UI thread only, not system-wide, and lasts until the thread exits.
+pub fn watch_escape(notify: impl Fn() + Send + Sync + 'static) {
+    if ON_ESCAPE.set(Box::new(notify)).is_ok() {
+        // SAFETY: `message_proc` is a valid hook procedure for the life of the process.
+        let _ = unsafe {
+            SetWindowsHookExW(
+                WH_GETMESSAGE,
+                Some(message_proc),
+                None,
+                GetCurrentThreadId(),
+            )
+        };
+    }
+}
+
+unsafe extern "system" fn message_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A message is only looked at when it leaves the queue, or a peek would count it twice.
+    if code == HC_ACTION as i32 && wparam.0 == PM_REMOVE.0 as usize {
+        // SAFETY: for WH_GETMESSAGE, `lparam` points at the message being retrieved.
+        let msg = unsafe { &*(lparam.0 as *const MSG) };
+        // Bit 30 of a key message's lParam is set for an auto-repeat.
+        if msg.message == WM_KEYDOWN
+            && msg.wParam.0 == usize::from(VK_ESCAPE.0)
+            && msg.lParam.0 & (1 << 30) == 0
+            && !FILE_DIALOG_OPEN.load(Ordering::Relaxed)
+            && let Some(notify) = ON_ESCAPE.get()
+        {
+            notify();
+        }
+    }
+    // The message is passed on unchanged, so a text box still gets its own Esc handling.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }

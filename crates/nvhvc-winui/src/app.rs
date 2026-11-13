@@ -50,8 +50,13 @@ pub enum FocusTarget {
 /// Reported from worker threads through [`Events`].
 #[derive(Clone, Debug)]
 pub enum Event {
-    Progress { token: u32, stage: usize },
+    Progress {
+        token: u32,
+        stage: usize,
+    },
     ColoursChanged,
+    /// Esc was pressed in the window.
+    Escape,
 }
 
 #[derive(Clone)]
@@ -193,6 +198,10 @@ impl Component for Patcher {
         let colours = platform::watch_colours(move || {
             let _ = tx.send(Event::ColoursChanged);
         });
+        let tx = events.tx.clone();
+        platform::watch_escape(move || {
+            let _ = tx.send(Event::Escape);
+        });
         events.arm(cx);
         Self {
             palette: Palette::new(scheme_for(theme), accent),
@@ -248,6 +257,17 @@ impl Component for Patcher {
                             ColorScheme::Light
                         };
                         self.palette = Palette::new(scheme, self.accent);
+                    }
+                    // Closes the dialog on top. Preferences itself stays: Esc there also
+                    // closes an open container drop-down.
+                    Event::Escape => {
+                        if self.confirm_overwrite {
+                            self.confirm_overwrite = false;
+                        } else if self.about_open {
+                            self.about_open = false;
+                        } else {
+                            self.pref_edit = None;
+                        }
                     }
                 }
                 self.events.arm(cx);
