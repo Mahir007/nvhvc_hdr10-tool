@@ -150,7 +150,7 @@ fn print_tools(tools: &Toolset) {
             Resolution::Override(p) => ("found (custom)", p.display().to_string()),
             Resolution::Fallback(p) => ("found (install dir)", p.display().to_string()),
             Resolution::OverrideMissing(p) => ("MISSING (custom)", p.display().to_string()),
-            Resolution::NotFound => ("MISSING", tool.install_hint().to_string()),
+            Resolution::NotFound => ("MISSING", tool.missing_hint()),
         };
         println!("  {:<11} {:<20} {detail}", tool.label(), status);
     }

@@ -6,8 +6,8 @@ use nvhvc_core::probe::{ProbedHdr10, VideoInfo};
 pub use nvhvc_core::pipeline::Container;
 pub use nvhvc_core::uimodel::{
     DEFAULT_OUTPUT_SUFFIX, Draft, MATRIX_OPTS, META_ROWS, PRIMARIES_OPTS, TRANSFER_OPTS,
-    code_label, colour_summary, compact_path, default_output, file_name, human_size,
-    normalize_output_pick, row_overridden, row_value,
+    code_label, colour_summary, compact_path, container_pref_enabled, container_pref_note,
+    default_output, file_name, human_size, normalize_output_pick, row_overridden, row_value,
 };
 
 /// The output path the pipeline will actually write: the stored (picked or derived) path with

@@ -38,16 +38,20 @@ impl Tool {
         }
     }
 
-    /// A hint for the user on how to provide this tool when it is missing.
+    /// What to install when this tool is missing.
     pub fn install_hint(self) -> &'static str {
         match self {
-            Tool::Ffmpeg => "install ffmpeg or set a custom path in settings",
-            Tool::Ffprobe => "install ffmpeg (provides ffprobe) or set a custom path in settings",
-            Tool::Mkvmerge | Tool::Mkvextract => {
-                "install MKVToolNix or set a custom path in settings"
-            }
-            Tool::Mp4box => "install GPAC (MP4Box) or set a custom path in settings",
+            Tool::Ffmpeg => "install ffmpeg",
+            Tool::Ffprobe => "install ffmpeg (provides ffprobe)",
+            Tool::Mkvmerge | Tool::Mkvextract => "install MKVToolNix",
+            Tool::Mp4box => "install GPAC (MP4Box)",
         }
+    }
+
+    /// [`Tool::install_hint`] plus the custom-path alternative, for messages shown outside the
+    /// preferences. The tool's own preferences row has the path editor next to it.
+    pub fn missing_hint(self) -> String {
+        format!("{} or set a custom path in settings", self.install_hint())
     }
 
     /// Candidate executable base names to look for on `PATH` (case variations included).
@@ -247,13 +251,25 @@ impl Toolset {
     pub fn require(&self, tool: Tool) -> Result<&Path> {
         self.resolution(tool).path().ok_or(Error::ToolNotFound {
             tool: tool.label(),
-            hint: tool.install_hint(),
+            hint: tool.missing_hint(),
         })
     }
 
     /// Whether `tool` was found.
     pub fn has(&self, tool: Tool) -> bool {
         self.resolution(tool).is_found()
+    }
+
+    /// Replaces how `tool` was resolved.
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, tool: Tool, resolution: Resolution) {
+        match tool {
+            Tool::Ffmpeg => self.ffmpeg = resolution,
+            Tool::Ffprobe => self.ffprobe = resolution,
+            Tool::Mkvmerge => self.mkvmerge = resolution,
+            Tool::Mkvextract => self.mkvextract = resolution,
+            Tool::Mp4box => self.mp4box = resolution,
+        }
     }
 }
 
@@ -335,5 +351,9 @@ mod tests {
         let empty = Toolset::default();
         let err = empty.require(Tool::Ffmpeg).unwrap_err();
         assert!(matches!(err, Error::ToolNotFound { tool: "ffmpeg", .. }));
+        assert_eq!(
+            err.to_string(),
+            "could not find ffmpeg: install ffmpeg or set a custom path in settings"
+        );
     }
 }

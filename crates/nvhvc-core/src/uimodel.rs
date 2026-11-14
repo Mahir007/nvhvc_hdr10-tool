@@ -10,6 +10,7 @@ use crate::hevc::patch::Hdr10Metadata;
 use crate::hevc::sei::{ContentLightLevel, MasteringDisplay};
 use crate::naming;
 use crate::pipeline::Container;
+use crate::tools::{Tool, Toolset};
 
 /// The five editable metadata rows of the source stage.
 pub const META_ROWS: [&str; 5] = [
@@ -388,6 +389,24 @@ pub fn normalize_output_pick(picked: &str, container: Container) -> (String, Con
     }
 }
 
+/// The note under the default-container preference while MP4Box is missing. It replaces the
+/// Save as hint. A saved MP4 default gets its own wording: there is nothing to switch to.
+pub fn container_pref_note(tools: &Toolset, current: Container) -> Option<&'static str> {
+    if tools.has(Tool::Mp4box) {
+        None
+    } else if current == Container::Mp4 {
+        Some("MP4 output needs MP4Box")
+    } else {
+        Some("Switching to MP4 output needs MP4Box")
+    }
+}
+
+/// Whether the default-container preference can be changed. Without MP4Box it locks on
+/// Matroska. A saved MP4 default stays changeable, so the user can switch away from it.
+pub fn container_pref_enabled(tools: &Toolset, current: Container) -> bool {
+    tools.has(Tool::Mp4box) || current == Container::Mp4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +538,30 @@ mod tests {
             "encode [HDR10].mkv"
         );
         assert_eq!(p.parent().unwrap(), Path::new("/videos"));
+    }
+
+    #[test]
+    fn container_pref_locks_without_mp4box() {
+        let mut tools = Toolset::default();
+        assert_eq!(
+            container_pref_note(&tools, Container::Mkv),
+            Some("Switching to MP4 output needs MP4Box")
+        );
+        assert_eq!(
+            container_pref_note(&tools, Container::Mp4),
+            Some("MP4 output needs MP4Box")
+        );
+        assert!(!container_pref_enabled(&tools, Container::Mkv));
+        assert!(container_pref_enabled(&tools, Container::Mp4));
+
+        tools.set(
+            Tool::Mp4box,
+            crate::tools::Resolution::OnPath("/usr/bin/MP4Box".into()),
+        );
+        assert_eq!(container_pref_note(&tools, Container::Mkv), None);
+        assert_eq!(container_pref_note(&tools, Container::Mp4), None);
+        assert!(container_pref_enabled(&tools, Container::Mkv));
+        assert!(container_pref_enabled(&tools, Container::Mp4));
     }
 
     #[test]

@@ -1166,7 +1166,7 @@ fn stage_encode(p: &Patcher, cx: &Cx) -> (View, View) {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.missing_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         children.push(KeyedView::new(
@@ -1507,7 +1507,7 @@ fn prefs_overlay(p: &Patcher, cx: &Cx) -> View {
                 .content(StackPanel::new().keyed_children(rows)),
             section("Output"),
             card().content(StackPanel::new().children((
-                container_pref_row(pal, cx),
+                container_pref_row(pal, cx, &toolset),
                 divider(pal),
                 suffix_row(p, cx),
                 divider(pal),
@@ -1556,8 +1556,8 @@ fn prefs_overlay(p: &Patcher, cx: &Cx) -> View {
 }
 
 /// "Default output container": persisted on change; per-file switching happens in the Save as
-/// dialog instead.
-fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
+/// dialog instead. While MP4Box is missing the combo is greyed out and the hint says why.
+fn container_pref_row(pal: &Palette, cx: &Cx, toolset: &Toolset) -> View {
     let current = Container::from_setting(Settings::load().default_container.as_deref());
     let selected = Container::ALL
         .iter()
@@ -1570,6 +1570,37 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
     };
     // The hint is a few pixels wider than the text column beside the widest combo entry. It
     // spans both columns so that the excess runs into the column gap instead of being clipped.
+    let hint: View = match container_pref_note(toolset, current) {
+        Some(needs) => note(needs)
+            .horizontal_alignment(HorizontalAlignment::Left)
+            .grid_column(0)
+            .grid_column_span(2)
+            .grid_row(1)
+            .into(),
+        // "Save as" is set off like inline code (mono chip), mirroring the GTK subtitle's
+        // monospace run.
+        None => StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(4.0)
+            .horizontal_alignment(HorizontalAlignment::Left)
+            .grid_column(0)
+            .grid_column_span(2)
+            .grid_row(1)
+            .children((
+                note("You can still switch it per file in the"),
+                Border::new()
+                    .background(grey(26))
+                    .corner_radius(4.0)
+                    .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .content(
+                        caption(monospace("Save as"))
+                            .foreground(pal.text_secondary)
+                            .automation_name("Save as"),
+                    ),
+                note("dialog"),
+            )),
+    };
     Border::new()
         .padding(Thickness::new(16.0, 13.0, 16.0, 13.0))
         .content(
@@ -1580,32 +1611,11 @@ fn container_pref_row(pal: &Palette, cx: &Cx) -> View {
                 .row_spacing(1.0)
                 .children((
                     body("Default output container").grid_column(0).grid_row(0),
-                    // "Save as" is set off like inline code (mono chip), mirroring the GTK
-                    // subtitle's monospace run.
-                    StackPanel::new()
-                        .orientation(Orientation::Horizontal)
-                        .spacing(4.0)
-                        .horizontal_alignment(HorizontalAlignment::Left)
-                        .grid_column(0)
-                        .grid_column_span(2)
-                        .grid_row(1)
-                        .children((
-                            note("You can still switch it per file in the"),
-                            Border::new()
-                                .background(grey(26))
-                                .corner_radius(4.0)
-                                .padding(Thickness::new(5.0, 0.0, 5.0, 1.0))
-                                .vertical_alignment(VerticalAlignment::Center)
-                                .content(
-                                    caption(monospace("Save as"))
-                                        .foreground(pal.text_secondary)
-                                        .automation_name("Save as"),
-                                ),
-                            note("dialog"),
-                        )),
+                    hint,
                     ComboBox::new()
                         .items_source(Container::ALL.iter().map(|c| c.label()))
                         .selected_index(selected)
+                        .is_enabled(container_pref_enabled(toolset, current))
                         .on_selection_changed(cx.callback(|i: Option<usize>| {
                             Message::SetContainer(i.and_then(|i| Container::ALL.get(i).copied()))
                         }))
