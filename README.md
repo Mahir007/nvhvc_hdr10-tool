@@ -20,7 +20,7 @@ The stubs keep `cargo build` and `cargo test` working for the whole workspace on
 
 - Rust 1.92 or later, 1.95 for `nvhvc-winui`. Install it with rustup; distribution packages are
   often older.
-- Linux: GTK 4.18 or later, libadwaita 1.8 or later, a C toolchain and pkg-config.
+- Linux: GTK 4.18 or later, libadwaita 1.8 or later, pkg-config, and gcc as the linker.
 - Windows: Visual Studio 2022 Build Tools with the C++ workload (MSVC and the Windows SDK).
 - The media tools the pipeline runs. They're needed to run the app and the pipeline examples, not
   to build.
@@ -36,8 +36,6 @@ under `Program Files` on Windows.
 
 ## Windows setup
 
-Pick one package manager.
-
 winget:
 
 ```powershell
@@ -51,82 +49,70 @@ Chocolatey (elevated shell):
 choco install rustup.install git ffmpeg mkvtoolnix gpac visualstudio2022-workload-vctools
 ```
 
-Scoop:
+Scoop (it has no package for the Build Tools, so they come from the second winget command):
 
 ```powershell
 scoop bucket add extras
 scoop install rustup git ffmpeg mkvtoolnix gpac
 ```
 
-Scoop has no package for the Build Tools. Install them with the winget command above.
-
 Then, in a new terminal:
 
 ```powershell
 rustup default stable
-git clone https://github.com/Mahir007/nvhvc_hdr10-tool
-cd nvhvc_hdr10-tool
 ```
 
 ## Linux setup
 
-apt (Ubuntu 25.10 or later; Debian 13 ships libadwaita 1.7, so use Homebrew there):
+apt (Debian 14 or later, Ubuntu 25.10 or later):
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev ffmpeg mkvtoolnix
-```
-
-Ubuntu 25.10 and later have no gpac package. Get MP4Box from Homebrew (`brew install gpac`).
-
-dnf (Fedora 43 or later):
-
-```sh
-sudo dnf install gcc pkgconf-pkg-config gtk4-devel libadwaita-devel mkvtoolnix gpac
-sudo dnf install ffmpeg --allowerasing   # from RPM Fusion
-```
-
-Fedora's own `ffmpeg-free` leaves out HEVC, and the probe decodes HEVC frames. Enable
-[RPM Fusion](https://rpmfusion.org/Configuration) before the second command.
-
-pacman:
-
-```sh
-sudo pacman -S --needed base-devel rustup gtk4 libadwaita ffmpeg mkvtoolnix-cli gpac
-```
-
-For apt and dnf, install Rust from <https://rustup.rs>. Then:
-
-```sh
+sudo apt install gcc git rustup pkg-config libgtk-4-dev libadwaita-1-dev ffmpeg mkvtoolnix
 rustup default stable
-git clone https://github.com/Mahir007/nvhvc_hdr10-tool
-cd nvhvc_hdr10-tool
+```
+
+Neither has a gpac package. `brew install gpac` adds MP4Box.
+
+dnf (Fedora 43 or later, with [RPM Fusion](https://rpmfusion.org/Configuration) enabled):
+
+```sh
+sudo dnf install --allowerasing gcc git rustup gtk4-devel libadwaita-devel ffmpeg mkvtoolnix gpac
+rustup-init -y && . ~/.cargo/env
+```
+
+Fedora's own `ffmpeg-free` has no HEVC decoder, and the probe decodes HEVC frames.
+`--allowerasing` lets RPM Fusion's `ffmpeg` replace it.
+
+pacman (Arch):
+
+```sh
+sudo pacman -S --needed gcc git rustup pkgconf gtk4 libadwaita ffmpeg mkvtoolnix-cli gpac
+rustup default stable
 ```
 
 ### Homebrew
 
-Use Homebrew when the distribution's GTK or libadwaita is too old. The distribution's C compiler
-is still needed.
+Use Homebrew if your distribution ships a GTK older than 4.18 or a libadwaita older than 1.8.
+Homebrew's GTK needs glibc 2.38, and a compiler on an older glibc can't link it, so this installs
+Homebrew's glibc and compiler too. It uses `rust` rather than `rustup`, whose toolchain runs on
+the distribution's glibc and can't load the proc macros that Homebrew's compiler links.
 
 ```sh
-brew install rustup gtk4 libadwaita pkgconf ffmpeg mkvtoolnix gpac
-rustup default stable
+brew install glibc gcc rust gtk4 libadwaita pkgconf ffmpeg mkvtoolnix gpac
 ```
 
-Every cargo command then needs pkg-config pointed at Homebrew, and an rpath so the binary finds
-Homebrew's GTK at run time:
+Set this before the cargo commands in the next sections. `brew list --versions gcc` shows the
+version for `gcc-16`.
 
 ```sh
-B=$(brew --prefix)
-export PKG_CONFIG_PATH=$B/lib/pkgconfig:$B/share/pkgconfig
-export RUSTFLAGS="-C link-arg=-Wl,-rpath,$B/lib"
+export RUSTFLAGS="-C linker=gcc-16"
 ```
-
-Changing `RUSTFLAGS` rebuilds the whole target directory, so keep them the same for every crate
-you build into it.
 
 ## Building and running
 
 ```sh
+git clone https://github.com/Mahir007/nvhvc_hdr10-tool
+cd nvhvc_hdr10-tool
 cargo run -p nvhvc-gtk            # Linux GUI
 cargo run -p nvhvc-winui          # Windows GUI
 cargo run -p nvhvc-cli -- tools   # CLI; arguments go after --
@@ -148,7 +134,7 @@ cargo test --workspace
 
 The unit tests are in `nvhvc-core` and don't need the media tools.
 
-`nvhvc-winui` can be type-checked from Linux:
+With rustup, `nvhvc-winui` can be type-checked from Linux:
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
