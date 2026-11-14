@@ -71,7 +71,8 @@ sudo apt install gcc git rustup pkg-config libgtk-4-dev libadwaita-1-dev ffmpeg 
 rustup default stable
 ```
 
-Neither has a gpac package. `brew install gpac` adds MP4Box.
+Debian and Ubuntu don't package GPAC. For MP4 output, install [Homebrew](https://brew.sh) and run
+`brew install gpac`.
 
 dnf (Fedora 43 or later, with [RPM Fusion](https://rpmfusion.org/Configuration) enabled):
 
