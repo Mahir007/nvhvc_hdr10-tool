@@ -259,6 +259,18 @@ impl Toolset {
     pub fn has(&self, tool: Tool) -> bool {
         self.resolution(tool).is_found()
     }
+
+    /// Replaces how `tool` was resolved.
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, tool: Tool, resolution: Resolution) {
+        match tool {
+            Tool::Ffmpeg => self.ffmpeg = resolution,
+            Tool::Ffprobe => self.ffprobe = resolution,
+            Tool::Mkvmerge => self.mkvmerge = resolution,
+            Tool::Mkvextract => self.mkvextract = resolution,
+            Tool::Mp4box => self.mp4box = resolution,
+        }
+    }
 }
 
 /// Renders a path as a command-line argument, erroring if it is not valid UTF-8.
