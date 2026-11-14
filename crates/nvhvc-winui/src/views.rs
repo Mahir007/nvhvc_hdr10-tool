@@ -1166,7 +1166,7 @@ fn stage_encode(p: &Patcher, cx: &Cx) -> (View, View) {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.missing_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         children.push(KeyedView::new(

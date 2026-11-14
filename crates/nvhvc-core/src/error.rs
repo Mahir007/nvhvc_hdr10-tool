@@ -47,7 +47,7 @@ pub enum Error {
         /// The tool that was being looked for (e.g. "ffprobe").
         tool: &'static str,
         /// How to fix it (install / set a custom path).
-        hint: &'static str,
+        hint: String,
     },
 
     /// An external tool exited with a non-zero status.

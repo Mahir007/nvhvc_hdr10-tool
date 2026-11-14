@@ -956,7 +956,7 @@ pub fn stage_encode(ctx: &Rc<Ctx>) -> gtk::Widget {
     if !missing.is_empty() {
         let body = missing
             .iter()
-            .map(|t| format!("{}: {}", t.label(), t.install_hint()))
+            .map(|t| format!("{}: {}", t.label(), t.missing_hint()))
             .collect::<Vec<_>>()
             .join("\n");
         col.append(&banner_titled(
