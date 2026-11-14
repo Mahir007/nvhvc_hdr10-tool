@@ -8,6 +8,13 @@ use adw::prelude::*;
 use nvhvc_core::config::Settings;
 use nvhvc_core::pipeline::Container;
 use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
+use nvhvc_core::uimodel;
+
+/// The container row's subtitle while every container can be written. "Save as" renders like
+/// inline code (mono on a translucent grey run), matching the WinUI chip.
+const SAVE_AS_HINT: &str = "You can still switch it per file in the \
+    <span font_family=\"monospace\" background=\"#808080\" background_alpha=\"20%\"> Save as </span> \
+    dialog";
 
 /// Shows the Preferences dialog as a sheet inside `parent`. `on_default_container` fires when
 /// the default-container combo changes (the wizard applies it to the current run too, unless
@@ -21,14 +28,16 @@ pub fn show(parent: &adw::ApplicationWindow, on_default_container: impl Fn(Conta
         .build();
     let settings = Settings::load();
     let toolset = Toolset::discover(&settings.tool_overrides);
+    // Built before the tool rows: setting or clearing MP4Box's path unlocks or locks it.
+    let container = container_row(&settings, &toolset, on_default_container);
     for (tool, resolution) in toolset.all() {
-        tools_group.add(&tool_row(parent, tool, resolution));
+        tools_group.add(&tool_row(parent, tool, resolution, &container));
     }
     page.add(&tools_group);
 
     // --- Output ---
     let output_group = adw::PreferencesGroup::builder().title("Output").build();
-    output_group.add(&container_row(&settings, on_default_container));
+    output_group.add(&container);
     output_group.add(&suffix_row(parent, &settings));
     output_group.add(&folder_row(parent, &settings));
     page.add(&output_group);
@@ -44,6 +53,7 @@ fn tool_row(
     window: &adw::ApplicationWindow,
     tool: Tool,
     resolution: &Resolution,
+    container: &adw::ComboRow,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title(tool.label())
@@ -68,13 +78,20 @@ fn tool_row(
         let window = window.clone();
         let row = row.clone();
         let dot = dot.clone();
-        edit.connect_clicked(move |_| open_editor(&window, tool, &row, &dot));
+        let container = container.clone();
+        edit.connect_clicked(move |_| open_editor(&window, tool, &row, &dot, &container));
     }
     row
 }
 
 /// Opens a modal editor for a tool's custom path; on "Set" saves and refreshes the row in place.
-fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow, dot: &gtk::Box) {
+fn open_editor(
+    window: &adw::ApplicationWindow,
+    tool: Tool,
+    row: &adw::ActionRow,
+    dot: &gtk::Box,
+    container: &adw::ComboRow,
+) {
     let settings = Settings::load();
     let toolset = Toolset::discover(&settings.tool_overrides);
     // Prefer the saved custom override so a broken path stays visible/editable; otherwise show
@@ -109,6 +126,7 @@ fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow
     {
         let row = row.clone();
         let dot = dot.clone();
+        let container = container.clone();
         let entry = entry.clone();
         dialog.connect_response(None, move |_, response| {
             if response != "set" {
@@ -122,6 +140,7 @@ fn open_editor(window: &adw::ApplicationWindow, tool: Tool, row: &adw::ActionRow
             let res = toolset.resolution(tool);
             row.set_subtitle(&status_subtitle(tool, res));
             apply_dot(&dot, res);
+            sync_container_row(&container, &toolset);
         });
     }
     dialog.present(Some(window));
@@ -156,18 +175,17 @@ fn apply_dot(dot: &gtk::Box, resolution: &Resolution) {
 
 /// The "Default output container" combo row: persisted immediately on change and reported to
 /// the wizard via the callback. Per-file switching happens in the Save as dialog instead.
-fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -> adw::ComboRow {
+fn container_row(
+    settings: &Settings,
+    toolset: &Toolset,
+    on_change: impl Fn(Container) + 'static,
+) -> adw::ComboRow {
     let labels: Vec<&str> = Container::ALL.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
         .title("Default output container")
-        // "Save as" renders like inline code (mono on a translucent grey run), matching
-        // the WinUI chip. use-markup must be explicit: AdwComboRow switches it off
-        // (verified empirically; plain AdwActionRows default to markup on).
+        // use-markup must be explicit: AdwComboRow switches it off (verified empirically;
+        // plain AdwActionRows default to markup on).
         .use_markup(true)
-        .subtitle(
-            "You can still switch it per file in the <span font_family=\"monospace\" \
-             background=\"#808080\" background_alpha=\"20%\"> Save as </span> dialog",
-        )
         .model(&gtk::StringList::new(&labels))
         .build();
     let current = Container::from_setting(settings.default_container.as_deref());
@@ -177,6 +195,7 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
             .position(|&c| c == current)
             .unwrap_or(0) as u32,
     );
+    sync_container_row(&row, toolset);
     row.connect_selected_notify(move |row| {
         let Some(&container) = Container::ALL.get(row.selected() as usize) else {
             return;
@@ -184,9 +203,21 @@ fn container_row(settings: &Settings, on_change: impl Fn(Container) + 'static) -
         let mut settings = Settings::load();
         settings.default_container = Some(container.as_setting().to_owned());
         let _ = settings.save();
+        // Switching away from MP4 while MP4Box is missing locks the row.
+        sync_container_row(row, &Toolset::discover(&settings.tool_overrides));
         on_change(container);
     });
     row
+}
+
+/// Greys the container row out while MP4Box is missing and says why in the subtitle.
+fn sync_container_row(row: &adw::ComboRow, toolset: &Toolset) {
+    let current = Container::ALL
+        .get(row.selected() as usize)
+        .copied()
+        .unwrap_or(Container::Mkv);
+    row.set_sensitive(uimodel::container_pref_enabled(toolset, current));
+    row.set_subtitle(uimodel::container_pref_note(toolset, current).unwrap_or(SAVE_AS_HINT));
 }
 
 /// Subtitle for the default-output-filename-suffix row: the suffix in use.
