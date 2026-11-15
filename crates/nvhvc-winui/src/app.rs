@@ -38,13 +38,17 @@ pub struct PrefEdit {
     pub draft: String,
 }
 
-/// A button that is recreated when its colours change and needs keyboard focus handed back.
+/// A control to hand keyboard focus to: a button that is recreated when its colours change, or
+/// the control a dialog opens on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FocusTarget {
     Menu,
     Theme(ThemeMode),
     /// The text box of the Preferences editor dialog, so typing can start at once.
     PrefInput,
+    /// Cancel in the overwrite prompt. WinUI gives Enter to the focused button, which would
+    /// otherwise still be Patch HDR10 underneath.
+    OverwriteCancel,
 }
 
 /// Reported from worker threads through [`Events`].
@@ -183,6 +187,7 @@ pub struct Patcher {
     /// The Preferences editor dialog, while one is open.
     pub pref_edit: Option<PrefEdit>,
     pub pref_input_ref: ElementRef<TextBox>,
+    pub overwrite_cancel_ref: ElementRef<Button>,
 }
 
 impl Component for Patcher {
@@ -231,6 +236,7 @@ impl Component for Patcher {
             about_open: false,
             pref_edit: None,
             pref_input_ref: ElementRef::new(),
+            overwrite_cancel_ref: ElementRef::new(),
         }
     }
 
@@ -365,6 +371,7 @@ impl Component for Patcher {
                 let user_chosen = self.output_chosen_for.as_deref() == Some(output.as_str());
                 if !user_chosen && std::path::Path::new(&output).exists() {
                     self.confirm_overwrite = true;
+                    self.focus(FocusTarget::OverwriteCancel);
                 } else {
                     self.launch(cx);
                 }

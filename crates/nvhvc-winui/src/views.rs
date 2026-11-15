@@ -256,10 +256,11 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
     let on_scheme = cx.callback(Message::ColorScheme);
     cx.on_color_scheme(on_scheme);
     if let Some((serial, target)) = p.refocus {
-        let (menu, themes, input) = (
+        let (menu, themes, input, cancel) = (
             p.menu_ref.clone(),
             p.theme_refs.clone(),
             p.pref_input_ref.clone(),
+            p.overwrite_cancel_ref.clone(),
         );
         // Runs once per serial, after the control it names is on screen.
         cx.use_effect("refocus", serial, move || {
@@ -267,6 +268,7 @@ pub fn root(p: &Patcher, cx: &mut Cx) -> View {
                 FocusTarget::Menu => menu.request_focus(),
                 FocusTarget::Theme(mode) => themes[theme_index(mode)].request_focus(),
                 FocusTarget::PrefInput => input.request_focus(),
+                FocusTarget::OverwriteCancel => cancel.request_focus(),
             };
             None
         });
@@ -2031,6 +2033,7 @@ fn overwrite_overlay(p: &Patcher, cx: &Cx) -> View {
         .on_click(cx.message(Message::ConfirmReplace))
         .content(text("Replace", 14.0).font_weight(FontWeight::SEMI_BOLD));
     let cancel = Button::new()
+        .element_ref(&p.overwrite_cancel_ref)
         .horizontal_alignment(HorizontalAlignment::Stretch)
         .grid_column(1)
         // Cancel is the default, as in GTK: Enter replaces only with Replace focused.
