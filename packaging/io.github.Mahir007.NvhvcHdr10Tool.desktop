@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=HDR10 Patcher
+GenericName=HDR10 Metadata Patcher
+Comment=Add HDR10 metadata to an NVENC HEVC encode without re-encoding it
+Exec=nvhvc-gtk
+Icon=io.github.Mahir007.NvhvcHdr10Tool
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=HDR;HDR10;HEVC;H.265;NVENC;metadata;mastering display;remux;
+StartupNotify=true

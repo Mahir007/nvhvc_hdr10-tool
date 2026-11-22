@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder app icon: a film frame with a bright highlight. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3a67"/>
+      <stop offset="1" stop-color="#141b33"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff7a3d"/>
+      <stop offset="0.55" stop-color="#ffc94d"/>
+      <stop offset="1" stop-color="#fff6d6"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <!-- Film frame with sprocket holes. -->
+  <path fill="#e8ecf8" fill-rule="evenodd" d="M24 30h80a6 6 0 0 1 6 6v56a6 6 0 0 1-6 6H24a6 6 0 0 1-6-6V36a6 6 0 0 1 6-6zm6 12v44h68V42zM22 36v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zM102 36v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4zm0 9v4h4v-4z"/>
+  <!-- A bright peak rising out of a dark scene. -->
+  <path fill="#0f1529" d="M30 42h68v44H30z"/>
+  <path fill="url(#glow)" d="M30 86 46 70l10 8 16-22 10 12 16-14v32z"/>
+  <path fill="#fffbe8" d="M78 46l2.6 6.4L87 55l-6.4 2.6L78 64l-2.6-6.4L69 55l6.4-2.6z"/>
+</svg>
