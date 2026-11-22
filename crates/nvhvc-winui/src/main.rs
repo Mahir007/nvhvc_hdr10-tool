@@ -22,6 +22,13 @@ mod views;
 
 #[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-v")
+    {
+        platform::print_line(&format!("nvhvc-winui {}", nvhvc_core::VERSION));
+        return Ok(());
+    }
     windows_reactor::App::run_component::<app::Patcher>(())?;
     Ok(())
 }
