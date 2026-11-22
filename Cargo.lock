@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "nvhvc-cli"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "clap",
  "nvhvc-core",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "nvhvc-core"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "directories",
  "serde",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "nvhvc-gtk"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "nvhvc-winui"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "nvhvc-core",
  "windows",

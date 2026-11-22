@@ -19,7 +19,7 @@ use nvhvc_core::tools::{Overrides, Resolution, Tool, Toolset};
 
 /// Inject HDR10 metadata (SPS VUI + SEI) into an HEVC encode without re-encoding.
 #[derive(Parser)]
-#[command(name = "nvhvc", version, about)]
+#[command(name = "nvhvc", version = nvhvc_core::VERSION, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
