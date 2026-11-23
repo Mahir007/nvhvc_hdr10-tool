@@ -183,7 +183,7 @@ specific copy of a tool.
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), with the
 crate as the scope (`core`, `cli`, `gtk`, `winui`, or `gui` for both GUIs). A UI change goes into
 both GUIs. [CLAUDE.md](CLAUDE.md) has the full rules, and [CONTRIBUTING.md](CONTRIBUTING.md)
-covers CI.
+covers CI and packaging.
 
 ## License
 
