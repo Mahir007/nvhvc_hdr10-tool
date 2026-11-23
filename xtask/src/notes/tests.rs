@@ -115,16 +115,19 @@ fn downloads_follow_the_kinds_list() {
     r.files = vec![
         "nvhvc-1.0.0-beta.1+abc1234-linux-x86_64.tar.gz".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-windows-x64.msix".to_owned(),
+        "nvhvc-msix.cer".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-x86_64.flatpak".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-windows-x64.zip".to_owned(),
     ];
     r.readme =
         Some("# nvhvc\n\n```\n## Install in a code block\n```\n\n## Installing\n".to_owned());
     let notes = render(&r).unwrap();
-    let dl = format!("{BASE}/releases/download/v1.0.0-beta.1/nvhvc-1.0.0-beta.1%2Babc1234");
+    let release_dl = format!("{BASE}/releases/download/v1.0.0-beta.1");
+    let dl = format!("{release_dl}/nvhvc-1.0.0-beta.1%2Babc1234");
     let table = format!(
         "## Download\n\n| System | Download |\n| --- | --- |\n\
-         | Windows | [Portable zip]({dl}-windows-x64.zip) · [MSIX]({dl}-windows-x64.msix) |\n\
+         | Windows | [Portable zip]({dl}-windows-x64.zip) · [MSIX]({dl}-windows-x64.msix) · \
+         [MSIX certificate]({release_dl}/nvhvc-msix.cer) |\n\
          | Linux | [Flatpak]({dl}-x86_64.flatpak) · [Command line]({dl}-linux-x86_64.tar.gz) |\n\n\
          For how to install it, see [Installing]({BASE}/blob/v1.0.0-beta.1/README.md#installing) \
          in the README.\n\n## What's changed"
