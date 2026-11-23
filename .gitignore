@@ -27,3 +27,9 @@ rustc-ice-*.txt
 /scratch/
 *.hevc
 *.h265
+
+# Flatpak builds and the release files CI makes
+/.flatpak-builder/
+/build-flatpak/
+/packaging/flatpak/releases.xml
+/dist/
