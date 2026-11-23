@@ -61,6 +61,17 @@ project adds:
 - Stage 2 has no container row. The container comes from the preference or the Save as
   extension.
 
+## Packaging and releases
+
+- `CONTRIBUTING.md` describes CI, the Flatpak and MSIX builds, and how to release.
+- The source's version is `0.0.0-dev`. Builds take theirs from `NVHVC_VERSION`, and code that
+  acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
+  `X.Y.Z-beta.N+<sha7>`.
+- The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
+  system.
+- Keep home-folder paths out of commits, PRs and release notes.
+
 ## Development environment
 
 - Linux work (core, CLI, GTK, end-to-end runs) happens in the Debian WSL instance. Don't use the
