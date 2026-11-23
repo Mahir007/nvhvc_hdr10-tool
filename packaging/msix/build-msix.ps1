@@ -14,7 +14,7 @@ the package is unsigned, and the OID in its publisher lets Windows 11 install it
 Add-AppxPackage -AllowUnsigned.
 
 .EXAMPLE
-pwsh packaging/msix/build-msix.ps1 -Version 0.1.0-beta.1+abc1234 -BinDir target/msix/release -Out dist/nvhvc.msix
+pwsh packaging/msix/build-msix.ps1 -Version 1.0.0-beta.1+abc1234 -BinDir target/debug -Out dist/nvhvc.msix
 #>
 param(
     [Parameter(Mandatory)] [string] $Version,
@@ -74,6 +74,13 @@ New-Item -ItemType Directory -Path (Join-Path $layout 'Assets') | Out-Null
 
 foreach ($exe in 'nvhvc-winui.exe', 'nvhvc.exe') {
     Copy-Item -LiteralPath (Join-Path $BinDir $exe) -Destination $layout
+}
+# A fast build's debug info, so its backtraces have names. A release build has none.
+foreach ($pdb in 'nvhvc_winui.pdb', 'nvhvc.pdb') {
+    $path = Join-Path $BinDir $pdb
+    if (Test-Path -LiteralPath $path) {
+        Copy-Item -LiteralPath $path -Destination $layout
+    }
 }
 Copy-Item -Path (Join-Path $here 'Assets\*.png') -Destination (Join-Path $layout 'Assets')
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $here 'AppxManifest.xml.in')

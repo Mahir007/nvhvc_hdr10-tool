@@ -25,6 +25,8 @@ env:
   CARGO_TERM_COLOR: always
   # For nvhvc-gtk. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
   GTK_PACKAGES: libgtk-4-dev libadwaita-1-dev
+  # Packs the binaries of a release build.
+  UPX_VERSION: 5.3.0
 
 jobs:
   lint:
@@ -125,12 +127,31 @@ jobs:
       - name: Build
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
-        run: cargo build --release --locked -p nvhvc-cli --target x86_64-unknown-linux-musl
+        run: cargo build --profile "$PROFILE" --locked -p nvhvc-cli --target x86_64-unknown-linux-musl
+      - name: Cache UPX
+        if: env.PROFILE == 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/upx
+          key: upx-${{ env.UPX_VERSION }}-linux
+      - name: Install UPX
+        if: env.PROFILE == 'release'
+        run: |
+          if [ ! -x ~/upx/upx ]; then
+            curl -fsSL -o "$RUNNER_TEMP/upx.tar.xz" \
+              "https://github.com/upx/upx/releases/download/v$UPX_VERSION/upx-$UPX_VERSION-amd64_linux.tar.xz"
+            echo "79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1  $RUNNER_TEMP/upx.tar.xz" |
+              sha256sum -c -
+            mkdir -p ~/upx
+            tar -xJf "$RUNNER_TEMP/upx.tar.xz" -C ~/upx --strip-components=1
+          fi
+          echo "$HOME/upx" >> "$GITHUB_PATH"
       - name: Pack
         run: |
           name=nvhvc-$VERSION-linux-x86_64
           mkdir -p "stage/$name" dist
-          cp target/x86_64-unknown-linux-musl/release/nvhvc LICENSE README.md "stage/$name/"
+          cp "target/x86_64-unknown-linux-musl/$PROFILE_DIR/nvhvc" LICENSE README.md "stage/$name/"
+          if [ "$PROFILE" = release ]; then upx -q --best --lzma "stage/$name/nvhvc"; fi
           tar -C stage --sort=name --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
             --mtime="@$SOURCE_DATE_EPOCH" --format=gnu -cf - "$name" | gzip -9n > "dist/$name.tar.gz"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
@@ -180,26 +201,61 @@ jobs:
       - name: Build the portable apps
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
-        run: cargo build --release --locked -p nvhvc-cli -p nvhvc-winui
-      # The exes, the runtime files windows-reactor-setup copied beside them, and the licence.
+        run: cargo build --profile $env:PROFILE --locked -p nvhvc-cli -p nvhvc-winui
+      - name: Cache UPX
+        if: env.PROFILE == 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~\upx
+          key: upx-${{ env.UPX_VERSION }}-windows
+      - name: Install UPX
+        if: env.PROFILE == 'release'
+        run: |
+          $dir = Join-Path $HOME upx
+          if (-not (Test-Path "$dir\upx.exe")) {
+            $zip = Join-Path $env:RUNNER_TEMP upx.zip
+            Invoke-WebRequest "https://github.com/upx/upx/releases/download/v$env:UPX_VERSION/upx-$env:UPX_VERSION-win64.zip" `
+              -OutFile $zip
+            if ((Get-FileHash $zip).Hash -ne 'd127996c76615e431be810e9c8d2910dbe3dd400600c5c0c50276fc5a17a9705') {
+              throw "upx-$env:UPX_VERSION-win64.zip doesn't match its SHA-256"
+            }
+            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            Copy-Item "$env:RUNNER_TEMP\upx-$env:UPX_VERSION-win64\upx.exe" $dir
+          }
+          $dir >> $env:GITHUB_PATH
+      # The exes, the runtime files windows-reactor-setup copied beside them, and the licence. A
+      # fast build also has the exes' .pdb files, for backtraces.
       - name: Pack the zip
         run: |
           $name = "nvhvc-$env:VERSION-windows-x64"
           $stage = New-Item -ItemType Directory -Path "stage\$name"
           New-Item -ItemType Directory -Path dist | Out-Null
           $skipDirs = 'build', 'deps', 'examples', 'incremental', '.fingerprint'
-          Get-ChildItem target\release |
+          Get-ChildItem target\$env:PROFILE_DIR |
             Where-Object { -not ($_.PSIsContainer -and $_.Name -in $skipDirs) } |
-            Where-Object { $_.PSIsContainer -or $_.Extension -notin '.d', '.pdb', '.rlib' } |
+            Where-Object { $_.PSIsContainer -or $_.Extension -notin '.d', '.rlib' } |
             Where-Object { $_.Name -notlike '.cargo*' } |
             Copy-Item -Destination $stage -Recurse
           Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          if ($env:PROFILE -eq 'release') {
+            upx -q --best --lzma "$stage\nvhvc.exe" "$stage\nvhvc-winui.exe"
+            if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
+          }
           .github\scripts\pack-zip.ps1 -Source $stage -Out "dist\$name.zip" -Epoch $env:SOURCE_DATE_EPOCH
       - name: Build the MSIX app
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
           NVHVC_WINUI_RUNTIME: framework
-        run: cargo build --release --locked -p nvhvc-winui
+        run: |
+          cargo build --profile $env:PROFILE --locked -p nvhvc-winui
+          $bin = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP msix-bin)
+          Get-ChildItem "target\$env:PROFILE_DIR\*" -Include nvhvc.exe, nvhvc-winui.exe, nvhvc.pdb, nvhvc_winui.pdb |
+            Copy-Item -Destination $bin
+          if ($env:PROFILE -eq 'release') {
+            upx -q --best --lzma "$bin\nvhvc.exe" "$bin\nvhvc-winui.exe"
+            if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
+          }
       # Signed with the self-signed certificate in the secrets. A fork has no secrets, so its
       # MSIX is unsigned, but a release must be signed.
       - name: Pack the MSIX
@@ -216,7 +272,7 @@ jobs:
           } elseif ($env:RELEASE) {
             throw 'A release needs the MSIX_PFX and MSIX_PFX_PASSWORD secrets'
           }
-          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir target\release `
+          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir "$env:RUNNER_TEMP\msix-bin" `
             -Out "dist\nvhvc-$env:VERSION-windows-x64.msix" @sign
           if ($env:MSIX_PFX) { Remove-Item $pfx }
           "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
@@ -315,8 +371,12 @@ jobs:
           stamped=packaging/flatpak/stamped.yml
           # flatpak-builder leaves out .git, so the metainfo's releases are made here.
           python3 packaging/flatpak/metainfo-releases.py "$VERSION" > packaging/flatpak/releases.xml
-          sed "s/^\(        NVHVC_VERSION: \)0\.0\.0-dev$/\1$VERSION/" "$manifest" > "$stamped"
+          sed -e "s/^\(        NVHVC_VERSION: \)0\.0\.0-dev$/\1$VERSION/" \
+            -e "s/^\(        NVHVC_PROFILE: \)dev$/\1$PROFILE/" \
+            -e "s/^\(        NVHVC_PROFILE_DIR: \)debug$/\1$PROFILE_DIR/" "$manifest" > "$stamped"
           grep -qx "        NVHVC_VERSION: $VERSION" "$stamped"
+          grep -qx "        NVHVC_PROFILE: $PROFILE" "$stamped"
+          grep -qx "        NVHVC_PROFILE_DIR: $PROFILE_DIR" "$stamped"
           flatpak-builder --disable-rofiles-fuse --ccache --force-clean --default-branch=stable \
             --override-source-date-epoch="$SOURCE_DATE_EPOCH" "$RUNNER_TEMP/build" "$stamped"
       # Any branch saves, not only main, so a branch that changes the manifest pays for the

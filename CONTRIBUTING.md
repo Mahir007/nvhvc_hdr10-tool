@@ -34,6 +34,26 @@ MSIX versions are four numbers. The fourth orders the builds of one version, so 
 pre-release to the release works: `alpha.N` is N, `beta.N` is 100 + N, `rc.N` is 200 + N, and the
 release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
 
+## Build profiles
+
+`Cargo.toml` sets up two profiles, and CI picks one from the version:
+
+| Profile | Used for | What it does |
+| --- | --- | --- |
+| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The Windows zip and MSIX carry the exes' `.pdb` files, and the Flatpak keeps the debug info in its binaries. |
+| `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs the Linux CLI and the Windows exes, and CI runs the packed ones. |
+
+The fast profile is Cargo's own `dev` rather than a custom one. windows-reactor-setup finds the
+folder to copy the Windows App SDK runtime into by the profile's name, and only knows `debug` and
+`release`.
+
+UPX doesn't pack the Flatpak: its bundle is compressed already, and packed binaries would make
+OSTree's deltas between updates much larger. On Linux with glibc, which covers the tests and the
+Flatpak, Rust links with rust-lld by default. The musl CLI and the Windows builds keep their
+default linkers.
+
+Locally, `cargo build` builds the fast one and `cargo build --release` the other.
+
 ## Packaging
 
 ### Flatpak

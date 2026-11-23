@@ -134,18 +134,23 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/nvhvc/cargo
-        # CI replaces this with the version it builds.
+        # CI replaces these with the version it builds, that version's Cargo profile, and the
+        # profile's folder in target.
         NVHVC_VERSION: 0.0.0-dev
+        NVHVC_PROFILE: dev
+        NVHVC_PROFILE_DIR: debug
       # cargo downloads the crates in Cargo.lock.
       build-args:
         - --share=network
+      # A fast build keeps its debug info in the binaries, since the bundle leaves out the debug
+      # extension. A release build is stripped by cargo already.
+      no-debuginfo: true
     build-commands:
-      - cargo build --release --locked -p nvhvc-gtk -p nvhvc-cli
-      - install -Dm755 -t /app/bin target/release/nvhvc-gtk target/release/nvhvc
+      - cargo build --profile "$NVHVC_PROFILE" --locked -p nvhvc-gtk -p nvhvc-cli
+      - install -Dm755 -t /app/bin target/$NVHVC_PROFILE_DIR/nvhvc-gtk target/$NVHVC_PROFILE_DIR/nvhvc
       - install -Dm644 -t /app/share/applications packaging/io.github.Mahir007.NvhvcHdr10Tool.desktop
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
-      # releases.xml comes from `cargo xtask metainfo-releases`. A local build without it gets an
-      # empty list.
+      # releases.xml comes from metainfo-releases.py. A local build without it gets an empty list.
       - test -f packaging/flatpak/releases.xml || echo '  <releases/>' > packaging/flatpak/releases.xml
       - mkdir -p /app/share/metainfo
       - sed -e '/@RELEASES@/{r packaging/flatpak/releases.xml' -e 'd' -e '}'

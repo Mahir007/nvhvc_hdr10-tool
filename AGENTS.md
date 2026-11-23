@@ -68,6 +68,9 @@ project adds:
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.
 - The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- CI builds dev, alpha and beta versions and the tests with the fast profile, which is Cargo's
+  `dev`, and release candidates and releases with `release`. UPX packs the release builds of the CLI and the
+  Windows exes, not the Flatpak.
 - The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
   system.
 - The Flatpak build cache is saved on any branch whose manifest has no cache yet, not only on
@@ -230,6 +233,39 @@ rather than build it again.
 - Choose the next version from the commits since the previous final
   release: a breaking change bumps the major version (the minor before
   1.0.0), a `feat` the minor, anything else the patch.
+
+### Build profiles
+
+A project with a compile step has two build profiles. Define both in the
+project's build files (Cargo profiles, Makefile targets, .csproj
+configurations), so a local build can use either and the workflow only
+picks one.
+
+- The build job picks the profile from the version. `0.0.0-dev+<sha7>`,
+  alpha and beta builds use fast. Release candidates and final releases
+  use release. Tests always use fast.
+- fast: build time matters most. Binary size and speed don't.
+  - No optimisation: `-O0`, Rust's `dev` profile, .NET `Debug`. No LTO,
+    stripping or packing.
+  - Full debug info (`-g`, Rust `debug = true`), so backtraces and
+    debuggers work on any dev or pre-release build.
+  - Use incremental builds, parallel codegen and a faster linker (lld,
+    mold) where the toolchain supports them.
+  - Cache the build output, keyed like the toolchain cache.
+- release: small, fast binaries. Size comes first. Build time doesn't
+  matter.
+  - Optimise fully: `-O3`, Rust `opt-level = 3`. Add LTO across all code,
+    one codegen unit, and dead-code removal
+    (`-ffunction-sections -fdata-sections -Wl,--gc-sections`). Rust also
+    gets `panic = "abort"`.
+  - Strip everything. Don't build or ship debug info, symbol tables or
+    symbol files (`.pdb`, `.dSYM`, `.debug`). Go: `-trimpath -ldflags='-s -w'`.
+    Rust: `strip = true`, `debug = false`. C and C++: `-s`, or
+    `strip --strip-all`.
+  - Pack with UPX `--best --lzma`. Pin UPX and cache it like any other
+    tool. Skip packing on targets UPX doesn't support, and on macOS, where
+    UPX output breaks code signing and needs `--force-macos`. The check job
+    runs the packed binary, so a bad pack fails CI.
 
 ### ci.yml
 
