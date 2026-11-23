@@ -16,6 +16,8 @@ fn release(tag: &str) -> Release {
         tag: tag.to_owned(),
         repo: REPO.to_owned(),
         message: None,
+        readme: None,
+        files: Vec::new(),
         previous: None,
         commits: Vec::new(),
     }
@@ -24,6 +26,27 @@ fn release(tag: &str) -> Release {
 fn link(sha: char) -> String {
     let sha = sha.to_string().repeat(40);
     format!("([`{}`]({BASE}/commit/{sha}))", &sha[..7])
+}
+
+#[test]
+fn globs_match_whole_names() {
+    assert!(glob_matches(
+        "nvhvc-*-x86_64.flatpak",
+        "nvhvc-1.0.0-x86_64.flatpak"
+    ));
+    assert!(glob_matches(
+        "nvhvc-*-x86_64.flatpak",
+        "nvhvc-1.0.0-beta.1+abc1234-x86_64.flatpak"
+    ));
+    assert!(!glob_matches(
+        "nvhvc-*-x86_64.flatpak",
+        "nvhvc-1.0.0-x86_64.flatpak.sha256"
+    ));
+    assert!(!glob_matches(
+        "nvhvc-*-windows-x64.zip",
+        "other-1.0.0-windows-x64.zip"
+    ));
+    assert!(glob_matches("a*b*c", "aXbYc"));
 }
 
 #[test]
@@ -55,6 +78,15 @@ fn breaking_change_footer_runs_to_the_next_trailer() {
 }
 
 #[test]
+fn sha256_files_give_their_file_names() {
+    let text = "ab12  nvhvc-1.0.0-x86_64.flatpak\ncd34 *nvhvc-1.0.0-windows-x64.zip\n\n";
+    assert_eq!(
+        sha256_names(text),
+        ["nvhvc-1.0.0-x86_64.flatpak", "nvhvc-1.0.0-windows-x64.zip"]
+    );
+}
+
+#[test]
 fn pre_release_starts_with_a_warning() {
     let notes = render(&release("v1.2.0-beta.1")).unwrap();
     assert!(notes.starts_with(
@@ -75,6 +107,94 @@ fn tag_message_appears_without_its_first_line() {
 
     r.message = Some("v1.0.0\n".to_owned());
     assert!(render(&r).unwrap().starts_with("## What's changed"));
+}
+
+#[test]
+fn downloads_follow_the_kinds_list() {
+    let mut r = release("v1.0.0-beta.1");
+    r.files = vec![
+        "nvhvc-1.0.0-beta.1+abc1234-linux-x86_64.tar.gz".to_owned(),
+        "nvhvc-1.0.0-beta.1+abc1234-windows-x64.msix".to_owned(),
+        "nvhvc-1.0.0-beta.1+abc1234-x86_64.flatpak".to_owned(),
+        "nvhvc-1.0.0-beta.1+abc1234-windows-x64.zip".to_owned(),
+    ];
+    r.readme =
+        Some("# nvhvc\n\n```\n## Install in a code block\n```\n\n## Installing\n".to_owned());
+    let notes = render(&r).unwrap();
+    let dl = format!("{BASE}/releases/download/v1.0.0-beta.1/nvhvc-1.0.0-beta.1%2Babc1234");
+    let table = format!(
+        "## Download\n\n| System | Download |\n| --- | --- |\n\
+         | Windows | [Portable zip]({dl}-windows-x64.zip) · [MSIX]({dl}-windows-x64.msix) |\n\
+         | Linux | [Flatpak]({dl}-x86_64.flatpak) · [Command line]({dl}-linux-x86_64.tar.gz) |\n\n\
+         For how to install it, see [Installing]({BASE}/blob/v1.0.0-beta.1/README.md#installing) \
+         in the README.\n\n## What's changed"
+    );
+    assert!(notes.contains(&table), "{notes}");
+}
+
+#[test]
+fn a_row_with_one_file_keeps_its_link_text() {
+    let mut r = release("v1.0.0");
+    r.files = vec!["nvhvc-1.0.0-x86_64.flatpak".to_owned()];
+    let notes = render(&r).unwrap();
+    assert!(notes.contains(&format!(
+        "| Linux | [Flatpak]({BASE}/releases/download/v1.0.0/nvhvc-1.0.0-x86_64.flatpak) |"
+    )));
+    // No README heading about installing.
+    assert!(notes.contains(&format!(
+        "For how to install it, see the [README]({BASE}/blob/v1.0.0/README.md)."
+    )));
+}
+
+#[test]
+fn a_kind_without_link_text_shows_the_file_name() {
+    let kinds = [
+        Kind {
+            glob: "app-*.dmg",
+            system: System::MacOs,
+            text: None,
+        },
+        Kind {
+            glob: "app-*.apk",
+            system: System::Android,
+            text: Some("APK"),
+        },
+    ];
+    let files = vec!["app-1.apk".to_owned(), "app-1.dmg".to_owned()];
+    let rows = rows(&files, &kinds).unwrap();
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| (row.system, row.links.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (System::MacOs, vec![("app-1.dmg", "app-1.dmg")]),
+            (System::Android, vec![("APK", "app-1.apk")]),
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_file_is_an_error() {
+    let mut r = release("v1.0.0");
+    r.files = vec!["notes.txt".to_owned()];
+    assert!(render(&r).unwrap_err().contains("notes.txt"));
+}
+
+#[test]
+fn install_heading_is_the_first_one_about_installing() {
+    let readme = "# Title\n\n## Layout\n\n### Quick start\n\n## Installing\n";
+    assert_eq!(install_heading(readme).as_deref(), Some("Quick start"));
+    assert_eq!(
+        install_heading("## Downloads and setup ##\n").as_deref(),
+        Some("Downloads and setup")
+    );
+    assert_eq!(install_heading("#### Install\n## Usage\n"), None);
+    assert_eq!(
+        anchor("Quick start: Windows (MSIX)"),
+        "quick-start-windows-msix"
+    );
 }
 
 #[test]
@@ -163,6 +283,28 @@ fn a_revert_and_its_commit_are_left_out() {
     assert!(render(&r).unwrap().contains("- revert: feat: an old thing"));
 }
 
+#[test]
+fn checksums_follow_the_table() {
+    let mut r = release("v1.0.0");
+    r.files = vec![
+        "nvhvc-1.0.0-x86_64.flatpak".to_owned(),
+        "nvhvc-1.0.0-windows-x64.zip".to_owned(),
+        "nvhvc-1.0.0-windows-x64.msix".to_owned(),
+    ];
+    let notes = render(&r).unwrap();
+    let expected = "<details>\n<summary>🔒 SHA-256</summary>\n\n\
+        Download the file's `.sha256` too, and run its line in the folder with both. \
+        It prints `OK` or `True` if the file is intact.\n\n\
+        Windows, in PowerShell:\n\n```powershell\n\
+        $hash, $file = (Get-Content 'nvhvc-1.0.0-windows-x64.zip.sha256') -split '\\s+'; (Get-FileHash $file).Hash -eq $hash\n\
+        $hash, $file = (Get-Content 'nvhvc-1.0.0-windows-x64.msix.sha256') -split '\\s+'; (Get-FileHash $file).Hash -eq $hash\n\
+        ```\n\n\
+        Linux:\n\n```sh\nsha256sum -c 'nvhvc-1.0.0-x86_64.flatpak.sha256'\n```\n\n\
+        </details>\n";
+    assert!(notes.ends_with(expected), "{notes}");
+    assert!(!notes.contains("\n\n\n"));
+}
+
 /// A throwaway git repository, deleted when dropped.
 struct TempRepo {
     dir: std::path::PathBuf,
@@ -222,7 +364,7 @@ impl TempRepo {
     }
 
     fn release(&self, tag: &str) -> Release {
-        collect(&self.dir, tag, REPO).unwrap()
+        collect(&self.dir, tag, REPO, Vec::new()).unwrap()
     }
 }
 
@@ -288,9 +430,11 @@ fn ranges_come_from_the_previous_tag() {
 }
 
 #[test]
-fn the_tag_message_comes_from_the_tag() {
+fn the_tag_message_and_readme_come_from_the_tag() {
     let repo = TempRepo::new("message");
-    repo.commit("docs: start");
+    std::fs::write(repo.dir.join("README.md"), "# P\n\n## Install\n").unwrap();
+    repo.git(&["add", "README.md"]);
+    repo.commit("docs: add the README");
     repo.tag("v1.0.0", &["v1.0.0", "Summary line.\n\nMore detail."]);
     repo.commit("fix: later");
     repo.git(&["tag", "v1.0.1"]);
@@ -301,8 +445,9 @@ fn the_tag_message_comes_from_the_tag() {
         notes.starts_with("Summary line.\n\nMore detail.\n\n## What's changed"),
         "{notes}"
     );
+    assert_eq!(r.readme.as_deref(), Some("# P\n\n## Install\n"));
 
     // A lightweight tag has no message of its own.
     assert_eq!(repo.release("v1.0.1").message, None);
-    assert!(collect(&repo.dir, "v9.9.9", REPO).is_err());
+    assert!(collect(&repo.dir, "v9.9.9", REPO, Vec::new()).is_err());
 }
