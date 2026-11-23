@@ -200,17 +200,33 @@ jobs:
           NVHVC_VERSION: ${{ env.VERSION }}
           NVHVC_WINUI_RUNTIME: framework
         run: cargo build --release --locked -p nvhvc-winui
+      # Signed with the self-signed certificate in the secrets. A fork has no secrets, so its
+      # MSIX is unsigned, but a release must be signed.
       - name: Pack the MSIX
+        env:
+          MSIX_PFX: ${{ secrets.MSIX_PFX }}
+          MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+          RELEASE: ${{ inputs.version }}
         run: |
+          $sign = @{}
+          if ($env:MSIX_PFX) {
+            $pfx = Join-Path $env:RUNNER_TEMP msix.pfx
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX))
+            $sign = @{ Pfx = $pfx; Certificate = 'dist\nvhvc-msix.cer' }
+          } elseif ($env:RELEASE) {
+            throw 'A release needs the MSIX_PFX and MSIX_PFX_PASSWORD secrets'
+          }
           $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir target\release `
-            -Out "dist\nvhvc-$env:VERSION-windows-x64.msix"
+            -Out "dist\nvhvc-$env:VERSION-windows-x64.msix" @sign
+          if ($env:MSIX_PFX) { Remove-Item $pfx }
           "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
       - name: Checksums
         shell: bash
         run: |
           cd dist
-          for f in *.zip *.msix; do sha256sum "$f" > "$f.sha256"; done
-          ../.github/scripts/summary.sh ./*.zip ./*.msix >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          for f in *.zip *.msix *.cer; do sha256sum "$f" > "$f.sha256"; done
+          ../.github/scripts/summary.sh ./*.zip ./*.msix ./*.cer >> "$GITHUB_STEP_SUMMARY"
       - name: Check the zip
         run: |
           $dir = Join-Path $env:RUNNER_TEMP portable
@@ -225,8 +241,8 @@ jobs:
           $out = & "$dir\nvhvc-winui.exe" --version | Out-String
           if ($out.Trim() -ne "nvhvc-winui $env:VERSION") { throw "nvhvc-winui.exe --version: $out" }
           .github\scripts\check-window.ps1 -Exe "$dir\nvhvc-winui.exe"
-      # The runner is an admin, which an unsigned package needs. The runtime framework comes from
-      # the Windows App SDK's own package, as winget's installer would put it there.
+      # The runner is an admin, which trusting the certificate needs. The runtime framework comes
+      # from the Windows App SDK's own package, as winget's installer would put it there.
       - name: Check the MSIX
         run: |
           $runtime = Join-Path $env:RUNNER_TEMP runtime
@@ -234,7 +250,16 @@ jobs:
             -OutFile "$runtime.zip"
           Expand-Archive "$runtime.zip" -DestinationPath $runtime
           Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
-          Add-AppxPackage -Path "dist\nvhvc-$env:VERSION-windows-x64.msix" -AllowUnsigned
+          $msix = "dist\nvhvc-$env:VERSION-windows-x64.msix"
+          if (Test-Path dist\nvhvc-msix.cer) {
+            Import-Certificate -FilePath dist\nvhvc-msix.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople |
+              Out-Null
+            $signature = Get-AuthenticodeSignature $msix
+            if ($signature.Status -ne 'Valid') { throw "$msix's signature is $($signature.Status)" }
+            Add-AppxPackage -Path $msix
+          } else {
+            Add-AppxPackage -Path $msix -AllowUnsigned
+          }
           $package = Get-AppxPackage Mahir007.NvhvcHdr10Tool
           if ($package.Version -ne $env:MSIX_VERSION) { throw "installed $($package.Version), not $env:MSIX_VERSION" }
           $out = & "$env:LOCALAPPDATA\Microsoft\WindowsApps\nvhvc.exe" --version
@@ -246,6 +271,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*.msix
+            dist/*.cer
             dist/*.sha256
           retention-days: 1
           if-no-files-found: error

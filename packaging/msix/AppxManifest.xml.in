@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- build-msix.ps1 replaces @VERSION@. The package isn't signed: the OID in Publisher marks it as
-     unsigned, which Windows 11 installs with Add-AppxPackage -AllowUnsigned. -->
+<!-- build-msix.ps1 replaces @VERSION@ and @PUBLISHER@. -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -10,7 +9,7 @@
   IgnorableNamespaces="uap uap5 desktop4 rescap">
   <Identity
     Name="Mahir007.NvhvcHdr10Tool"
-    Publisher="CN=Mahir007, OID.2.25.311729368913984317654407730594956997722=1"
+    Publisher="@PUBLISHER@"
     Version="@VERSION@"
     ProcessorArchitecture="x64" />
   <Properties>

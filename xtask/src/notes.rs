@@ -27,6 +27,11 @@ const KINDS: &[Kind] = &[
         text: Some("MSIX"),
     },
     Kind {
+        glob: "nvhvc-msix.cer",
+        system: System::Windows,
+        text: Some("MSIX certificate"),
+    },
+    Kind {
         glob: "nvhvc-*-x86_64.flatpak",
         system: System::Linux,
         text: Some("Flatpak"),

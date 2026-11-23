@@ -29,6 +29,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       version: ${{ needs.version.outputs.version }}
+    # For signing the MSIX.
+    secrets: inherit
 
   release:
     needs: [version, ci]
@@ -70,6 +72,7 @@ jobs:
           subject-path: |
             release/*.zip
             release/*.msix
+            release/*.cer
             release/*.flatpak
             release/*.tar.gz
       - name: Publish
