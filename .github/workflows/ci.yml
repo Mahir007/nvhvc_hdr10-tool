@@ -20,6 +20,7 @@ permissions:
   contents: read
 
 env:
+  APP_ID: io.github.Mahir007.NvhvcHdr10Tool
   RUST_VERSION: 1.100.0
   CARGO_TERM_COLOR: always
   # For nvhvc-gtk. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
@@ -35,12 +36,15 @@ jobs:
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
       - name: shellcheck
         run: git ls-files -z '*.sh' | xargs -0 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0
+      - name: ruff
+        run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/astral-sh/ruff:0.17.6 check --no-cache .
       - name: Install packages
         run: |
           sudo apt-get update
           # GTK_PACKAGES is a list, so it's split on purpose.
           # shellcheck disable=SC2086
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $GTK_PACKAGES
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            $GTK_PACKAGES desktop-file-utils appstream
       - name: Install Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt \
@@ -59,6 +63,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: clippy for Windows
         run: cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc --locked -- -D warnings
+      - name: Desktop file and metainfo
+        run: |
+          desktop-file-validate "packaging/$APP_ID.desktop"
+          python3 packaging/flatpak/metainfo-releases.py 0.0.0-dev > "$RUNNER_TEMP/releases.xml"
+          sed -e "/@RELEASES@/{r $RUNNER_TEMP/releases.xml" -e 'd' -e '}' \
+            "packaging/$APP_ID.metainfo.xml.in" > "$RUNNER_TEMP/$APP_ID.metainfo.xml"
+          appstreamcli validate --no-net --explain "$RUNNER_TEMP/$APP_ID.metainfo.xml"
 
   test:
     name: test-${{ matrix.system }}
@@ -238,3 +249,109 @@ jobs:
             dist/*.sha256
           retention-days: 1
           if-no-files-found: error
+
+  # The Flatpak, built in the GNOME SDK the manifest names. The bundle is the same file for the
+  # same commit: the build and the OSTree commit use the commit's time, and so does the bundle's
+  # own timestamp, which fix-bundle-time.py sets.
+  build-flatpak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      # bubblewrap, which flatpak-builder runs the build in, needs it.
+      options: --privileged
+    steps:
+      # The metainfo's releases come from the tags.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install the Rust extension
+        run: flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//26.08
+      # The bundled tools take most of an hour to build, so their results are kept. A manifest
+      # change starts again from the newest cache.
+      - name: Restore the build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-
+            flatpak-builder-gnome-51-
+      - name: Build
+        run: |
+          manifest=packaging/flatpak/$APP_ID.yml
+          stamped=packaging/flatpak/stamped.yml
+          # flatpak-builder leaves out .git, so the metainfo's releases are made here.
+          python3 packaging/flatpak/metainfo-releases.py "$VERSION" > packaging/flatpak/releases.xml
+          sed "s/^\(        NVHVC_VERSION: \)0\.0\.0-dev$/\1$VERSION/" "$manifest" > "$stamped"
+          grep -qx "        NVHVC_VERSION: $VERSION" "$stamped"
+          flatpak-builder --disable-rofiles-fuse --ccache --force-clean --default-branch=stable \
+            --override-source-date-epoch="$SOURCE_DATE_EPOCH" "$RUNNER_TEMP/build" "$stamped"
+      - name: Save the build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+      - name: Bundle
+        run: |
+          bundle=nvhvc-$VERSION-x86_64.flatpak
+          mkdir dist
+          flatpak build-export --timestamp="@$SOURCE_DATE_EPOCH" --exclude='/lib/debug/*' \
+            "$RUNNER_TEMP/repo" "$RUNNER_TEMP/build" stable
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            "$RUNNER_TEMP/repo" "dist/$bundle" "$APP_ID" stable
+          python3 .github/scripts/fix-bundle-time.py "dist/$bundle"
+          (cd dist && sha256sum "$bundle" > "$bundle.sha256")
+          .github/scripts/summary.sh "dist/$bundle" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-flatpak
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Installs the bundle on a stock system, the way a user would, so the GNOME runtime comes from
+  # Flathub through the bundle's runtime repo.
+  check-flatpak:
+    needs: build-flatpak
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-flatpak
+          path: dist
+      - name: Install flatpak
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends flatpak dbus-daemon
+      - name: Check the bundle
+        run: |
+          cd dist
+          sha256sum -c ./*.flatpak.sha256
+          flatpak install --user -y --noninteractive ./*.flatpak
+          # The runner has no session bus, and flatpak needs one for the app's D-Bus proxy.
+          out=$(dbus-run-session -- flatpak run "$APP_ID" --version)
+          echo "$out"
+          [ "$out" = "nvhvc-gtk $VERSION" ]
+          out=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" --version)
+          echo "$out"
+          [ "$out" = "nvhvc $VERSION" ]
+          # Every tool the pipeline runs is in the bundle.
+          tools=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" tools)
+          echo "$tools"
+          [ "$(grep -cE 'found \(PATH\) +/app/bin/' <<< "$tools")" = 5 ]
