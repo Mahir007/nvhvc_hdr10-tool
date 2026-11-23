@@ -1,10 +1,89 @@
 //! Release notes for a tag, in this order: a pre-release warning, the rest of the tag's message,
-//! and the changes since the previous release.
+//! the downloads, the changes since the previous release, and how to check the downloads.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
+
+/// One kind of file a release ships. Files matching `glob` go in their `system`'s row of the
+/// download table, as a link reading `text`, or the file's name when there's none.
+struct Kind {
+    glob: &'static str,
+    system: System,
+    text: Option<&'static str>,
+}
+
+/// The files nvhvc releases, in the order the table lists them.
+const KINDS: &[Kind] = &[
+    Kind {
+        glob: "nvhvc-*-windows-x64.zip",
+        system: System::Windows,
+        text: Some("Portable zip"),
+    },
+    Kind {
+        glob: "nvhvc-*-windows-x64.msix",
+        system: System::Windows,
+        text: Some("MSIX"),
+    },
+    Kind {
+        glob: "nvhvc-*-x86_64.flatpak",
+        system: System::Linux,
+        text: Some("Flatpak"),
+    },
+    Kind {
+        glob: "nvhvc-*-linux-x86_64.tar.gz",
+        system: System::Linux,
+        text: Some("Command line"),
+    },
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)] // nvhvc ships no macOS or Android files.
+enum System {
+    Windows,
+    MacOs,
+    Linux,
+    Android,
+}
+
+impl System {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows",
+            Self::MacOs => "macOS",
+            Self::Linux => "Linux",
+            Self::Android => "Android",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows, in PowerShell:",
+            Self::MacOs => "macOS:",
+            Self::Linux => "Linux:",
+            Self::Android => "Android:",
+        }
+    }
+
+    fn language(self) -> &'static str {
+        match self {
+            Self::Windows => "powershell",
+            Self::MacOs | Self::Linux | Self::Android => "sh",
+        }
+    }
+
+    fn check(self, file: &str) -> String {
+        match self {
+            Self::Windows => format!(
+                "$hash, $file = (Get-Content '{file}.sha256') -split '\\s+'; \
+                 (Get-FileHash $file).Hash -eq $hash"
+            ),
+            Self::MacOs => format!("shasum -a 256 -c '{file}.sha256'"),
+            Self::Linux | Self::Android => format!("sha256sum -c '{file}.sha256'"),
+        }
+    }
+}
 
 const TYPES: &[&str] = &[
     "feat", "fix", "perf", "docs", "refactor", "style", "test", "ci", "build", "chore", "revert",
@@ -33,6 +112,10 @@ pub struct Release {
     pub repo: String,
     /// The annotated tag's message, if the tag has one.
     pub message: Option<String>,
+    /// `README.md` at the tag.
+    pub readme: Option<String>,
+    /// The archive names the `.sha256` files list.
+    pub files: Vec<String>,
     /// The tag the changes are counted from.
     pub previous: Option<String>,
     /// The commits since `previous`, oldest first, without merges.
@@ -40,8 +123,22 @@ pub struct Release {
 }
 
 /// Reads the release from the git repository in the current folder and writes its notes.
-pub fn from_git(tag: &str, repo: &str) -> Result<String, String> {
-    render(&collect(Path::new("."), tag, repo)?)
+pub fn from_git(tag: &str, repo: &str, sha256_files: &[String]) -> Result<String, String> {
+    let mut files = Vec::new();
+    for path in sha256_files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("can't read {path}: {e}"))?;
+        files.extend(sha256_names(&text));
+    }
+    render(&collect(Path::new("."), tag, repo, files)?)
+}
+
+/// The file names in `sha256sum` output.
+fn sha256_names(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .map(|(_, name)| name.trim().trim_start_matches('*').to_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -62,7 +159,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// A pre-release counts from the previous tag of any kind, a release from the previous release.
-fn collect(dir: &Path, tag: &str, repo: &str) -> Result<Release, String> {
+fn collect(dir: &Path, tag: &str, repo: &str, files: Vec<String>) -> Result<Release, String> {
     let tag_ref = format!("refs/tags/{tag}");
     git(dir, &["rev-parse", "--verify", "--quiet", &tag_ref])
         .map_err(|_| format!("there's no tag {tag}"))?;
@@ -119,11 +216,14 @@ fn collect(dir: &Path, tag: &str, repo: &str) -> Result<Release, String> {
     } else {
         None
     };
+    let readme = git(dir, &["show", &format!("{tag}:README.md")]).ok();
 
     Ok(Release {
         tag: tag.to_owned(),
         repo: repo.to_owned(),
         message,
+        readme,
+        files,
         previous,
         commits,
     })
@@ -147,7 +247,14 @@ pub fn render(release: &Release) -> Result<String, String> {
     {
         parts.push(summary);
     }
+    let rows = rows(&release.files, KINDS)?;
+    if !rows.is_empty() {
+        parts.push(downloads(&rows, release, &base));
+    }
     parts.push(changes(release, &base));
+    if !rows.is_empty() {
+        parts.push(checksums(&rows));
+    }
     Ok(parts.join("\n\n") + "\n")
 }
 
@@ -156,6 +263,137 @@ fn message_after_first_line(message: &str) -> Option<String> {
     let text = rest.join("\n");
     let text = text.trim_matches('\n').trim_end();
     (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// A system's row of the download table, with its links as (text, file name).
+struct Row<'a> {
+    system: System,
+    links: Vec<(&'a str, &'a str)>,
+}
+
+fn rows<'a>(files: &'a [String], kinds: &'a [Kind]) -> Result<Vec<Row<'a>>, String> {
+    let mut matched = Vec::new();
+    for file in files {
+        let kind = kinds
+            .iter()
+            .position(|kind| glob_matches(kind.glob, file))
+            .ok_or_else(|| format!("{file} isn't a kind of file the release notes know"))?;
+        matched.push((kind, file.as_str()));
+    }
+    matched.sort();
+    let mut rows: Vec<Row> = Vec::new();
+    for (kind, file) in matched {
+        let kind = &kinds[kind];
+        let link = (kind.text.unwrap_or(file), file);
+        match rows.iter_mut().find(|row| row.system == kind.system) {
+            Some(row) => row.links.push(link),
+            None => rows.push(Row {
+                system: kind.system,
+                links: vec![link],
+            }),
+        }
+    }
+    Ok(rows)
+}
+
+/// `*` matches any run of characters, everything else matches itself.
+fn glob_matches(glob: &str, name: &str) -> bool {
+    match glob.split_once('*') {
+        None => glob == name,
+        Some((head, tail)) => {
+            let Some(rest) = name.strip_prefix(head) else {
+                return false;
+            };
+            (0..=rest.len())
+                .filter(|&i| rest.is_char_boundary(i))
+                .any(|i| glob_matches(tail, &rest[i..]))
+        }
+    }
+}
+
+fn downloads(rows: &[Row], release: &Release, base: &str) -> String {
+    let mut out = String::from("## Download\n\n| System | Download |\n| --- | --- |");
+    for row in rows {
+        let links: Vec<String> = row
+            .links
+            .iter()
+            .map(|(text, file)| {
+                format!(
+                    "[{text}]({base}/releases/download/{}/{})",
+                    release.tag,
+                    percent_encode(file)
+                )
+            })
+            .collect();
+        write!(out, "\n| {} | {} |", row.system.name(), links.join(" · ")).unwrap();
+    }
+    let readme = format!("{base}/blob/{}/README.md", release.tag);
+    match release.readme.as_deref().and_then(install_heading) {
+        Some(heading) => write!(
+            out,
+            "\n\nFor how to install it, see [{heading}]({readme}#{}) in the README.",
+            anchor(&heading)
+        ),
+        None => write!(
+            out,
+            "\n\nFor how to install it, see the [README]({readme})."
+        ),
+    }
+    .unwrap();
+    out
+}
+
+/// Keeps a file name intact in a URL path; `+` and the like are encoded.
+fn percent_encode(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            write!(out, "%{byte:02X}").unwrap();
+        }
+    }
+    out
+}
+
+/// The README's first `##` or `###` heading about a quick start, installing or downloading.
+fn install_heading(readme: &str) -> Option<String> {
+    let mut fenced = false;
+    for line in readme.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let Some(text) = line
+            .strip_prefix("### ")
+            .or_else(|| line.strip_prefix("## "))
+        else {
+            continue;
+        };
+        let text = text.trim().trim_end_matches('#').trim();
+        let lower = text.to_lowercase();
+        if ["quick start", "quickstart", "install", "download"]
+            .iter()
+            .any(|word| lower.contains(word))
+        {
+            return Some(text.to_owned());
+        }
+    }
+    None
+}
+
+/// The anchor GitHub gives a heading.
+fn anchor(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
 }
 
 struct Subject<'a> {
@@ -317,6 +555,30 @@ fn changes(release: &Release, base: &str) -> String {
         ),
     }
     .unwrap();
+    out
+}
+
+fn checksums(rows: &[Row]) -> String {
+    let mut out = String::from(
+        "<details>\n<summary>🔒 SHA-256</summary>\n\nDownload the file's `.sha256` too, and run \
+         its line in the folder with both. It prints `OK` or `True` if the file is intact.",
+    );
+    for row in rows {
+        let lines: Vec<String> = row
+            .links
+            .iter()
+            .map(|(_, file)| row.system.check(file))
+            .collect();
+        write!(
+            out,
+            "\n\n{}\n\n```{}\n{}\n```",
+            row.system.label(),
+            row.system.language(),
+            lines.join("\n")
+        )
+        .unwrap();
+    }
+    out.push_str("\n\n</details>");
     out
 }
 
