@@ -15,20 +15,22 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 
 ## Git and pull requests
 
-- Every commit follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
-  `<type>(<scope>)!: <description>`, lower-case type, imperative description, no trailing period.
-- Types: `feat`, `fix`, `perf`, `refactor`, `style` (formatting only), `test`, `docs`, `build`
-  (manifests, lockfile, build.rs, dependency bumps), `ci`, `chore` (repo housekeeping such as
-  `.gitattributes`), `revert`.
-- Scopes: `core`, `cli`, `gtk`, `winui`, or `gui` for a change that lands in both GUIs together.
-  No scope for repo-wide changes.
+The owner's global commit rules apply. `AGENTS.md` includes them under Commit messages. This
+project adds:
+
+- Descriptions have no trailing period.
+- `style` is for formatting only, `build` for manifests, the lockfile, `build.rs` and dependency
+  bumps, and `chore` for repo housekeeping such as `.gitattributes`.
+- Scopes: `core`, `cli`, `gtk`, `winui`, `gui` for a change that lands in both GUIs together,
+  `packaging` for the MSIX and Flatpak files, and `contributing` for contributor docs. No scope
+  for repo-wide changes.
 - A change that fits more than one type is split into one commit per type. Keep each commit
   building: land a core API before the GUI or CLI commit that uses it.
-- Breaking changes get `!` and a `BREAKING CHANGE:` footer saying what to do. `Co-Authored-By:`
-  stays the last trailer.
+- `Co-Authored-By:` stays the last trailer.
 - Work lands on `main` through pull requests. Until 1.0, PRs are merged with a merge commit, not
   squashed or rebased, so each commit stays on `main` as written. PR titles are milestone names
-  (`M10: ...`), matching the earlier PRs.
+  (`M10: ...`), matching the earlier PRs. This overrides the global rule that a PR title follows
+  Conventional Commits.
 - From 1.0 on, PRs are squash-merged. The PR title becomes the commit subject, so it follows
   Conventional Commits and the milestone name moves to the PR body.
 

@@ -12,20 +12,22 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 
 ## Git and pull requests
 
-- Every commit follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
-  `<type>(<scope>)!: <description>`, lower-case type, imperative description, no trailing period.
-- Types: `feat`, `fix`, `perf`, `refactor`, `style` (formatting only), `test`, `docs`, `build`
-  (manifests, lockfile, build.rs, dependency bumps), `ci`, `chore` (repo housekeeping such as
-  `.gitattributes`), `revert`.
-- Scopes: `core`, `cli`, `gtk`, `winui`, or `gui` for a change that lands in both GUIs together.
-  No scope for repo-wide changes.
+The owner's global commit rules apply. `AGENTS.md` includes them under Commit messages. This
+project adds:
+
+- Descriptions have no trailing period.
+- `style` is for formatting only, `build` for manifests, the lockfile, `build.rs` and dependency
+  bumps, and `chore` for repo housekeeping such as `.gitattributes`.
+- Scopes: `core`, `cli`, `gtk`, `winui`, `gui` for a change that lands in both GUIs together,
+  `packaging` for the MSIX and Flatpak files, and `contributing` for contributor docs. No scope
+  for repo-wide changes.
 - A change that fits more than one type is split into one commit per type. Keep each commit
   building: land a core API before the GUI or CLI commit that uses it.
-- Breaking changes get `!` and a `BREAKING CHANGE:` footer saying what to do. `Co-Authored-By:`
-  stays the last trailer.
+- `Co-Authored-By:` stays the last trailer.
 - Work lands on `main` through pull requests. Until 1.0, PRs are merged with a merge commit, not
   squashed or rebased, so each commit stays on `main` as written. PR titles are milestone names
-  (`M10: ...`), matching the earlier PRs.
+  (`M10: ...`), matching the earlier PRs. This overrides the global rule that a PR title follows
+  Conventional Commits.
 - From 1.0 on, PRs are squash-merged. The PR title becomes the commit subject, so it follows
   Conventional Commits and the milestone name moves to the PR body.
 
@@ -159,10 +161,29 @@ Write like a person documenting their own tool, not like a product page.
   keys) unless a user would act on them.
 - Check any claim in the docs against the code before writing it.
 
-## Commit message bodies
+## Commit messages
 
-The same rules apply. A body says why the change was made: the cause, the
-constraint, or a behaviour change the diff doesn't make obvious.
+Use [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
+unless the project or the user says otherwise.
+
+- Types are `feat`, `fix`, `perf`, `docs`, `refactor`, `style`, `test`,
+  `ci`, `build`, `chore` and `revert`.
+- `feat` and `fix` are for changes users see. A change to tests, CI or the
+  build uses `test`, `ci` or `build`, even when it adds or fixes something.
+- A change to contributor docs is `docs(contributing)`.
+- The description is in the imperative and starts in lower case:
+  `fix: keep the log when setup fails`.
+- Mark a breaking change with `!` and a `BREAKING CHANGE:` footer that says
+  what users have to do differently.
+- A revert's subject is `revert: ` followed by the reverted commit's
+  subject. Keep the `This reverts commit <hash>.` line that `git revert`
+  writes.
+- A pull request title uses the same format, because a squash merge makes
+  it the commit subject.
+
+The writing rules for docs also apply to the body. A body says why the
+change was made: the cause, the constraint, or a behaviour change the diff
+doesn't make obvious.
 
 - Skip the body if the subject says enough. Most docs commits need none.
 - Don't restate the subject, the diff, or the content of the doc being
@@ -183,6 +204,19 @@ workflows or split jobs when the project's needs call for it. The release
 workflow should use CI to build the tag's version and publish CI's artifact,
 rather than build it again.
 
+### Versions
+
+- SemVer. A release is `X.Y.Z`, and a pre-release `X.Y.Z-alpha.N`,
+  `X.Y.Z-beta.N` or `X.Y.Z-rc.N`, with N counting from 1 for each version.
+  No other pre-release words.
+- The tag is the version with a `v`, such as `v1.2.0-beta.1`.
+- A pre-release build adds the short commit hash, as a dev build does:
+  `1.2.0-beta.1+abc1234`. A release build has the bare version. An archive
+  name with the version in it has the built one.
+- Choose the next version from the commits since the previous final
+  release: a breaking change bumps the major version (the minor before
+  1.0.0), a `feat` the minor, anything else the patch.
+
 ### ci.yml
 
 - Triggers: `push` to all branches with `paths-ignore: ['**.md', LICENSE]`,
@@ -201,8 +235,9 @@ rather than build it again.
     Add a job only when it tests something the others can't (an old shell
     version, a script that only runs on Linux in release.yml).
   - build: runs on every push and doesn't wait for lint or test, so every
-    run has an artifact. Stamps `inputs.version`, or `0.0.0-dev+<sha7>`
-    without one. Writes a step summary table (archive, size, SHA-256).
+    run has an artifact. Stamps `inputs.version`, with `+<sha7>` for a
+    pre-release, or `0.0.0-dev+<sha7>` without one. Writes a step summary
+    table (archive, size, SHA-256).
     Uploads an artifact named `release` with the archives and their
     `.sha256` files, `retention-days: 1`, `if-no-files-found: error`.
   - check: `needs: build`, on the target platform. Extracts the archive with
@@ -213,7 +248,9 @@ rather than build it again.
     build instead.
 - The source says its version is `0.0.0-dev`; only built copies get a real
   one. Anything in the code that acts on its version (download URLs,
-  release-only behaviour) must handle `0.0.0-dev+<commit>`.
+  release-only behaviour) must handle `0.0.0-dev+<sha7>` and
+  `X.Y.Z-beta.N+<sha7>`. A pre-release build's tag is its version without
+  the `+<sha7>`.
 - Archives are reproducible (fixed order, owners and mtimes from the
   commit), with `.sha256` files in `sha256sum` format.
 - Cache anything slow to install: toolchains, modules, downloaded packages.
@@ -224,21 +261,82 @@ rather than build it again.
 
 - `on: push: tags: ['v*']`, three jobs:
   - version: checks the tag against
-    `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$` and outputs the version
-    without the `v`.
+    `^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[1-9][0-9]*)?$` and
+    outputs the version without the `v`.
   - ci: `uses: ./.github/workflows/ci.yml` with that version.
   - release: `needs: [version, ci]`, with `contents: write`,
     `actions: write`, `id-token: write`, `attestations: write`. Checks out
-    with `fetch-depth: 0`, downloads the `release` artifact, writes the
-    notes (also to the step summary), attests the archives with
-    `actions/attest` (`if: ${{ !github.event.repository.private }}`), then
-    publishes and finally deletes the run's `release` artifact.
-- Publish: the title is the version without the `v`; a version with a
+    with `fetch-depth: 0` and fetches the tags again, since
+    `actions/checkout` makes the pushed tag lightweight and loses its
+    message. Downloads the `release` artifact, writes the notes (also to
+    the step summary), attests the archives with `actions/attest`
+    (`if: ${{ !github.event.repository.private }}`), then publishes and
+    finally deletes the run's `release` artifact.
+- Publish: the title is the tag, with its `v`; a version with a
   hyphen gets `--prerelease`; `--verify-tag`. If the release already
   exists, `gh release upload --clobber` and `gh release edit` instead of
   `create`, so a failed job can be re-run.
-- Release notes come from a script in the repo, in the project's own
-  language. A pre-release lists commits since the previous tag; a final
-  release lists everything since the previous final release. Commits are
-  grouped by kind; ones that only touch tests, CI or contributor docs go in
-  a collapsed section.
+- Tag a release with `git tag -a vX.Y.Z -m "vX.Y.Z"`. A second `-m` adds a
+  summary to the top of the release notes.
+
+### Release notes
+
+A script in the repo writes them, in the project's own language. It takes
+the tag, the repository and the release's `.sha256` files. Every project's
+notes have these parts, in this order, and leave out a part with nothing
+in it:
+
+1. For a pre-release, this warning:
+
+   ```
+   > [!WARNING]
+   > This is a pre-release, for trying things out before X.Y.Z is final. Please report problems in [Issues](<repo URL>/issues).
+   ```
+
+2. The tag's message without its first line, if it has more lines.
+3. `## Download`: a `| System | Download |` table of the archives named in
+   the `.sha256` files, with one row for each system (Windows, macOS, Linux
+   or Android) and that system's links, separated by ` · `, such as
+   `| Windows | [x64](<link>) · [arm64](<link>) |`. For each kind of file
+   the project ships, the script lists a glob, its system, and its link
+   text, or none to show the file's name; a file that matches none is an
+   error. Rows and links follow the script's list. A project can give a
+   system's row a longer name, such as `macOS (Apple silicon and Intel)`.
+   Then
+   `For how to install it, see [<heading>](<link>) in the README.`, linking
+   the README at the tag at its first `##` or `###` heading about a quick
+   start, installing or downloading. Without one, it's
+   `For how to install it, see the [README](<link>).`
+4. `## What's changed`:
+   - A pre-release lists the commits since the previous tag; a final
+     release lists everything since the previous final release. Oldest
+     first, without merges.
+   - `### ⚠️ Breaking changes`, `### ✨ Features` (`feat`),
+     `### 🐛 Fixes` (`fix`), `### ⚡ Performance` (`perf`) and
+     `### 📖 Documentation` (`docs`). A breaking change is listed only
+     under breaking changes, with its `BREAKING CHANGE:` text, or its
+     description when it only has a `!`.
+   - Everything else, including `docs(contributing)` and commits that
+     don't follow Conventional Commits, in a `<details>` block with
+     `<summary>🧰 Other changes (N)</summary>`.
+   - An entry under a heading is the description without its type,
+     capitalised, after `**scope:**` if there is one. Other changes show
+     the whole subject. Each entry ends with ``([`abc1234`](<commit link>))``.
+   - A reverted commit and its revert are both left out.
+   - `No user-facing changes.` when nothing has a heading and every commit
+     has a type.
+   - `**Full changelog:** [vA...vB](<compare link>)`, or
+     `**Full changelog:** [all commits](<commits link>)` for the first
+     release.
+5. A `<details>` block with `<summary>🔒 SHA-256</summary>`:
+   `Download the file's .sha256 too, and run its line in the folder with both. It prints OK or True if the file is intact.`
+   (with `.sha256`, `OK` and `True` in code), then for each system in the
+   order of the table, `<system>:` and a code block with a line per file:
+
+   - `Windows, in PowerShell:` (`powershell`):
+     `$hash, $file = (Get-Content '<file>.sha256') -split '\s+'; (Get-FileHash $file).Hash -eq $hash`
+   - `macOS:` (`sh`): `shasum -a 256 -c '<file>.sha256'`
+   - `Linux:` and `Android:` (`sh`): `sha256sum -c '<file>.sha256'`
+
+Parts are separated by one blank line. Tests cover each part, with a
+temporary repository for the commit ranges and the tag's message.
