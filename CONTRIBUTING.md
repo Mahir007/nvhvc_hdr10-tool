@@ -73,3 +73,26 @@ rsvg-convert -w 44 -h 44 $svg -o packaging/msix/Assets/Square44x44Logo.png
 rsvg-convert -w 150 -h 150 $svg -o packaging/msix/Assets/Square150x150Logo.png
 rsvg-convert -w 50 -h 50 $svg -o packaging/msix/Assets/StoreLogo.png
 ```
+
+## Releases
+
+Pushing a tag starts `.github/workflows/release.yml`. It checks the tag is a version
+(`v1.2.0`, or `v1.2.0-alpha.1`, `-beta.1` or `-rc.1`), runs CI for that version, and publishes
+CI's archives as a GitHub release. A version with a hyphen is a pre-release.
+
+```sh
+git tag -a v1.2.0-beta.1 -m "v1.2.0-beta.1"
+git push origin v1.2.0-beta.1
+```
+
+A second `-m` adds a summary to the top of the release notes. The rest of the notes come from
+`cargo xtask release-notes`, which groups the commits since the previous tag (for a pre-release)
+or the previous release by their Conventional Commits type. To see them before tagging, tag
+locally and run it:
+
+```sh
+cargo xtask release-notes v1.2.0-beta.1 Mahir007/nvhvc_hdr10-tool
+```
+
+Pick the next version from the commits since the last release: a breaking change bumps the minor
+version until 1.0 and the major after it, a `feat` the minor, anything else the patch.

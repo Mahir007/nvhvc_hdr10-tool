@@ -66,7 +66,7 @@ project adds:
 
 ## Builds and releases
 
-- `CONTRIBUTING.md` describes CI and how the builds are made.
+- `CONTRIBUTING.md` describes CI, how the builds are made, and how to release.
 - The source's version is `0.0.0-dev`. Builds take theirs from `NVHVC_VERSION`, and code that
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.

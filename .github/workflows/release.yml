@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[1-9][0-9]*)?$'; then
+            echo "::error::$TAG isn't a version tag (v1.2.3, or v1.2.3-alpha.1, -beta.1 or -rc.1)"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  release:
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+      RUST_VERSION: 1.100.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # actions/checkout makes the pushed tag lightweight, which loses its message.
+      - name: Fetch the tags
+        run: git fetch --force --tags origin
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Write the release notes
+        run: |
+          cargo xtask release-notes "$TAG" "$GITHUB_REPOSITORY" release/*.sha256 > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest@v4
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: |
+            release/*.zip
+            release/*.msix
+            release/*.flatpak
+            release/*.tar.gz
+      - name: Publish
+        run: |
+          prerelease=false
+          case $VERSION in *-*) prerelease=true ;; esac
+          # A re-run of a failed job finds the release already there.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md --prerelease="$prerelease"
+          else
+            gh release create "$TAG" release/* --title "$TAG" --notes-file notes.md \
+              --prerelease="$prerelease" --verify-tag
+          fi
+      - name: Delete the release artifacts
+        run: |
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            -q '.artifacts[] | select(.name | startswith("release-")) | .id')
+          for id in $ids; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+          done
