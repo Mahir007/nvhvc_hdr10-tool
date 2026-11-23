@@ -71,6 +71,9 @@ project adds:
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.
 - The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- CI builds dev, alpha and beta versions and the tests with the fast profile, which is Cargo's
+  `dev`, and release candidates and releases with `release`. UPX packs the release builds of the CLI and the
+  Windows exes, not the Flatpak.
 - The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
   system.
 - The Flatpak build cache is saved on any branch whose manifest has no cache yet, not only on
