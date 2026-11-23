@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<component type="desktop-application">
+  <id>io.github.Mahir007.NvhvcHdr10Tool</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>HDR10 Patcher</name>
+  <summary>Add HDR10 metadata to NVENC HEVC encodes</summary>
+  <developer id="io.github.mahir007">
+    <name>Mahir007</name>
+  </developer>
+
+  <description>
+    <p>
+      HDR10 Patcher adds HDR10 signalling to an NVENC HEVC encode without re-encoding it. It
+      reads the mastering display and content light level metadata from the source, writes them
+      into the encode's video stream, and remuxes the result to MKV or MP4.
+    </p>
+    <p>
+      The other tracks, chapters and per-frame timestamps are carried over from the encode.
+      Tracks that MP4 can't hold are listed after the run.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.Mahir007.NvhvcHdr10Tool.desktop</launchable>
+  <provides>
+    <binary>nvhvc-gtk</binary>
+    <binary>nvhvc</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/Mahir007/nvhvc_hdr10-tool</url>
+  <url type="bugtracker">https://github.com/Mahir007/nvhvc_hdr10-tool/issues</url>
+  <url type="vcs-browser">https://github.com/Mahir007/nvhvc_hdr10-tool</url>
+
+  <content_rating type="oars-1.1"/>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+@RELEASES@
+</component>

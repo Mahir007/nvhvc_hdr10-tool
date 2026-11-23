@@ -9,13 +9,19 @@ the commit and pull request rules.
 
 | Job | Does |
 | --- | --- |
-| lint | actionlint, shellcheck, rustfmt, and clippy for Linux and for the Windows target |
+| lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
 | build-linux | The command-line tool for Linux, statically linked against musl, in a `.tar.gz`. Extracts it and checks `--version`. |
 | build-windows | The portable zip and the MSIX. Checks `--version` from both, installs the MSIX and opens both apps' windows. |
+| build-flatpak | The Flatpak bundle, built in the GNOME SDK |
+| check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
 Every run uploads its archives with their `.sha256` files as `release-*` artifacts, kept for a
 day. Rust's version is pinned as `RUST_VERSION`.
+
+The Flatpak build keeps `.flatpak-builder` in the Actions cache. Only `main` saves it, and a
+branch starts from the newest one, so a branch that changes the manifest rebuilds the bundled
+tools on every push until it's merged. That takes about an hour.
 
 ## Versions
 
@@ -28,6 +34,20 @@ pre-release to the release works: `alpha.N` is N, `beta.N` is 100 + N, `rc.N` is
 release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
 
 ## Packaging
+
+### Flatpak
+
+`packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.yml` builds ffmpeg, MKVToolNix (with the parts
+of Qt and Boost it needs) and GPAC, since the sandbox can't run the host's. The app gets the host
+file system, because the tools read the encode by its path and write the output beside it. Its
+temporary files go to `/var/tmp`, which is on disk, rather than `/tmp`.
+
+```sh
+flatpak install --user flathub org.gnome.Sdk//51 org.freedesktop.Sdk.Extension.rust-stable//26.08
+flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.yml
+```
+
+The first build takes most of an hour. Later ones rebuild only what changed.
 
 ### MSIX
 
