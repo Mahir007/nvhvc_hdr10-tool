@@ -20,8 +20,20 @@ nvhvc-core = { path = "crates/nvhvc-core" }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 
-# Tuned for small, fast release binaries (the project goal is efficiency).
+# The fast profile, which CI uses for dev, alpha and beta versions and the tests: build time
+# matters most, and the debug info makes backtraces work. It's Cargo's dev profile rather than a
+# custom one, because windows-reactor-setup copies the runtime to the wrong folder for a custom
+# profile.
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+codegen-units = 256
+
+# Release candidates and releases: small, fast binaries, whatever the build time.
 [profile.release]
+opt-level = 3
+debug = false
 lto = true
 codegen-units = 1
 strip = true
