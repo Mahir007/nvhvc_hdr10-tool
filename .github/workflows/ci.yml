@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', LICENSE]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build, without the v
+        required: true
+        type: string
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' && !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: 1.100.0
+  CARGO_TERM_COLOR: always
+  # For nvhvc-gtk. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
+  GTK_PACKAGES: libgtk-4-dev libadwaita-1-dev
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          # GTK_PACKAGES is a list, so it's split on purpose.
+          # shellcheck disable=SC2086
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $GTK_PACKAGES
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt \
+            --target x86_64-pc-windows-msvc
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      # windows-reactor-setup downloads the Windows App SDK runtime for the Windows check.
+      - name: Cache the Windows App SDK runtime
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy for Windows
+        run: cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc --locked -- -D warnings
+
+  test:
+    name: test-${{ matrix.system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: linux
+            os: ubuntu-latest
+          - system: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install GTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $GTK_PACKAGES
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Windows App SDK runtime
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # The command-line tool, statically linked against musl so it runs on any Linux. The build
+  # runs on the target, so it checks the archive too.
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-unknown-linux-musl
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked -p nvhvc-cli --target x86_64-unknown-linux-musl
+      - name: Pack
+        run: |
+          name=nvhvc-$VERSION-linux-x86_64
+          mkdir -p "stage/$name" dist
+          cp target/x86_64-unknown-linux-musl/release/nvhvc LICENSE README.md "stage/$name/"
+          tar -C stage --sort=name --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
+            --mtime="@$SOURCE_DATE_EPOCH" --format=gnu -cf - "$name" | gzip -9n > "dist/$name.tar.gz"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          .github/scripts/summary.sh dist/*.tar.gz >> "$GITHUB_STEP_SUMMARY"
+      - name: Check
+        run: |
+          cd "$RUNNER_TEMP"
+          cp "$GITHUB_WORKSPACE"/dist/* .
+          sha256sum -c ./*.tar.gz.sha256
+          tar -xzf ./*.tar.gz
+          out=$("./nvhvc-$VERSION-linux-x86_64/nvhvc" --version)
+          echo "$out"
+          [ "$out" = "nvhvc $VERSION" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
