@@ -5,6 +5,7 @@ members = [
     "crates/nvhvc-cli",
     "crates/nvhvc-gtk",
     "crates/nvhvc-winui",
+    "xtask",
 ]
 
 [workspace.package]
