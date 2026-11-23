@@ -70,6 +70,9 @@ project adds:
 - The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
 - The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
   system.
+- The Flatpak build cache is saved on any branch whose manifest has no cache yet, not only on
+  `main`. This is an exception to the global rule, because rebuilding the bundled tools takes
+  about 20 minutes.
 - Keep home-folder paths out of commits, PRs and release notes.
 
 ## Development environment
