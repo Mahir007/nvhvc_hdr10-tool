@@ -13,8 +13,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# What the portable exe writes to stderr, such as the error that ended it.
+$stderr = [IO.Path]::GetTempFileName()
 if ($Exe) {
-    $process = Start-Process -FilePath $Exe -PassThru
+    $process = Start-Process -FilePath $Exe -PassThru -RedirectStandardError $stderr
 } else {
     Start-Process "shell:AppsFolder\$App"
     $process = $null
@@ -30,6 +32,7 @@ if ($Exe) {
 Start-Sleep -Seconds 5
 $process.Refresh()
 if ($process.HasExited) {
+    Get-Content -LiteralPath $stderr | Out-Host
     throw "nvhvc-winui exited with code $($process.ExitCode)"
 }
 if ($process.MainWindowHandle -eq 0) {
