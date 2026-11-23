@@ -53,13 +53,35 @@ The first build takes most of an hour. Later ones rebuild only what changed.
 
 The MSIX holds an `nvhvc-winui.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
 Windows App SDK runtime installed on the system instead of copying one beside the exe. The
-package declares that runtime as a dependency. It isn't signed: the publisher in
-`packaging/msix/AppxManifest.xml.in` carries the OID that marks an unsigned package.
+package declares that runtime as a dependency.
 
 ```powershell
 $env:NVHVC_WINUI_RUNTIME = 'framework'
 cargo build --release -p nvhvc-cli -p nvhvc-winui
 packaging\msix\build-msix.ps1 -Version 0.0.0-dev -BinDir target\release -Out nvhvc.msix
+```
+
+Without `-Pfx`, the package is unsigned, and its publisher carries the OID that lets Windows 11
+install it with `Add-AppxPackage -AllowUnsigned`. With `-Pfx` and the password in
+`MSIX_PFX_PASSWORD`, it's signed, and its publisher is the certificate's subject.
+
+CI signs it with a self-signed certificate for `CN=Mahir007`, kept in the `MSIX_PFX` (the
+`.pfx` in base64) and `MSIX_PFX_PASSWORD` secrets. The release ships the certificate as
+`nvhvc-msix.cer`. A fork's CI has no secrets and builds the unsigned package; a release fails
+without them.
+
+The certificate expires on 2031-11-23. The signatures are timestamped, so packages signed before
+then still install. To replace it, make a new one with the same subject, update both secrets
+and the thumbprint in the README. Users then trust the new `.cer`.
+
+```sh
+openssl req -x509 -newkey rsa:3072 -sha256 -days 1826 -nodes -subj "/CN=Mahir007" \
+  -keyout key.pem -out cert.pem -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=codeSigning" -addext "basicConstraints=critical,CA:FALSE"
+openssl rand -base64 32 | tr -d '\n' > pw
+openssl pkcs12 -export -inkey key.pem -in cert.pem -out msix.pfx -passout file:pw
+base64 -w0 msix.pfx | gh secret set MSIX_PFX
+gh secret set MSIX_PFX_PASSWORD < pw
 ```
 
 `build-msix.ps1` needs `makeappx.exe` from the Windows SDK.
