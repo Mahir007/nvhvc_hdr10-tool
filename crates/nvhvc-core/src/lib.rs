@@ -27,5 +27,10 @@ pub mod uimodel;
 
 pub use error::{Error, Result};
 
-/// The crate version, surfaced so front-ends can report a single source of truth.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version this copy was built as, for every front-end to report. The source says
+/// `0.0.0-dev`. CI sets `NVHVC_VERSION` (`0.1.0`, `0.1.0-beta.1+abc1234`, `0.0.0-dev+abc1234`)
+/// when it builds.
+pub const VERSION: &str = match option_env!("NVHVC_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};

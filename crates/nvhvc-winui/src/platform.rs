@@ -1,5 +1,6 @@
 //! Windows-side helpers: native file dialogs, Explorer, the system accent colour and the Esc key.
 
+use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -7,6 +8,9 @@ use windows::Foundation::TypedEventHandler;
 use windows::UI::ViewManagement::{UIColorType, UISettings};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+use windows::Win32::System::Console::{
+    ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, VK_ESCAPE};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
@@ -21,6 +25,21 @@ use windows_reactor::Color;
 
 use crate::model::Container;
 use crate::palette::Accent;
+
+/// Prints a line for `--version`. The exe is a GUI program without a console of its own: when
+/// stdout is redirected the line goes there, otherwise to the console of the shell that started
+/// it.
+pub fn print_line(line: &str) {
+    let redirected = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
+        .is_ok_and(|handle| !handle.is_invalid() && !handle.0.is_null());
+    if redirected {
+        println!("{line}");
+    } else if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok()
+        && let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("CONOUT$")
+    {
+        let _ = writeln!(console, "{line}");
+    }
+}
 
 /// Shows a native Open file dialog (source/encode picks), showing only the video files the
 /// pipeline reads (one generic filter, not a per-container choice). Returns the chosen path,
