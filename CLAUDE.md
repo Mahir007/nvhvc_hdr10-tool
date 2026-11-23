@@ -71,6 +71,8 @@ project adds:
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.
 - The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
+  system.
 - Keep home-folder paths out of commits, PRs and release notes.
 
 ## Development environment
