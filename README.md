@@ -14,14 +14,19 @@ Builds are on the [releases page](https://github.com/Mahir007/nvhvc_hdr10-tool/r
 The portable zip runs from the folder you extract it to. Start `nvhvc-winui.exe` for the app;
 `nvhvc.exe` is the command-line tool. The Windows App SDK runtime the app needs is in the zip.
 
-The MSIX installs the app for all users, with a Start menu entry and `nvhvc` on the command
-line. It isn't signed, so it needs Windows 11 and an admin PowerShell. Install the Windows App
-SDK runtime first:
+The MSIX installs the app with a Start menu entry and `nvhvc` on the command line. It's signed
+with a self-signed certificate, `nvhvc-msix.cer` on the releases page. Windows installs the MSIX
+only once you trust that certificate, and trusting it lets any package signed with it install.
+Its thumbprint is `FC5E68DDA373D68ABF22449AEE8E456DD3CCB3C3`, which
+`(Get-PfxCertificate .\nvhvc-msix.cer).Thumbprint` prints. Once, in an admin PowerShell, trust it
+and install the Windows App SDK runtime:
 
 ```powershell
+Import-Certificate -FilePath .\nvhvc-msix.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 winget install Microsoft.WindowsAppRuntime.2
-Add-AppxPackage -AllowUnsigned .\nvhvc-<version>-windows-x64.msix
 ```
+
+Then open the `.msix` to install it or update to it.
 
 Both use the media tools installed on the system:
 
