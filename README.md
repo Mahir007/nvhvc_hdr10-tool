@@ -5,6 +5,43 @@ metadata from the source, rewrites the colour fields in the encode's SPS, insert
 and content-light-level SEI, and remuxes to MKV or MP4. The other tracks, chapters and per-frame
 timestamps are carried over from the encode.
 
+## Installing
+
+Builds are on the [releases page](https://github.com/Mahir007/nvhvc_hdr10-tool/releases).
+
+### Windows
+
+The portable zip runs from the folder you extract it to. Start `nvhvc-winui.exe` for the app;
+`nvhvc.exe` is the command-line tool. The Windows App SDK runtime the app needs is in the zip.
+
+The MSIX installs the app for all users, with a Start menu entry and `nvhvc` on the command
+line. It isn't signed, so it needs Windows 11 and an admin PowerShell. Install the Windows App
+SDK runtime first:
+
+```powershell
+winget install Microsoft.WindowsAppRuntime.2
+Add-AppxPackage -AllowUnsigned .\nvhvc-<version>-windows-x64.msix
+```
+
+Both use the media tools installed on the system:
+
+```powershell
+winget install Gyan.FFmpeg MoritzBunkus.MKVToolNix GPAC.GPAC
+```
+
+### Linux
+
+The Flatpak has ffmpeg, MKVToolNix and MP4Box built in. Its GNOME runtime comes from Flathub.
+
+```sh
+flatpak install --user nvhvc-*-x86_64.flatpak
+flatpak run io.github.Mahir007.NvhvcHdr10Tool
+flatpak run --command=nvhvc io.github.Mahir007.NvhvcHdr10Tool tools
+```
+
+The `linux-x86_64.tar.gz` holds the command-line tool on its own. It uses the ffmpeg, MKVToolNix
+and GPAC on `PATH`.
+
 ## Layout
 
 | Crate | What it is |
