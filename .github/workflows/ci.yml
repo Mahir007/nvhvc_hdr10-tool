@@ -139,3 +139,102 @@ jobs:
           path: dist/
           retention-days: 1
           if-no-files-found: error
+
+  # The portable zip, with the Windows App SDK runtime beside the exe, and the MSIX, which uses
+  # the runtime installed on the system. The build runs on the target, so it checks both the way
+  # a user installs them.
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        shell: bash
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Windows App SDK runtime
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: Build the portable apps
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked -p nvhvc-cli -p nvhvc-winui
+      # The exes, the runtime files windows-reactor-setup copied beside them, and the licence.
+      - name: Pack the zip
+        run: |
+          $name = "nvhvc-$env:VERSION-windows-x64"
+          $stage = New-Item -ItemType Directory -Path "stage\$name"
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $skipDirs = 'build', 'deps', 'examples', 'incremental', '.fingerprint'
+          Get-ChildItem target\release |
+            Where-Object { -not ($_.PSIsContainer -and $_.Name -in $skipDirs) } |
+            Where-Object { $_.PSIsContainer -or $_.Extension -notin '.d', '.pdb', '.rlib' } |
+            Where-Object { $_.Name -notlike '.cargo*' } |
+            Copy-Item -Destination $stage -Recurse
+          Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          .github\scripts\pack-zip.ps1 -Source $stage -Out "dist\$name.zip" -Epoch $env:SOURCE_DATE_EPOCH
+      - name: Build the MSIX app
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+          NVHVC_WINUI_RUNTIME: framework
+        run: cargo build --release --locked -p nvhvc-winui
+      - name: Pack the MSIX
+        run: |
+          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir target\release `
+            -Out "dist\nvhvc-$env:VERSION-windows-x64.msix"
+          "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          for f in *.zip *.msix; do sha256sum "$f" > "$f.sha256"; done
+          ../.github/scripts/summary.sh ./*.zip ./*.msix >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the zip
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP portable
+          Push-Location dist
+          $hash, $file = (Get-Content "nvhvc-$env:VERSION-windows-x64.zip.sha256") -split '\s+'
+          if ((Get-FileHash $file).Hash -ne $hash) { throw "$file doesn't match its .sha256" }
+          Expand-Archive $file -DestinationPath $dir
+          Pop-Location
+          $out = & "$dir\nvhvc.exe" --version
+          if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc.exe --version: $out" }
+          # A GUI exe: PowerShell waits for it when its output is captured.
+          $out = & "$dir\nvhvc-winui.exe" --version | Out-String
+          if ($out.Trim() -ne "nvhvc-winui $env:VERSION") { throw "nvhvc-winui.exe --version: $out" }
+          .github\scripts\check-window.ps1 -Exe "$dir\nvhvc-winui.exe"
+      # The runner is an admin, which an unsigned package needs. The runtime framework comes from
+      # the Windows App SDK's own package, as winget's installer would put it there.
+      - name: Check the MSIX
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP runtime
+          Invoke-WebRequest https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Runtime/2.4.0 `
+            -OutFile "$runtime.zip"
+          Expand-Archive "$runtime.zip" -DestinationPath $runtime
+          Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
+          Add-AppxPackage -Path "dist\nvhvc-$env:VERSION-windows-x64.msix" -AllowUnsigned
+          $package = Get-AppxPackage Mahir007.NvhvcHdr10Tool
+          if ($package.Version -ne $env:MSIX_VERSION) { throw "installed $($package.Version), not $env:MSIX_VERSION" }
+          $out = & "$env:LOCALAPPDATA\Microsoft\WindowsApps\nvhvc.exe" --version
+          if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc --version from the package: $out" }
+          .github\scripts\check-window.ps1 -App "$($package.PackageFamilyName)!App"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            dist/*.zip
+            dist/*.msix
+            dist/*.sha256
+          retention-days: 1
+          if-no-files-found: error
