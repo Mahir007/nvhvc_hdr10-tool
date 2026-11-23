@@ -61,6 +61,15 @@ project adds:
 - Stage 2 has no container row. The container comes from the preference or the Save as
   extension.
 
+## Builds and releases
+
+- `CONTRIBUTING.md` describes CI and how the builds are made.
+- The source's version is `0.0.0-dev`. Builds take theirs from `NVHVC_VERSION`, and code that
+  acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
+  `X.Y.Z-beta.N+<sha7>`.
+- The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- Keep home-folder paths out of commits, PRs and release notes.
+
 ## Development environment
 
 - Linux work (core, CLI, GTK, end-to-end runs) happens in the Debian WSL instance. Don't use the
