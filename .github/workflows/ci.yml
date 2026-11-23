@@ -1,0 +1,351 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', LICENSE]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build, without the v
+        required: true
+        type: string
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' && !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  APP_ID: io.github.Mahir007.NvhvcHdr10Tool
+  RUST_VERSION: 1.100.0
+  CARGO_TERM_COLOR: always
+  # For nvhvc-gtk. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
+  GTK_PACKAGES: libgtk-4-dev libadwaita-1-dev
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0
+      - name: ruff
+        run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/astral-sh/ruff:0.17.6 check --no-cache .
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          # GTK_PACKAGES is a list, so it's split on purpose.
+          # shellcheck disable=SC2086
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            $GTK_PACKAGES desktop-file-utils appstream
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy,rustfmt \
+            --target x86_64-pc-windows-msvc
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      # windows-reactor-setup downloads the Windows App SDK runtime for the Windows check.
+      - name: Cache the Windows App SDK runtime
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy for Windows
+        run: cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc --locked -- -D warnings
+      - name: Desktop file and metainfo
+        run: |
+          desktop-file-validate "packaging/$APP_ID.desktop"
+          python3 packaging/flatpak/metainfo-releases.py 0.0.0-dev > "$RUNNER_TEMP/releases.xml"
+          sed -e "/@RELEASES@/{r $RUNNER_TEMP/releases.xml" -e 'd' -e '}' \
+            "packaging/$APP_ID.metainfo.xml.in" > "$RUNNER_TEMP/$APP_ID.metainfo.xml"
+          appstreamcli validate --no-net --explain "$RUNNER_TEMP/$APP_ID.metainfo.xml"
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install GTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $GTK_PACKAGES
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Windows App SDK runtime
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # The command-line tool, statically linked against musl so it runs on any Linux. The build
+  # runs on the target, so it checks the archive too.
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-unknown-linux-musl
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked -p nvhvc-cli --target x86_64-unknown-linux-musl
+      - name: Pack
+        run: |
+          name=nvhvc-$VERSION-linux-x86_64
+          mkdir -p "stage/$name" dist
+          cp target/x86_64-unknown-linux-musl/release/nvhvc LICENSE README.md "stage/$name/"
+          tar -C stage --sort=name --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
+            --mtime="@$SOURCE_DATE_EPOCH" --format=gnu -cf - "$name" | gzip -9n > "dist/$name.tar.gz"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          .github/scripts/summary.sh dist/*.tar.gz >> "$GITHUB_STEP_SUMMARY"
+      - name: Check
+        run: |
+          cd "$RUNNER_TEMP"
+          cp "$GITHUB_WORKSPACE"/dist/* .
+          sha256sum -c ./*.tar.gz.sha256
+          tar -xzf ./*.tar.gz
+          out=$("./nvhvc-$VERSION-linux-x86_64/nvhvc" --version)
+          echo "$out"
+          [ "$out" = "nvhvc $VERSION" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  # The portable zip, with the Windows App SDK runtime beside the exe, and the MSIX, which uses
+  # the runtime installed on the system. The build runs on the target, so it checks both the way
+  # a user installs them.
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        shell: bash
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Windows App SDK runtime
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\windows-reactor-setup
+          key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
+      - name: Build the portable apps
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked -p nvhvc-cli -p nvhvc-winui
+      # The exes, the runtime files windows-reactor-setup copied beside them, and the licence.
+      - name: Pack the zip
+        run: |
+          $name = "nvhvc-$env:VERSION-windows-x64"
+          $stage = New-Item -ItemType Directory -Path "stage\$name"
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $skipDirs = 'build', 'deps', 'examples', 'incremental', '.fingerprint'
+          Get-ChildItem target\release |
+            Where-Object { -not ($_.PSIsContainer -and $_.Name -in $skipDirs) } |
+            Where-Object { $_.PSIsContainer -or $_.Extension -notin '.d', '.pdb', '.rlib' } |
+            Where-Object { $_.Name -notlike '.cargo*' } |
+            Copy-Item -Destination $stage -Recurse
+          Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          .github\scripts\pack-zip.ps1 -Source $stage -Out "dist\$name.zip" -Epoch $env:SOURCE_DATE_EPOCH
+      - name: Build the MSIX app
+        env:
+          NVHVC_VERSION: ${{ env.VERSION }}
+          NVHVC_WINUI_RUNTIME: framework
+        run: cargo build --release --locked -p nvhvc-winui
+      - name: Pack the MSIX
+        run: |
+          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir target\release `
+            -Out "dist\nvhvc-$env:VERSION-windows-x64.msix"
+          "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          for f in *.zip *.msix; do sha256sum "$f" > "$f.sha256"; done
+          ../.github/scripts/summary.sh ./*.zip ./*.msix >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the zip
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP portable
+          Set-Location dist
+          $hash, $file = (Get-Content "nvhvc-$env:VERSION-windows-x64.zip.sha256") -split '\s+'
+          if ((Get-FileHash $file).Hash -ne $hash) { throw "$file doesn't match its .sha256" }
+          Expand-Archive $file -DestinationPath $dir
+          $out = & "$dir\nvhvc.exe" --version
+          if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc.exe --version: $out" }
+          # A GUI exe: PowerShell waits for it when its output is captured.
+          $out = & "$dir\nvhvc-winui.exe" --version | Out-String
+          if ($out.Trim() -ne "nvhvc-winui $env:VERSION") { throw "nvhvc-winui.exe --version: $out" }
+          .github\scripts\check-window.ps1 -Exe "$dir\nvhvc-winui.exe"
+      # The runner is an admin, which an unsigned package needs. The runtime framework comes from
+      # the Windows App SDK's own package, as winget's installer would put it there.
+      - name: Check the MSIX
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP runtime
+          Invoke-WebRequest https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Runtime/2.4.0 `
+            -OutFile "$runtime.zip"
+          Expand-Archive "$runtime.zip" -DestinationPath $runtime
+          Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
+          Add-AppxPackage -Path "dist\nvhvc-$env:VERSION-windows-x64.msix" -AllowUnsigned
+          $package = Get-AppxPackage Mahir007.NvhvcHdr10Tool
+          if ($package.Version -ne $env:MSIX_VERSION) { throw "installed $($package.Version), not $env:MSIX_VERSION" }
+          $out = & "$env:LOCALAPPDATA\Microsoft\WindowsApps\nvhvc.exe" --version
+          if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc --version from the package: $out" }
+          .github\scripts\check-window.ps1 -App "$($package.PackageFamilyName)!App"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            dist/*.zip
+            dist/*.msix
+            dist/*.sha256
+          retention-days: 1
+          if-no-files-found: error
+
+  # The Flatpak, built in the GNOME SDK the manifest names. The bundle is the same file for the
+  # same commit: the build and the OSTree commit use the commit's time, and so does the bundle's
+  # own timestamp, which fix-bundle-time.py sets.
+  build-flatpak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      # bubblewrap, which flatpak-builder runs the build in, needs it.
+      options: --privileged
+    steps:
+      # The metainfo's releases come from the tags.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - name: Install the Rust extension
+        run: flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//26.08
+      # The bundled tools take most of an hour to build, so their results are kept. A manifest
+      # change starts again from the newest cache.
+      - name: Restore the build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-
+            flatpak-builder-gnome-51-
+      - name: Build
+        run: |
+          manifest=packaging/flatpak/$APP_ID.yml
+          stamped=packaging/flatpak/stamped.yml
+          # flatpak-builder leaves out .git, so the metainfo's releases are made here.
+          python3 packaging/flatpak/metainfo-releases.py "$VERSION" > packaging/flatpak/releases.xml
+          sed "s/^\(        NVHVC_VERSION: \)0\.0\.0-dev$/\1$VERSION/" "$manifest" > "$stamped"
+          grep -qx "        NVHVC_VERSION: $VERSION" "$stamped"
+          flatpak-builder --disable-rofiles-fuse --ccache --force-clean --default-branch=stable \
+            --override-source-date-epoch="$SOURCE_DATE_EPOCH" "$RUNNER_TEMP/build" "$stamped"
+      - name: Save the build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+      - name: Bundle
+        run: |
+          bundle=nvhvc-$VERSION-x86_64.flatpak
+          mkdir dist
+          flatpak build-export --timestamp="@$SOURCE_DATE_EPOCH" --exclude='/lib/debug/*' \
+            "$RUNNER_TEMP/repo" "$RUNNER_TEMP/build" stable
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            "$RUNNER_TEMP/repo" "dist/$bundle" "$APP_ID" stable
+          python3 .github/scripts/fix-bundle-time.py "dist/$bundle"
+          (cd dist && sha256sum "$bundle" > "$bundle.sha256")
+          .github/scripts/summary.sh "dist/$bundle" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-flatpak
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Installs the bundle on a stock system, the way a user would, so the GNOME runtime comes from
+  # Flathub through the bundle's runtime repo.
+  check-flatpak:
+    needs: build-flatpak
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+      - name: Version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-flatpak
+          path: dist
+      - name: Install flatpak
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends flatpak dbus-daemon
+      - name: Check the bundle
+        run: |
+          cd dist
+          sha256sum -c ./*.flatpak.sha256
+          flatpak install --user -y --noninteractive ./*.flatpak
+          # The runner has no session bus, and flatpak needs one for the app's D-Bus proxy.
+          out=$(dbus-run-session -- flatpak run "$APP_ID" --version)
+          echo "$out"
+          [ "$out" = "nvhvc-gtk $VERSION" ]
+          out=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" --version)
+          echo "$out"
+          [ "$out" = "nvhvc $VERSION" ]
+          # Every tool the pipeline runs is in the bundle.
+          tools=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" tools)
+          echo "$tools"
+          [ "$(grep -cE 'found \(PATH\) +/app/bin/' <<< "$tools")" = 5 ]
