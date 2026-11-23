@@ -299,16 +299,16 @@ jobs:
           .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
       - name: Install the Rust extension
         run: flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//26.08
-      # The bundled tools take most of an hour to build, so their results are kept. A manifest
-      # change starts again from the newest cache.
+      # The bundled tools take about 20 minutes to build, so the cache keeps them, once for each
+      # version of the manifest. A changed manifest starts from the newest cache, and
+      # flatpak-builder rebuilds from the first module that changed.
       - name: Restore the build cache
+        id: cache
         uses: actions/cache/restore@v6
         with:
           path: .flatpak-builder
-          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
-          restore-keys: |
-            flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-
-            flatpak-builder-gnome-51-
+          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}
+          restore-keys: flatpak-builder-gnome-51-
       - name: Build
         run: |
           manifest=packaging/flatpak/$APP_ID.yml
@@ -319,12 +319,14 @@ jobs:
           grep -qx "        NVHVC_VERSION: $VERSION" "$stamped"
           flatpak-builder --disable-rofiles-fuse --ccache --force-clean --default-branch=stable \
             --override-source-date-epoch="$SOURCE_DATE_EPOCH" "$RUNNER_TEMP/build" "$stamped"
+      # Any branch saves, not only main, so a branch that changes the manifest pays for the
+      # rebuild once rather than on every push.
       - name: Save the build cache
-        if: github.ref == 'refs/heads/main'
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: .flatpak-builder
-          key: flatpak-builder-gnome-51-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Bundle
         run: |
           bundle=nvhvc-$VERSION-x86_64.flatpak

@@ -19,9 +19,10 @@ the commit and pull request rules.
 Every run uploads its archives with their `.sha256` files as `release-*` artifacts, kept for a
 day. Rust's version is pinned as `RUST_VERSION`.
 
-The Flatpak build keeps `.flatpak-builder` in the Actions cache. Only `main` saves it, and a
-branch starts from the newest one, so a branch that changes the manifest rebuilds the bundled
-tools on every push until it's merged. That takes about an hour.
+The Flatpak build keeps `.flatpak-builder` in the Actions cache, once for each version of the
+manifest. A branch that changes the manifest rebuilds the bundled tools from the first one that
+changed, about 20 minutes for all of them, and saves its own cache for its later pushes. Other
+branches use `main`'s.
 
 ## Versions
 
