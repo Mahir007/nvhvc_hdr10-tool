@@ -68,9 +68,7 @@ jobs:
       - name: Desktop file and metainfo
         run: |
           desktop-file-validate "packaging/$APP_ID.desktop"
-          python3 packaging/flatpak/metainfo-releases.py 0.0.0-dev > "$RUNNER_TEMP/releases.xml"
-          sed -e "/@RELEASES@/{r $RUNNER_TEMP/releases.xml" -e 'd' -e '}' \
-            "packaging/$APP_ID.metainfo.xml.in" > "$RUNNER_TEMP/$APP_ID.metainfo.xml"
+          python3 packaging/flatpak/metainfo.py 0.0.0-dev > "$RUNNER_TEMP/$APP_ID.metainfo.xml"
           appstreamcli validate --no-net --explain "$RUNNER_TEMP/$APP_ID.metainfo.xml"
 
   test:
@@ -369,8 +367,8 @@ jobs:
         run: |
           manifest=packaging/flatpak/$APP_ID.yml
           stamped=packaging/flatpak/stamped.yml
-          # flatpak-builder leaves out .git, so the metainfo's releases are made here.
-          python3 packaging/flatpak/metainfo-releases.py "$VERSION" > packaging/flatpak/releases.xml
+          # flatpak-builder leaves out .git, so the metainfo is made here.
+          python3 packaging/flatpak/metainfo.py "$VERSION" > "packaging/flatpak/$APP_ID.metainfo.xml"
           sed -e "s/^\(        NVHVC_VERSION: \)0\.0\.0-dev$/\1$VERSION/" \
             -e "s/^\(        NVHVC_PROFILE: \)dev$/\1$PROFILE/" \
             -e "s/^\(        NVHVC_PROFILE_DIR: \)debug$/\1$PROFILE_DIR/" "$manifest" > "$stamped"

@@ -150,12 +150,12 @@ modules:
       - install -Dm755 -t /app/bin target/$NVHVC_PROFILE_DIR/nvhvc-gtk target/$NVHVC_PROFILE_DIR/nvhvc
       - install -Dm644 -t /app/share/applications packaging/io.github.Mahir007.NvhvcHdr10Tool.desktop
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
-      # releases.xml comes from metainfo-releases.py. A local build without it gets an empty list.
-      - test -f packaging/flatpak/releases.xml || echo '  <releases/>' > packaging/flatpak/releases.xml
-      - mkdir -p /app/share/metainfo
-      - sed -e '/@RELEASES@/{r packaging/flatpak/releases.xml' -e 'd' -e '}'
-        packaging/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in
-        > /app/share/metainfo/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
+      # CI writes the metainfo with metainfo.py, which needs the tags. A local build without it
+      # gets one with no releases.
+      - test -f packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml || sed
+        -e 's|@RELEASES@|  <releases/>|' packaging/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in
+        > packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
+      - install -Dm644 -t /app/share/metainfo packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
     sources:
       - type: dir
         path: ../..

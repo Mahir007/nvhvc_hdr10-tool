@@ -31,5 +31,5 @@ rustc-ice-*.txt
 # Flatpak builds and the release files CI makes
 /.flatpak-builder/
 /build-flatpak/
-/packaging/flatpak/releases.xml
+/packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
 /dist/
