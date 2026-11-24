@@ -23,6 +23,21 @@
     </p>
   </description>
 
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Mahir007/nvhvc_hdr10-tool/@COMMIT@/packaging/screenshots/source.png</image>
+      <caption>Reading the HDR10 metadata from the source</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Mahir007/nvhvc_hdr10-tool/@COMMIT@/packaging/screenshots/encode.png</image>
+      <caption>Choosing the encode to patch and where to save it</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Mahir007/nvhvc_hdr10-tool/@COMMIT@/packaging/screenshots/result.png</image>
+      <caption>What the patch wrote and which tracks it kept</caption>
+    </screenshot>
+  </screenshots>
+
   <launchable type="desktop-id">io.github.Mahir007.NvhvcHdr10Tool.desktop</launchable>
   <provides>
     <binary>nvhvc-gtk</binary>
@@ -35,6 +50,9 @@
 
   <content_rating type="oars-1.1"/>
 
+  <recommends>
+    <display_length compare="ge">768</display_length>
+  </recommends>
   <supports>
     <control>pointing</control>
     <control>keyboard</control>

@@ -44,6 +44,12 @@ flatpak run io.github.Mahir007.NvhvcHdr10Tool
 flatpak run --command=nvhvc io.github.Mahir007.NvhvcHdr10Tool tools
 ```
 
+GNOME Software can also install the `.flatpak` when you open it. Before installing, it shows only
+the name, summary and age rating, and lists the licence as unknown. The description,
+screenshots, licence and links appear once the app is installed. It rates the app potentially
+unsafe because the app can read and write all your files, which it needs to read an encode by its
+path and write the output beside it.
+
 The `linux-x86_64.tar.gz` holds the command-line tool on its own. It uses the ffmpeg, MKVToolNix
 and GPAC on `PATH`.
 
