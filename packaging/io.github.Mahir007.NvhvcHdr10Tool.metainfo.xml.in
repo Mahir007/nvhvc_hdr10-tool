@@ -50,6 +50,9 @@
 
   <content_rating type="oars-1.1"/>
 
+  <recommends>
+    <display_length compare="ge">768</display_length>
+  </recommends>
   <supports>
     <control>pointing</control>
     <control>keyboard</control>
