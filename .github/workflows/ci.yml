@@ -385,6 +385,12 @@ jobs:
         with:
           path: .flatpak-builder
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      # appstreamcli compose drops a screenshot it can't download.
+      - name: Check the screenshots
+        run: |
+          composed="$RUNNER_TEMP/build/files/share/app-info/xmls/$APP_ID.xml.gz"
+          [ "$(zcat "$composed" | grep -c '<screenshot[ >]')" = \
+            "$(grep -c '<screenshot[ >]' "packaging/$APP_ID.metainfo.xml.in")" ]
       - name: Bundle
         run: |
           bundle=nvhvc-$VERSION-x86_64.flatpak
