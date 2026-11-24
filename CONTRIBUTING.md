@@ -70,6 +70,18 @@ flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/i
 
 The first build takes most of an hour. Later ones rebuild only what changed.
 
+`packaging/flatpak/metainfo.py` fills in the metainfo template: the releases from the tags, and
+the commit the screenshot links point at. CI runs it before flatpak-builder, which leaves out
+`.git`. A local build without it gets no releases, and screenshots from `main`.
+
+flatpak-builder's `appstreamcli compose` drops a screenshot it can't download, so a build of a
+commit that isn't on GitHub has none. CI fails the build if one is missing.
+
+The screenshots in `packaging/screenshots` show the GTK app at its default size, in GNOME's
+default light style, at 2x, with the window's shadow on a transparent background. Each one is
+captured on a headless sway over black and over white, and the alpha comes from the difference.
+Retake them when a change shows in them.
+
 ### MSIX
 
 The MSIX holds an `nvhvc-winui.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
@@ -128,10 +140,11 @@ git tag -a v1.2.0-beta.1 -m "v1.2.0-beta.1"
 git push origin v1.2.0-beta.1
 ```
 
-A second `-m` adds a summary to the top of the release notes. The rest of the notes come from
-`cargo xtask release-notes`, which groups the commits since the previous tag (for a pre-release)
-or the previous release by their Conventional Commits type. To see them before tagging, tag
-locally and run it:
+A second `-m` adds a summary to the top of the release notes. It's also the release's description
+in the Flatpak's metainfo, which software centres show, so keep it to sentences and `- ` lists.
+The rest of the notes come from `cargo xtask release-notes`, which groups the commits since the
+previous tag (for a pre-release) or the previous release by their Conventional Commits type. To
+see them before tagging, tag locally and run it:
 
 ```sh
 cargo xtask release-notes v1.2.0-beta.1 Mahir007/nvhvc_hdr10-tool
