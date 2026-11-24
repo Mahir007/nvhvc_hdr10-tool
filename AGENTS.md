@@ -60,6 +60,8 @@ project adds:
   inline editing.
 - Stage 2 has no container row. The container comes from the preference or the Save as
   extension.
+- The store screenshots in `packaging/screenshots` show the GTK app. Retake them when a
+  change shows in them; `CONTRIBUTING.md` says how they're made.
 
 ## Builds and releases
 
