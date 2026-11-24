@@ -3,8 +3,9 @@
 """Print the app's metainfo for a build of VERSION.
 
 Fills the template's <releases> from the version tags in HEAD's history, newest first, with
-VERSION first when no tag has it. Pre-releases and dev builds are development releases. Run it
-in a clone with the tags.
+VERSION first when no tag has it. Pre-releases and dev builds are development releases. The
+screenshot links point at HEAD's commit, and each screenshot must exist there. Run it in a clone
+with the tags.
 
 Usage: metainfo.py VERSION
 """
@@ -14,13 +15,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-TEMPLATE = Path(__file__).resolve().parents[1] / "io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in"
+ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE = ROOT / "packaging/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in"
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc|dev)(?:\.(\d+))?)?(?:\+.*)?$")
 STAGES = {"dev": -1, "alpha": 0, "beta": 1, "rc": 2, None: 3}
 
 
 def git(*args):
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout
 
 
 def order(version):
@@ -48,7 +52,12 @@ def main():
     if len(sys.argv) != 2 or not VERSION.match(sys.argv[1]):
         sys.exit(__doc__.strip().splitlines()[-1])
     template = TEMPLATE.read_text(encoding="utf-8")
-    sys.stdout.write(template.replace("@RELEASES@", releases(sys.argv[1])))
+    for path in re.findall(r"@COMMIT@/([^<]+)", template):
+        if not (ROOT / path).is_file():
+            sys.exit(f"{TEMPLATE.name} links to {path}, which doesn't exist")
+    commit = git("rev-parse", "HEAD").strip()
+    metainfo = template.replace("@RELEASES@", releases(sys.argv[1])).replace("@COMMIT@", commit)
+    sys.stdout.write(metainfo)
 
 
 if __name__ == "__main__":

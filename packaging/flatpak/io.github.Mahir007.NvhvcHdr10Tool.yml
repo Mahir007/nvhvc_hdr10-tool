@@ -151,9 +151,10 @@ modules:
       - install -Dm644 -t /app/share/applications packaging/io.github.Mahir007.NvhvcHdr10Tool.desktop
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
       # CI writes the metainfo with metainfo.py, which needs the tags. A local build without it
-      # gets one with no releases.
+      # gets one with no releases, and screenshots from main.
       - test -f packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml || sed
-        -e 's|@RELEASES@|  <releases/>|' packaging/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in
+        -e 's|@RELEASES@|  <releases/>|' -e 's|@COMMIT@|main|'
+        packaging/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml.in
         > packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
       - install -Dm644 -t /app/share/metainfo packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.metainfo.xml
     sources:
