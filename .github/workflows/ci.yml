@@ -351,6 +351,10 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
+      # actions/checkout makes the pushed tag lightweight, which loses the summary the metainfo
+      # takes from its message.
+      - name: Fetch the tags
+        run: git fetch --force --tags origin
       - name: Install the Rust extension
         run: flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//26.08
       # The bundled tools take about 20 minutes to build, so the cache keeps them, once for each
