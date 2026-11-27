@@ -1,7 +1,7 @@
 # Build and install locally, from the repo root:
 #   flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/io.github.Mahir007.NvhvcHdr10Tool.yml
-#   flatpak run io.github.Mahir007.NvhvcHdr10Tool
-#   flatpak run --command=nvhvc io.github.Mahir007.NvhvcHdr10Tool tools
+#   flatpak run io.github.Mahir007.NvhvcHdr10Tool gui
+#   flatpak run io.github.Mahir007.NvhvcHdr10Tool tools
 #
 # The sandbox can't run the host's media tools, so ffmpeg, MKVToolNix and GPAC are built here.
 # MKVToolNix needs Qt Core, Boost and GMP, which the GNOME SDK doesn't have.
@@ -11,7 +11,7 @@ runtime-version: '51'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: nvhvc-gtk
+command: nvhvc
 finish-args:
   - --socket=wayland
   - --socket=fallback-x11
@@ -146,8 +146,8 @@ modules:
       # extension. A release build is stripped by cargo already.
       no-debuginfo: true
     build-commands:
-      - cargo build --profile "$NVHVC_PROFILE" --locked -p nvhvc-gtk -p nvhvc
-      - install -Dm755 -t /app/bin target/$NVHVC_PROFILE_DIR/nvhvc-gtk target/$NVHVC_PROFILE_DIR/nvhvc
+      - cargo build --profile "$NVHVC_PROFILE" --locked -p nvhvc
+      - install -Dm755 -t /app/bin target/$NVHVC_PROFILE_DIR/nvhvc
       - install -Dm644 -t /app/share/applications packaging/io.github.Mahir007.NvhvcHdr10Tool.desktop
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
       # CI writes the metainfo with metainfo.py, which needs the tags. A local build without it
