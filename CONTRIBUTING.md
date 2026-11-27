@@ -11,7 +11,7 @@ the commit and pull request rules.
 | --- | --- |
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
-| build-windows | The installer, the portable zip and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs each, and checks `--version` and opens the app's window from each. Uninstalls the installer's copy. |
+| build-windows | The installer, the portable exe and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs each, and checks `--version` and opens the app's window from each. Uninstalls the installer's copy. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
@@ -39,7 +39,7 @@ release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
 
 | Profile | Used for | What it does |
 | --- | --- | --- |
-| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The Windows zip and MSIX carry `nvhvc.pdb`, and the Flatpak keeps the debug info in its binaries. |
+| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The installer and the MSIX carry `nvhvc.pdb`, the downloads list it beside the portable exe, and the Flatpak keeps the debug info in its binaries. |
 | `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs `nvhvc.exe`, and CI runs the packed one. |
 
 The fast profile is Cargo's own `dev` rather than a custom one. windows-reactor-setup finds the
@@ -128,24 +128,13 @@ for n in 16 20 24 32 40 48 64 256; do rsvg-convert -w $n -h $n $svg -o /tmp/icon
 magick /tmp/icon-{16,20,24,32,40,48,64,256}.png packaging/icons/nvhvc.ico
 ```
 
-### Portable zip
+### Portable exe
 
-The zip holds `nvhvc.exe`, the licence, and the Windows App SDK runtime files listed in
-`.github/scripts/windows-runtime-files.txt`. windows-reactor-setup copies the whole runtime beside
-the exe, and local builds keep all of it. The zip leaves out the files the app doesn't need:
-
-- The language folders other than `en-us`. WinUI's own text, such as a text box's context menu,
-  falls back to English.
-- `Microsoft.Web.WebView2.Core.dll`, `DWriteCore.dll`, `Microsoft.Graphics.Imaging.dll`,
-  `SessionHandleIPCProxyStub.dll` and the map control's `map.html`.
-- `Microsoft.UI.Xaml.Phone.dll`, which holds the date and time pickers, Pivot and the page
-  transitions. Add it back if the app starts using them.
-- `Microsoft.UI.Xaml.Controls.pri`, `Microsoft.UI.pri` and `Microsoft.WindowsAppRuntime.pri`.
-  `resources.pri` has the same resources.
-
-The log of build-windows' "Pack the zip" step lists the files left out. After updating
-windows-reactor, check that list for new files, then run the app from the unpacked zip through
-every screen and a patch.
+The portable download is the `nvhvc.exe` the installer and the MSIX carry, built with
+`NVHVC_WINUI_RUNTIME=framework`, as `nvhvc-<version>-windows-x64.exe`. It uses the Windows App
+Runtime installed on the system; when that's missing, windows-reactor shows Microsoft's dialog
+with a link to the download page. A fast build's `nvhvc.pdb` is a separate download. Backtraces
+find it next to the exe under that name, whatever the exe is called.
 
 ### MSIX
 
