@@ -108,9 +108,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  # The installer, the portable exe and the MSIX, all with one nvhvc.exe that uses the Windows App
-  # Runtime installed on the system. The build runs on the target, so it checks each the way a user
-  # installs it.
+  # The installer and the portable exe, both with one nvhvc.exe that uses the Windows App Runtime
+  # installed on the system. The build runs on the target, so it checks each the way a user installs
+  # it.
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -159,7 +159,7 @@ jobs:
             Copy-Item "$env:RUNNER_TEMP\upx-$env:UPX_VERSION-win64\upx.exe" $dir
           }
           $dir >> $env:GITHUB_PATH
-      # The portable exe, and the exe the installer and the MSIX carry. A fast build also has its
+      # The portable exe, and the exe the installer carries. A fast build also has its
       # .pdb file, for backtraces, which releases list beside the portable exe.
       - name: Stage the app
         run: |
@@ -172,26 +172,6 @@ jobs:
           New-Item -ItemType Directory -Path dist | Out-Null
           Copy-Item "$bin\nvhvc.exe" "dist\nvhvc-$env:VERSION-windows-x64.exe"
           if (Test-Path "$bin\nvhvc.pdb") { Copy-Item "$bin\nvhvc.pdb" dist }
-      # Signed with the self-signed certificate in the secrets. A fork has no secrets, so its
-      # MSIX is unsigned, but a release must be signed.
-      - name: Pack the MSIX
-        env:
-          MSIX_PFX: ${{ secrets.MSIX_PFX }}
-          MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
-          RELEASE: ${{ inputs.version }}
-        run: |
-          $sign = @{}
-          if ($env:MSIX_PFX) {
-            $pfx = Join-Path $env:RUNNER_TEMP msix.pfx
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX))
-            $sign = @{ Pfx = $pfx; Certificate = 'dist\nvhvc-msix.cer' }
-          } elseif ($env:RELEASE) {
-            throw 'A release needs the MSIX_PFX and MSIX_PFX_PASSWORD secrets'
-          }
-          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir "$env:RUNNER_TEMP\framework-bin" `
-            -Out "dist\nvhvc-$env:VERSION-windows-x64.msix" @sign
-          if ($env:MSIX_PFX) { Remove-Item $pfx }
-          "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
       - name: Cache Inno Setup
         uses: actions/cache@v6
         with:
@@ -222,10 +202,10 @@ jobs:
         run: |
           cd dist
           shopt -s nullglob
-          for f in *.exe *.pdb *.msix *.cer; do sha256sum "$f" > "$f.sha256"; done
-          ../.github/scripts/summary.sh ./*.exe ./*.pdb ./*.msix ./*.cer >> "$GITHUB_STEP_SUMMARY"
+          for f in *.exe *.pdb; do sha256sum "$f" > "$f.sha256"; done
+          ../.github/scripts/summary.sh ./*.exe ./*.pdb >> "$GITHUB_STEP_SUMMARY"
       # Installs it silently, with nvhvc on PATH, then uninstalls it. The runner has no Windows App
-      # Runtime before this step, so Setup downloads and installs it. The MSIX check adds one later.
+      # Runtime before this step, so Setup downloads and installs it.
       - name: Check the installer
         run: |
           $setup = "nvhvc-$env:VERSION-windows-x64-setup.exe"
@@ -262,41 +242,12 @@ jobs:
           $out = & "dist\$exe" --version
           if ($out -ne "nvhvc $env:VERSION") { throw "$exe --version: $out" }
           .github\scripts\check-window.ps1 -Exe "dist\$exe"
-      # The runner is an admin, which trusting the certificate needs. The runtime framework comes
-      # from the Windows App SDK's own package, as winget's installer would put it there.
-      - name: Check the MSIX
-        run: |
-          # The installer check has usually installed a newer runtime, and Windows won't add an older one.
-          if (-not (Get-AppxPackage Microsoft.WindowsAppRuntime.2 | Where-Object { [version]$_.Version -ge [version]'2.4.0.0' })) {
-            $runtime = Join-Path $env:RUNNER_TEMP runtime
-            Invoke-WebRequest https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Runtime/2.4.0 `
-              -OutFile "$runtime.zip"
-            Expand-Archive "$runtime.zip" -DestinationPath $runtime
-            Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
-          }
-          $msix = "dist\nvhvc-$env:VERSION-windows-x64.msix"
-          if (Test-Path dist\nvhvc-msix.cer) {
-            Import-Certificate -FilePath dist\nvhvc-msix.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople |
-              Out-Null
-            $signature = Get-AuthenticodeSignature $msix
-            if ($signature.Status -ne 'Valid') { throw "$msix's signature is $($signature.Status)" }
-            Add-AppxPackage -Path $msix
-          } else {
-            Add-AppxPackage -Path $msix -AllowUnsigned
-          }
-          $package = Get-AppxPackage Mahir007.NvhvcHdr10Tool
-          if ($package.Version -ne $env:MSIX_VERSION) { throw "installed $($package.Version), not $env:MSIX_VERSION" }
-          $out = & "$env:LOCALAPPDATA\Microsoft\WindowsApps\nvhvc.exe" --version
-          if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc --version from the package: $out" }
-          .github\scripts\check-window.ps1 -App "$($package.PackageFamilyName)!App"
       - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: |
             dist/*.exe
             dist/*.pdb
-            dist/*.msix
-            dist/*.cer
             dist/*.sha256
           retention-days: 1
           if-no-files-found: error

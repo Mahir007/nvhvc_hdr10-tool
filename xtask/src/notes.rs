@@ -33,16 +33,6 @@ const KINDS: &[Kind] = &[
         text: None,
     },
     Kind {
-        glob: "nvhvc-*-windows-x64.msix",
-        system: System::Windows,
-        text: Some("MSIX"),
-    },
-    Kind {
-        glob: "nvhvc-msix.cer",
-        system: System::Windows,
-        text: Some("MSIX certificate"),
-    },
-    Kind {
         glob: "nvhvc-*-x86_64.flatpak",
         system: System::Linux,
         text: Some("Flatpak"),
