@@ -36,11 +36,6 @@ const KINDS: &[Kind] = &[
         system: System::Linux,
         text: Some("Flatpak"),
     },
-    Kind {
-        glob: "nvhvc-*-linux-x86_64.tar.gz",
-        system: System::Linux,
-        text: Some("Command line"),
-    },
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

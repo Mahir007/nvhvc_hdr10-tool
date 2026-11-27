@@ -11,7 +11,6 @@ the commit and pull request rules.
 | --- | --- |
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
-| build-linux | The command-line tool for Linux, statically linked against musl, in a `.tar.gz`. Extracts it and checks `--version`. |
 | build-windows | The portable zip and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs the MSIX, and checks `--version` and opens the app's window from both. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
@@ -41,7 +40,7 @@ release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
 | Profile | Used for | What it does |
 | --- | --- | --- |
 | fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The Windows zip and MSIX carry `nvhvc.pdb`, and the Flatpak keeps the debug info in its binaries. |
-| `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs the Linux CLI and `nvhvc.exe`, and CI runs the packed ones. |
+| `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs `nvhvc.exe`, and CI runs the packed one. |
 
 The fast profile is Cargo's own `dev` rather than a custom one. windows-reactor-setup finds the
 folder to copy the Windows App SDK runtime into by the profile's name, and only knows `debug` and
@@ -49,8 +48,7 @@ folder to copy the Windows App SDK runtime into by the profile's name, and only 
 
 UPX doesn't pack the Flatpak: its bundle is compressed already, and packed binaries would make
 OSTree's deltas between updates much larger. On Linux with glibc, which covers the tests and the
-Flatpak, Rust links with rust-lld by default. The musl CLI and the Windows builds keep their
-default linkers.
+Flatpak, Rust links with rust-lld by default. The Windows builds keep their default linker.
 
 On Windows, both profiles link the C runtime into `nvhvc.exe` (`+crt-static` in
 `.cargo/config.toml`), so they run without the Visual C++ Redistributable. A `RUSTFLAGS`
@@ -60,11 +58,14 @@ Locally, `cargo build` builds the fast one and `cargo build --release` the other
 
 ## Packaging
 
-### nvhvc.exe
+### One binary
 
-On Windows, `nvhvc.exe` is both the command-line tool and the app. It's a console program, so a
-terminal waits for it and shows its output. `nvhvc gui` opens the app. So does starting it with no
-arguments outside a terminal, from Explorer, the Start menu or a shortcut. `crates/nvhvc/build.rs`
+`nvhvc` is both the command-line tool and the app, on Windows and Linux. `nvhvc gui` opens the app,
+and the Linux desktop file runs that. `nvhvc-winui` and `nvhvc-gtk` are libraries it calls.
+
+On Windows, `nvhvc.exe` is a console program, so a terminal waits for it and shows its output.
+Starting it with no arguments outside a terminal, from Explorer, the Start menu or a shortcut,
+opens the app too. `crates/nvhvc/build.rs`
 embeds `nvhvc.manifest`, whose `consoleAllocationPolicy` stops Windows 11 24H2 and later from
 opening a console window for such a start. Older Windows opens one, and the exe closes it at once.
 

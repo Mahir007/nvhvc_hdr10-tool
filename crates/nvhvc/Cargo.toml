@@ -12,6 +12,9 @@ description = "The nvhvc HDR10 HEVC patcher: the command-line tool, which also o
 nvhvc-core.workspace = true
 clap.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nvhvc-gtk.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 nvhvc-winui.workspace = true
 

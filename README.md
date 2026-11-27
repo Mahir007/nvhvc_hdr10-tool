@@ -41,8 +41,8 @@ The Flatpak has ffmpeg, MKVToolNix and MP4Box built in. Its GNOME runtime comes 
 
 ```sh
 flatpak install --user nvhvc-*-x86_64.flatpak
-flatpak run io.github.Mahir007.NvhvcHdr10Tool
-flatpak run --command=nvhvc io.github.Mahir007.NvhvcHdr10Tool tools
+flatpak run io.github.Mahir007.NvhvcHdr10Tool gui     # the app
+flatpak run io.github.Mahir007.NvhvcHdr10Tool tools   # the command-line tool
 ```
 
 GNOME Software can also install the `.flatpak` when you open it. Before installing, it shows only
@@ -51,19 +51,17 @@ screenshots, licence and links appear once the app is installed. It rates the ap
 unsafe because the app can read and write all your files, which it needs to read an encode by its
 path and write the output beside it.
 
-The `linux-x86_64.tar.gz` holds the command-line tool on its own. It uses the ffmpeg, MKVToolNix
-and GPAC on `PATH`.
-
 ## Layout
 
 | Crate | What it is |
 | --- | --- |
 | `crates/nvhvc-core` | Bitstream editing, tool discovery, the probe/extract/patch/remux pipeline, settings, and the presentation model both GUIs use (`uimodel`). |
-| `crates/nvhvc` | The `nvhvc` binary: the command-line tool, and on Windows also the app. |
-| `crates/nvhvc-gtk` | GTK 4 + libadwaita GUI. Builds as a stub on anything but Linux. |
+| `crates/nvhvc` | The `nvhvc` binary: the command-line tool and the app. |
+| `crates/nvhvc-gtk` | GTK 4 + libadwaita app, a library that `nvhvc` opens. Empty on anything but Linux. |
 | `crates/nvhvc-winui` | WinUI 3 app on [windows-reactor](https://crates.io/crates/windows-reactor), a library that `nvhvc` opens. Empty on anything but Windows. |
 
-The stubs keep `cargo build` and `cargo test` working for the whole workspace on either platform.
+The app crates are empty on the other platform, so `cargo build` and `cargo test` work for the
+whole workspace on either.
 
 ## Requirements
 
@@ -163,9 +161,8 @@ export RUSTFLAGS="-C linker=gcc-16"
 ```sh
 git clone https://github.com/Mahir007/nvhvc_hdr10-tool
 cd nvhvc_hdr10-tool
-cargo run -p nvhvc-gtk           # Linux GUI
-cargo run -p nvhvc -- gui        # Windows app
-cargo run -p nvhvc -- tools      # CLI; arguments go after --
+cargo run -p nvhvc -- gui        # the app
+cargo run -p nvhvc -- tools      # the command-line tool; arguments go after --
 ```
 
 `--release` builds use LTO with one codegen unit, so they're slow. Use debug builds while working.

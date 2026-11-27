@@ -113,7 +113,6 @@ fn tag_message_appears_without_its_first_line() {
 fn downloads_follow_the_kinds_list() {
     let mut r = release("v1.0.0-beta.1");
     r.files = vec![
-        "nvhvc-1.0.0-beta.1+abc1234-linux-x86_64.tar.gz".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-windows-x64.msix".to_owned(),
         "nvhvc-msix.cer".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-x86_64.flatpak".to_owned(),
@@ -128,7 +127,7 @@ fn downloads_follow_the_kinds_list() {
         "## Download\n\n| System | Download |\n| --- | --- |\n\
          | Windows | [Portable zip]({dl}-windows-x64.zip) · [MSIX]({dl}-windows-x64.msix) · \
          [MSIX certificate]({release_dl}/nvhvc-msix.cer) |\n\
-         | Linux | [Flatpak]({dl}-x86_64.flatpak) · [Command line]({dl}-linux-x86_64.tar.gz) |\n\n\
+         | Linux | [Flatpak]({dl}-x86_64.flatpak) |\n\n\
          For how to install it, see [Installing]({BASE}/blob/v1.0.0-beta.1/README.md#installing) \
          in the README.\n\n## What's changed"
     );
