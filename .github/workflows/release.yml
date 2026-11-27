@@ -71,7 +71,6 @@ jobs:
         with:
           subject-path: |
             release/*.exe
-            release/*.zip
             release/*.msix
             release/*.cer
             release/*.flatpak
