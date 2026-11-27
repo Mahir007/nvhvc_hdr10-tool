@@ -11,8 +11,9 @@ Builds are on the [releases page](https://github.com/Mahir007/nvhvc_hdr10-tool/r
 
 ### Windows
 
-The portable zip runs from the folder you extract it to. Start `nvhvc-winui.exe` for the app;
-`nvhvc.exe` is the command-line tool. The Windows App SDK runtime the app needs is in the zip.
+The portable zip runs from the folder you extract it to. `nvhvc.exe` is the app and the
+command-line tool: start it from Explorer for the app, or run `nvhvc gui` in a terminal. The
+Windows App SDK runtime the app needs is in the zip.
 
 The MSIX installs the app with a Start menu entry and `nvhvc` on the command line. It's signed
 with a self-signed certificate, `nvhvc-msix.cer` on the releases page. Windows installs the MSIX
@@ -58,15 +59,15 @@ and GPAC on `PATH`.
 | Crate | What it is |
 | --- | --- |
 | `crates/nvhvc-core` | Bitstream editing, tool discovery, the probe/extract/patch/remux pipeline, settings, and the presentation model both GUIs use (`uimodel`). |
-| `crates/nvhvc-cli` | The `nvhvc` binary. |
+| `crates/nvhvc` | The `nvhvc` binary: the command-line tool, and on Windows also the app. |
 | `crates/nvhvc-gtk` | GTK 4 + libadwaita GUI. Builds as a stub on anything but Linux. |
-| `crates/nvhvc-winui` | WinUI 3 GUI on [windows-reactor](https://crates.io/crates/windows-reactor). Builds as a stub on anything but Windows. |
+| `crates/nvhvc-winui` | WinUI 3 app on [windows-reactor](https://crates.io/crates/windows-reactor), a library that `nvhvc` opens. Empty on anything but Windows. |
 
 The stubs keep `cargo build` and `cargo test` working for the whole workspace on either platform.
 
 ## Requirements
 
-- Rust 1.92 or later, 1.95 for `nvhvc-winui`. Install it with rustup; distribution packages are
+- Rust 1.92 or later, 1.95 for `nvhvc`. Install it with rustup; distribution packages are
   often older.
 - Linux: GTK 4.18 or later, libadwaita 1.8 or later, pkg-config, and gcc as the linker.
 - Windows: Visual Studio 2022 Build Tools with the C++ workload (MSVC and the Windows SDK).
@@ -162,15 +163,15 @@ export RUSTFLAGS="-C linker=gcc-16"
 ```sh
 git clone https://github.com/Mahir007/nvhvc_hdr10-tool
 cd nvhvc_hdr10-tool
-cargo run -p nvhvc-gtk            # Linux GUI
-cargo run -p nvhvc-winui          # Windows GUI
-cargo run -p nvhvc-cli -- tools   # CLI; arguments go after --
+cargo run -p nvhvc-gtk           # Linux GUI
+cargo run -p nvhvc -- gui        # Windows app
+cargo run -p nvhvc -- tools      # CLI; arguments go after --
 ```
 
 `--release` builds use LTO with one codegen unit, so they're slow. Use debug builds while working.
 
-The first `nvhvc-winui` build downloads the Windows App SDK runtime from nuget.org and copies it
-into the target directory next to the exe. The app runs from there without a system-wide runtime.
+The first Windows build of `nvhvc` downloads the Windows App SDK runtime from nuget.org and copies
+it into the target directory next to the exe. The app runs from there without a system-wide runtime.
 To move the exe, move those files with it.
 
 ## Checks
@@ -183,11 +184,11 @@ cargo test --workspace
 
 The unit tests are in `nvhvc-core` and don't need the media tools.
 
-With rustup, `nvhvc-winui` can be type-checked from Linux:
+With rustup, the Windows app can be type-checked from Linux:
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
-cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc
+cargo clippy -p nvhvc -p nvhvc-winui --target x86_64-pc-windows-msvc
 ```
 
 Linking and running it needs Windows.
