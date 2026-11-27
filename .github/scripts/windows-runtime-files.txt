@@ -1,0 +1,29 @@
+# The Windows App SDK runtime files the portable zip carries, as paths under the build's target
+# folder. windows-reactor-setup copies more than these; CONTRIBUTING.md says what's left out and
+# why. Lines starting with # are comments.
+CoreMessagingXP.dll
+dcompi.dll
+dwmcorei.dll
+DwmSceneI.dll
+en-us/Microsoft.ui.xaml.dll.mui
+marshal.dll
+Microsoft.DirectManipulation.dll
+Microsoft.InputStateManager.dll
+Microsoft.Internal.FrameworkUdk.dll
+Microsoft.UI.Composition.OSSupport.dll
+Microsoft.UI.dll
+Microsoft.UI.Input.dll
+Microsoft.UI.Windowing.Core.dll
+Microsoft.UI.Windowing.dll
+Microsoft.UI.Xaml/Assets/NoiseAsset_256x256_PNG.png
+Microsoft.UI.Xaml.Controls.dll
+Microsoft.ui.xaml.dll
+Microsoft.UI.Xaml.Internal.dll
+Microsoft.ui.xaml.resources.19h1.dll
+Microsoft.ui.xaml.resources.common.dll
+Microsoft.Windows.ApplicationModel.Resources.dll
+Microsoft.WindowsAppRuntime.dll
+MRM.dll
+resources.pri
+WinUIEdit.dll
+wuceffectsi.dll

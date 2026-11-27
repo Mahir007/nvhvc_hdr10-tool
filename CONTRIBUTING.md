@@ -82,6 +82,25 @@ default light style, at 2x, with the window's shadow on a transparent background
 captured on a headless sway over black and over white, and the alpha comes from the difference.
 Retake them when a change shows in them.
 
+### Portable zip
+
+The zip holds the two exes, the licence, and the Windows App SDK runtime files listed in
+`.github/scripts/windows-runtime-files.txt`. windows-reactor-setup copies the whole runtime beside
+the exe, and local builds keep all of it. The zip leaves out the files the app doesn't need:
+
+- The language folders other than `en-us`. WinUI's own text, such as a text box's context menu,
+  falls back to English.
+- `Microsoft.Web.WebView2.Core.dll`, `DWriteCore.dll`, `Microsoft.Graphics.Imaging.dll`,
+  `SessionHandleIPCProxyStub.dll` and the map control's `map.html`.
+- `Microsoft.UI.Xaml.Phone.dll`, which holds the date and time pickers, Pivot and the page
+  transitions. Add it back if the app starts using them.
+- `Microsoft.UI.Xaml.Controls.pri`, `Microsoft.UI.pri` and `Microsoft.WindowsAppRuntime.pri`.
+  `resources.pri` has the same resources.
+
+The log of build-windows' "Pack the zip" step lists the files left out. After updating
+windows-reactor, check that list for new files, then run the app from the unpacked zip through
+every screen and a patch.
+
 ### MSIX
 
 The MSIX holds an `nvhvc-winui.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
