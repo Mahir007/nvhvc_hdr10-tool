@@ -41,28 +41,16 @@ pub struct Ctx {
 /// Builds the application and runs the GTK main loop.
 pub fn run() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.add_main_option(
-        "version",
-        glib::Char::from(b'v'),
-        glib::OptionFlags::NONE,
-        glib::OptionArg::None,
-        "Print the version and exit",
-        None,
-    );
-    // Runs before GTK starts, so it works without a display.
-    app.connect_handle_local_options(|_, options| {
-        if options.contains("version") {
-            println!("nvhvc-gtk {}", nvhvc_core::VERSION);
-            return std::ops::ControlFlow::Break(glib::ExitCode::SUCCESS);
-        }
-        std::ops::ControlFlow::Continue(())
-    });
     app.connect_startup(|_| {
         load_css();
         install_bundled_icons();
     });
     app.connect_activate(build_ui);
-    app.run()
+    // nvhvc has read the command line already, so GApplication gets only the program name.
+    let program = std::env::args()
+        .next()
+        .unwrap_or_else(|| "nvhvc".to_owned());
+    app.run_with_args(&[program])
 }
 
 fn load_css() {

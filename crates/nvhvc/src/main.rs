@@ -4,7 +4,7 @@
 //! * `tools` — show which external tools were found and where.
 //! * `probe` — read and print a source's HDR10 metadata.
 //! * `run`   — inject the source's HDR10 metadata into an encode (probe → extract → patch → remux).
-//! * `gui`   — open the app (Windows). Starting nvhvc.exe outside a terminal does the same.
+//! * `gui`   — open the app. On Windows, starting nvhvc.exe outside a terminal does the same.
 //!
 //! Custom tool paths can be given per-invocation (`--mkvmerge PATH`, …); these override both
 //! auto-detection and any persisted settings.
@@ -44,8 +44,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the app. Starting nvhvc.exe from Explorer or the Start menu does the same.
-    #[cfg(windows)]
+    /// Open the app.
+    #[cfg(any(windows, target_os = "linux"))]
     Gui,
     /// Show which external tools were found and where.
     Tools,
@@ -78,7 +78,7 @@ fn main() -> std::process::ExitCode {
         return open_app();
     }
     let cli = Cli::parse();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if matches!(cli.command, Command::Gui) {
         return open_app();
     }
@@ -106,6 +106,12 @@ fn open_app() -> std::process::ExitCode {
     }
 }
 
+/// Opens the app and returns when its window closes.
+#[cfg(target_os = "linux")]
+fn open_app() -> std::process::ExitCode {
+    nvhvc_gtk::run()
+}
+
 /// Per-invocation `--tool` flags take precedence over persisted settings.
 fn merge_overrides(cli: &Cli, settings: &Settings) -> Overrides {
     let s = &settings.tool_overrides;
@@ -120,7 +126,7 @@ fn merge_overrides(cli: &Cli, settings: &Settings) -> Overrides {
 
 fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Result<()> {
     match &cli.command {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         Command::Gui => unreachable!("main opens the app"),
         Command::Tools => {
             print_tools(tools);
