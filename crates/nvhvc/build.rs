@@ -1,8 +1,8 @@
 //! On Windows, nvhvc.exe is also the app. This embeds `nvhvc.manifest` and sets up the Windows App
-//! SDK runtime the app needs. By default it stages a self-contained runtime next to the exe, so
-//! the app runs without a system-wide runtime install. `NVHVC_WINUI_RUNTIME=framework` builds the
-//! exe for the MSIX package instead: the package declares the runtime framework it needs, and
-//! Windows provides it. On other platforms this does nothing.
+//! SDK runtime the app needs. By default it stages a self-contained runtime next to the exe, so a
+//! local build runs without a system-wide runtime install. `NVHVC_WINUI_RUNTIME=framework` builds
+//! the exe the releases ship instead, which uses the Windows App Runtime installed on the system.
+//! On other platforms this does nothing.
 use std::env;
 use std::path::Path;
 

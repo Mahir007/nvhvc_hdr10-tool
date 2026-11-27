@@ -17,9 +17,11 @@ admin rights, with a Start menu entry. It can also add a desktop shortcut and pu
 Microsoft's installer for it (about 125 MB) and runs it. The setup isn't signed, so Windows
 SmartScreen warns about it: choose More info, then Run anyway.
 
-The portable zip runs from the folder you extract it to. `nvhvc.exe` is the app and the
-command-line tool: start it from Explorer for the app, or run `nvhvc gui` in a terminal. The
-Windows App SDK runtime the app needs is in the zip.
+The portable `nvhvc-<version>-windows-x64.exe` is the app and the command-line tool in one file:
+start it from Explorer for the app, or run it with `gui` in a terminal. It needs the Windows App
+Runtime too. If that's missing, the app offers Microsoft's download page, or you can run
+`winget install Microsoft.WindowsAppRuntime.2`. Alpha and beta releases also have `nvhvc.pdb`.
+Put it next to the exe, and a crash's backtrace shows function names.
 
 The MSIX installs the app with a Start menu entry and `nvhvc` on the command line. It's signed
 with a self-signed certificate, `nvhvc-msix.cer` on the releases page. Windows installs the MSIX
