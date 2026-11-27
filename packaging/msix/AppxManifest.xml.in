@@ -29,7 +29,8 @@
     <Resource Language="en-us" />
   </Resources>
   <Applications>
-    <Application Id="App" Executable="nvhvc-winui.exe" EntryPoint="Windows.FullTrustApplication">
+    <!-- The app: nvhvc.exe started without arguments outside a terminal opens it. -->
+    <Application Id="App" Executable="nvhvc.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="HDR10 Patcher"
         Description="Add HDR10 metadata to an NVENC HEVC encode without re-encoding it"

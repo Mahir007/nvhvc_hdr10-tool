@@ -8,9 +8,10 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 
 - `nvhvc-core`: bitstream editing, tool discovery, probe/extract/remux pipeline, settings, and
   the presentation model both GUIs share (`uimodel`).
-- `nvhvc-cli`: the `nvhvc` binary.
+- `nvhvc`: the `nvhvc` binary: the command-line tool, and on Windows also the app, which it opens
+  from `nvhvc-winui`.
 - `nvhvc-gtk`: GTK4 + libadwaita GUI for Linux. Builds as a stub elsewhere.
-- `nvhvc-winui`: WinUI 3 GUI for Windows on windows-reactor (crates.io releases). Builds as a stub
+- `nvhvc-winui`: WinUI 3 GUI for Windows on windows-reactor (crates.io releases), a library. Empty
   elsewhere.
 
 ## Git and pull requests
@@ -72,7 +73,7 @@ project adds:
 - The source's version is `0.0.0-dev`. Builds take theirs from `NVHVC_VERSION`, and code that
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.
-- The CLI and both GUIs print the version with `--version`; CI checks every archive with it.
+- `nvhvc` and the GTK app print the version with `--version`; CI checks every archive with it.
 - CI builds dev, alpha and beta versions and the tests with the fast profile, which is Cargo's
   `dev`, and release candidates and releases with `release`. UPX packs the release builds of the CLI and the
   Windows exes, not the Flatpak.
@@ -89,11 +90,11 @@ project adds:
   other WSL distros without asking.
 - Keep cargo output and test outputs on ext4 (`CARGO_TARGET_DIR=$HOME/nvhvc-target`, `/tmp`).
   The `/mnt/p` checkout is on 9P, which is slow for builds and MP4 assembly.
-- Build and run nvhvc-winui on Windows through the devenv:
-  `/mnt/p/nvhvc_hdr10-tool-devenv/dev.sh cargo build -p nvhvc-winui`. It runs from
+- Build and run the Windows app through the devenv:
+  `/mnt/p/nvhvc_hdr10-tool-devenv/dev.sh cargo build -p nvhvc`. It runs from
   `P:\nvhvc_hdr10-tool` in PowerShell 7. Plain `cargo` uses scoop's Rust and writes outside the
   project and `-devenv` folders. Never use Windows PowerShell 5.1. Type-check from Linux first with
-  `cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc`.
+  `cargo clippy -p nvhvc -p nvhvc-winui --target x86_64-pc-windows-msvc`.
 - Don't build from the junction path under `C:\Users`; cargo rebuilds whenever the path spelling
   changes.
 

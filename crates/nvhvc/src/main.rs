@@ -1,9 +1,10 @@
-//! Command-line front-end for the nvhvc HDR10 HEVC patcher.
+//! The nvhvc HDR10 HEVC patcher: the command-line tool, which also opens the app.
 //!
 //! Subcommands:
 //! * `tools` — show which external tools were found and where.
 //! * `probe` — read and print a source's HDR10 metadata.
 //! * `run`   — inject the source's HDR10 metadata into an encode (probe → extract → patch → remux).
+//! * `gui`   — open the app (Windows). Starting nvhvc.exe outside a terminal does the same.
 //!
 //! Custom tool paths can be given per-invocation (`--mkvmerge PATH`, …); these override both
 //! auto-detection and any persisted settings.
@@ -43,6 +44,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the app. Starting nvhvc.exe from Explorer or the Start menu does the same.
+    #[cfg(windows)]
+    Gui,
     /// Show which external tools were found and where.
     Tools,
     /// Probe a source file and print its HDR10 metadata.
@@ -68,11 +72,32 @@ enum Command {
 }
 
 fn main() -> std::process::ExitCode {
+    // Explorer, the Start menu and shortcuts start the exe with no arguments and no terminal.
+    #[cfg(windows)]
+    if std::env::args_os().len() == 1 && nvhvc_winui::started_outside_terminal() {
+        return open_app();
+    }
     let cli = Cli::parse();
+    #[cfg(windows)]
+    if matches!(cli.command, Command::Gui) {
+        return open_app();
+    }
     let settings = Settings::load();
     let tools = Toolset::discover(&merge_overrides(&cli, &settings));
 
     match dispatch(&cli, &settings, &tools) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Opens the app and returns when its window closes.
+#[cfg(windows)]
+fn open_app() -> std::process::ExitCode {
+    match nvhvc_winui::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
@@ -95,6 +120,8 @@ fn merge_overrides(cli: &Cli, settings: &Settings) -> Overrides {
 
 fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Result<()> {
     match &cli.command {
+        #[cfg(windows)]
+        Command::Gui => unreachable!("main opens the app"),
         Command::Tools => {
             print_tools(tools);
             Ok(())

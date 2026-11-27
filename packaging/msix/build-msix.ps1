@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 <#
 .SYNOPSIS
-Packs nvhvc-winui.exe and nvhvc.exe into an MSIX, signed with the certificate in Pfx if given.
+Packs nvhvc.exe into an MSIX, signed with the certificate in Pfx if given.
 
 .DESCRIPTION
-BinDir must hold an nvhvc-winui.exe built with NVHVC_WINUI_RUNTIME=framework, which uses the
+BinDir must hold an nvhvc.exe built with NVHVC_WINUI_RUNTIME=framework, which uses the
 Windows App SDK runtime the package depends on instead of carrying its own. Needs makeappx.exe,
 and signtool.exe to sign, from the Windows SDK. Prints the package's four-part version.
 
@@ -72,15 +72,11 @@ if (Test-Path -LiteralPath $layout) {
 }
 New-Item -ItemType Directory -Path (Join-Path $layout 'Assets') | Out-Null
 
-foreach ($exe in 'nvhvc-winui.exe', 'nvhvc.exe') {
-    Copy-Item -LiteralPath (Join-Path $BinDir $exe) -Destination $layout
-}
+Copy-Item -LiteralPath (Join-Path $BinDir 'nvhvc.exe') -Destination $layout
 # A fast build's debug info, so its backtraces have names. A release build has none.
-foreach ($pdb in 'nvhvc_winui.pdb', 'nvhvc.pdb') {
-    $path = Join-Path $BinDir $pdb
-    if (Test-Path -LiteralPath $path) {
-        Copy-Item -LiteralPath $path -Destination $layout
-    }
+$pdb = Join-Path $BinDir 'nvhvc.pdb'
+if (Test-Path -LiteralPath $pdb) {
+    Copy-Item -LiteralPath $pdb -Destination $layout
 }
 Copy-Item -Path (Join-Path $here 'Assets\*.png') -Destination (Join-Path $layout 'Assets')
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $here 'AppxManifest.xml.in')

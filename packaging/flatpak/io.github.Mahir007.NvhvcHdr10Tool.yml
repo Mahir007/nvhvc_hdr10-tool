@@ -146,7 +146,7 @@ modules:
       # extension. A release build is stripped by cargo already.
       no-debuginfo: true
     build-commands:
-      - cargo build --profile "$NVHVC_PROFILE" --locked -p nvhvc-gtk -p nvhvc-cli
+      - cargo build --profile "$NVHVC_PROFILE" --locked -p nvhvc-gtk -p nvhvc
       - install -Dm755 -t /app/bin target/$NVHVC_PROFILE_DIR/nvhvc-gtk target/$NVHVC_PROFILE_DIR/nvhvc
       - install -Dm644 -t /app/share/applications packaging/io.github.Mahir007.NvhvcHdr10Tool.desktop
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg

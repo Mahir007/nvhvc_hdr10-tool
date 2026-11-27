@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "crates/nvhvc-core",
-    "crates/nvhvc-cli",
+    "crates/nvhvc",
     "crates/nvhvc-gtk",
     "crates/nvhvc-winui",
     "xtask",
@@ -17,6 +17,7 @@ repository = "https://github.com/Mahir007/nvhvc_hdr10-tool"
 
 [workspace.dependencies]
 nvhvc-core = { path = "crates/nvhvc-core" }
+nvhvc-winui = { path = "crates/nvhvc-winui" }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 
