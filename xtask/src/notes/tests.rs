@@ -43,8 +43,12 @@ fn globs_match_whole_names() {
         "nvhvc-1.0.0-x86_64.flatpak.sha256"
     ));
     assert!(!glob_matches(
-        "nvhvc-*-windows-x64.zip",
-        "other-1.0.0-windows-x64.zip"
+        "nvhvc-*-windows-x64.exe",
+        "other-1.0.0-windows-x64.exe"
+    ));
+    assert!(!glob_matches(
+        "nvhvc-*-windows-x64.exe",
+        "nvhvc-1.0.0-windows-x64-setup.exe"
     ));
     assert!(glob_matches("a*b*c", "aXbYc"));
 }
@@ -114,9 +118,11 @@ fn downloads_follow_the_kinds_list() {
     let mut r = release("v1.0.0-beta.1");
     r.files = vec![
         "nvhvc-1.0.0-beta.1+abc1234-windows-x64.msix".to_owned(),
+        "nvhvc-1.0.0-beta.1+abc1234-windows-x64-setup.exe".to_owned(),
         "nvhvc-msix.cer".to_owned(),
         "nvhvc-1.0.0-beta.1+abc1234-x86_64.flatpak".to_owned(),
-        "nvhvc-1.0.0-beta.1+abc1234-windows-x64.zip".to_owned(),
+        "nvhvc-1.0.0-beta.1+abc1234-windows-x64.exe".to_owned(),
+        "nvhvc.pdb".to_owned(),
     ];
     r.readme =
         Some("# nvhvc\n\n```\n## Install in a code block\n```\n\n## Installing\n".to_owned());
@@ -125,7 +131,9 @@ fn downloads_follow_the_kinds_list() {
     let dl = format!("{release_dl}/nvhvc-1.0.0-beta.1%2Babc1234");
     let table = format!(
         "## Download\n\n| System | Download |\n| --- | --- |\n\
-         | Windows | [Portable zip]({dl}-windows-x64.zip) · [MSIX]({dl}-windows-x64.msix) · \
+         | Windows | [Installer]({dl}-windows-x64-setup.exe) · [Portable]({dl}-windows-x64.exe) · \
+         [nvhvc.pdb]({release_dl}/nvhvc.pdb) · \
+         [MSIX]({dl}-windows-x64.msix) · \
          [MSIX certificate]({release_dl}/nvhvc-msix.cer) |\n\
          | Linux | [Flatpak]({dl}-x86_64.flatpak) |\n\n\
          For how to install it, see [Installing]({BASE}/blob/v1.0.0-beta.1/README.md#installing) \
@@ -290,7 +298,7 @@ fn checksums_follow_the_table() {
     let mut r = release("v1.0.0");
     r.files = vec![
         "nvhvc-1.0.0-x86_64.flatpak".to_owned(),
-        "nvhvc-1.0.0-windows-x64.zip".to_owned(),
+        "nvhvc-1.0.0-windows-x64.exe".to_owned(),
         "nvhvc-1.0.0-windows-x64.msix".to_owned(),
     ];
     let notes = render(&r).unwrap();
@@ -298,7 +306,7 @@ fn checksums_follow_the_table() {
         Download the file's `.sha256` too, and run its line in the folder with both. \
         It prints `OK` or `True` if the file is intact.\n\n\
         Windows, in PowerShell:\n\n```powershell\n\
-        $hash, $file = (Get-Content 'nvhvc-1.0.0-windows-x64.zip.sha256') -split '\\s+'; (Get-FileHash $file).Hash -eq $hash\n\
+        $hash, $file = (Get-Content 'nvhvc-1.0.0-windows-x64.exe.sha256') -split '\\s+'; (Get-FileHash $file).Hash -eq $hash\n\
         $hash, $file = (Get-Content 'nvhvc-1.0.0-windows-x64.msix.sha256') -split '\\s+'; (Get-FileHash $file).Hash -eq $hash\n\
         ```\n\n\
         Linux:\n\n```sh\nsha256sum -c 'nvhvc-1.0.0-x86_64.flatpak.sha256'\n```\n\n\
