@@ -11,7 +11,7 @@ the commit and pull request rules.
 | --- | --- |
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
-| build-windows | The portable zip and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs the MSIX, and checks `--version` and opens the app's window from both. |
+| build-windows | The installer, the portable zip and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs each, and checks `--version` and opens the app's window from each. Uninstalls the installer's copy. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
@@ -94,6 +94,39 @@ The screenshots in `packaging/screenshots` show the GTK app at its default size,
 default light style, at 2x, with the window's shadow on a transparent background. Each one is
 captured on a headless sway over black and over white, and the alpha comes from the difference.
 Retake them when a change shows in them.
+
+### Installer
+
+`packaging/inno/nvhvc.iss` builds the installer with Inno Setup 7, whose version CI pins as
+`INNO_VERSION`. It installs for the current user, in `%LOCALAPPDATA%\Programs\nvhvc`, and never asks
+for admin rights. It carries the `nvhvc.exe` the MSIX does, built with
+`NVHVC_WINUI_RUNTIME=framework`:
+
+```powershell
+$env:NVHVC_WINUI_RUNTIME = 'framework'
+cargo build --release -p nvhvc
+iscc /DVersion=0.0.0-dev "/O$PWD\dist" packaging\inno\nvhvc.iss
+```
+
+At the Ready page, Setup runs its `nvhvc.exe check-runtime`, which asks Windows for the runtime the
+way the app does when it starts. If it's missing, Setup downloads Microsoft's runtime installer,
+checks its SHA-256, runs it with `--quiet` and checks again. Without admin rights, that installs
+the runtime for the current user. The URL and hash are at the top of the script. Any 2.x from 2.4
+on runs the app, so they only need updating for a newer runtime.
+
+Adding `nvhvc` to `PATH` is an optional task. It adds or removes only the app's folder in the
+user's `Path`, and the uninstaller takes it off again.
+
+CI installs it silently with the `PATH` task, checks `--version`, the runtime, `PATH` and the app's
+window, and uninstalls it. That happens before the MSIX check installs a runtime of its own.
+
+`packaging/icons/nvhvc.ico`, for Setup and the shortcuts, is a render of the SVG icon:
+
+```sh
+svg=packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
+for n in 16 20 24 32 40 48 64 256; do rsvg-convert -w $n -h $n $svg -o /tmp/icon-$n.png; done
+magick /tmp/icon-{16,20,24,32,40,48,64,256}.png packaging/icons/nvhvc.ico
+```
 
 ### Portable zip
 
