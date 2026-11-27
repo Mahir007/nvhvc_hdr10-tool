@@ -27,6 +27,8 @@ env:
   GTK_PACKAGES: libgtk-4-dev libadwaita-1-dev
   # Packs the binaries of a release build.
   UPX_VERSION: 5.3.0
+  # Compiles the Windows installer.
+  INNO_VERSION: 7.1.1
 
 jobs:
   lint:
@@ -106,9 +108,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  # The portable zip, with the Windows App SDK runtime beside nvhvc.exe, and the MSIX, which uses
-  # the runtime installed on the system. The build runs on the target, so it checks both the way
-  # a user installs them.
+  # The portable zip, with the Windows App SDK runtime beside nvhvc.exe, and the installer and the
+  # MSIX, which use the runtime installed on the system. The build runs on the target, so it checks
+  # each the way a user installs it.
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -196,13 +198,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
           }
           .github\scripts\pack-zip.ps1 -Source $stage -Out "dist\$name.zip" -Epoch $env:SOURCE_DATE_EPOCH
-      - name: Build the MSIX app
+      # For the installer and the MSIX.
+      - name: Build the app for the system runtime
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
           NVHVC_WINUI_RUNTIME: framework
         run: |
           cargo build --profile $env:PROFILE --locked -p nvhvc
-          $bin = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP msix-bin)
+          $bin = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP framework-bin)
           Get-ChildItem "target\$env:PROFILE_DIR\*" -Include nvhvc.exe, nvhvc.pdb |
             Copy-Item -Destination $bin
           if ($env:PROFILE -eq 'release') {
@@ -225,17 +228,42 @@ jobs:
           } elseif ($env:RELEASE) {
             throw 'A release needs the MSIX_PFX and MSIX_PFX_PASSWORD secrets'
           }
-          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir "$env:RUNNER_TEMP\msix-bin" `
+          $msix = packaging\msix\build-msix.ps1 -Version $env:VERSION -BinDir "$env:RUNNER_TEMP\framework-bin" `
             -Out "dist\nvhvc-$env:VERSION-windows-x64.msix" @sign
           if ($env:MSIX_PFX) { Remove-Item $pfx }
           "MSIX_VERSION=$msix" >> $env:GITHUB_ENV
+      - name: Cache Inno Setup
+        uses: actions/cache@v6
+        with:
+          path: ~\innosetup
+          key: innosetup-${{ env.INNO_VERSION }}
+      - name: Install Inno Setup
+        run: |
+          $dir = Join-Path $HOME innosetup
+          if (-not (Test-Path "$dir\ISCC.exe")) {
+            $exe = Join-Path $env:RUNNER_TEMP innosetup.exe
+            $tag = 'is-' + $env:INNO_VERSION.Replace('.', '_')
+            Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$env:INNO_VERSION-x64.exe" `
+              -OutFile $exe
+            if ((Get-FileHash $exe).Hash -ne '8A5A6711C3766A6E5FB74F280BA0E3551E719CE94538D901FDBD1F8F9920B3F0') {
+              throw "innosetup-$env:INNO_VERSION-x64.exe doesn't match its SHA-256"
+            }
+            Start-Process -Wait -FilePath $exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+              '/NOICONS', '/CURRENTUSER', "/DIR=$dir"
+            if (-not (Test-Path "$dir\ISCC.exe")) { throw "Inno Setup didn't install to $dir" }
+          }
+          $dir >> $env:GITHUB_PATH
+      - name: Pack the installer
+        run: |
+          iscc "/DVersion=$env:VERSION" "/DBinDir=$env:RUNNER_TEMP\framework-bin" "/O$PWD\dist" packaging\inno\nvhvc.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed with exit code $LASTEXITCODE" }
       - name: Checksums
         shell: bash
         run: |
           cd dist
           shopt -s nullglob
-          for f in *.zip *.msix *.cer; do sha256sum "$f" > "$f.sha256"; done
-          ../.github/scripts/summary.sh ./*.zip ./*.msix ./*.cer >> "$GITHUB_STEP_SUMMARY"
+          for f in *.exe *.zip *.msix *.cer; do sha256sum "$f" > "$f.sha256"; done
+          ../.github/scripts/summary.sh ./*.exe ./*.zip ./*.msix ./*.cer >> "$GITHUB_STEP_SUMMARY"
       - name: Check the zip
         run: |
           $dir = Join-Path $env:RUNNER_TEMP portable
@@ -247,15 +275,45 @@ jobs:
           $out = & "$dir\nvhvc.exe" --version
           if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc.exe --version: $out" }
           .github\scripts\check-window.ps1 -Exe "$dir\nvhvc.exe"
+      # Installs it silently, with nvhvc on PATH, then uninstalls it. The runner has no Windows App
+      # Runtime before this step, so Setup downloads and installs it. The MSIX check adds one later.
+      - name: Check the installer
+        run: |
+          $setup = "nvhvc-$env:VERSION-windows-x64-setup.exe"
+          Push-Location dist
+          $hash, $file = (Get-Content "$setup.sha256") -split '\s+'
+          if ((Get-FileHash $file).Hash -ne $hash) { throw "$file doesn't match its .sha256" }
+          Pop-Location
+          $log = Join-Path $env:RUNNER_TEMP setup.log
+          $p = Start-Process -Wait -PassThru -FilePath "dist\$setup" `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=addtopath', "/LOG=$log"
+          if (Test-Path $log) { Select-String -LiteralPath $log -Pattern 'Windows App Runtime|runtime installer|user PATH' | ForEach-Object Line }
+          if ($p.ExitCode -ne 0) { throw "Setup exited with code $($p.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\nvhvc'
+          $out = & "$app\nvhvc.exe" --version
+          if ($out -ne "nvhvc $env:VERSION") { throw "the installed nvhvc.exe --version: $out" }
+          & "$app\nvhvc.exe" check-runtime
+          if ($LASTEXITCODE -ne 0) { throw 'The Windows App Runtime is missing after Setup' }
+          if ($app -notin ((Get-ItemProperty HKCU:\Environment).Path -split ';')) { throw "$app isn't on the user's PATH" }
+          .github\scripts\check-window.ps1 -Exe "$app\nvhvc.exe"
+          $p = Start-Process -Wait -PassThru -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if ($p.ExitCode -ne 0) { throw "The uninstaller exited with code $($p.ExitCode)" }
+          # The uninstaller runs a copy of itself from TEMP, which can outlast the first process.
+          foreach ($i in 1..60) { if (-not (Test-Path "$app\nvhvc.exe")) { break }; Start-Sleep -Milliseconds 500 }
+          if (Test-Path "$app\nvhvc.exe") { throw 'The uninstaller left nvhvc.exe' }
+          if ($app -in ((Get-ItemProperty HKCU:\Environment).Path -split ';')) { throw "The uninstaller left $app on PATH" }
       # The runner is an admin, which trusting the certificate needs. The runtime framework comes
       # from the Windows App SDK's own package, as winget's installer would put it there.
       - name: Check the MSIX
         run: |
-          $runtime = Join-Path $env:RUNNER_TEMP runtime
-          Invoke-WebRequest https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Runtime/2.4.0 `
-            -OutFile "$runtime.zip"
-          Expand-Archive "$runtime.zip" -DestinationPath $runtime
-          Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
+          # The installer check has usually installed a newer runtime, and Windows won't add an older one.
+          if (-not (Get-AppxPackage Microsoft.WindowsAppRuntime.2 | Where-Object { [version]$_.Version -ge [version]'2.4.0.0' })) {
+            $runtime = Join-Path $env:RUNNER_TEMP runtime
+            Invoke-WebRequest https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Runtime/2.4.0 `
+              -OutFile "$runtime.zip"
+            Expand-Archive "$runtime.zip" -DestinationPath $runtime
+            Add-AppxPackage -Path "$runtime\tools\MSIX\win10-x64\Microsoft.WindowsAppRuntime.2.msix"
+          }
           $msix = "dist\nvhvc-$env:VERSION-windows-x64.msix"
           if (Test-Path dist\nvhvc-msix.cer) {
             Import-Certificate -FilePath dist\nvhvc-msix.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople |
@@ -275,6 +333,7 @@ jobs:
         with:
           name: release-windows
           path: |
+            dist/*.exe
             dist/*.zip
             dist/*.msix
             dist/*.cer

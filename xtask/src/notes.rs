@@ -17,6 +17,11 @@ struct Kind {
 /// The files nvhvc releases, in the order the table lists them.
 const KINDS: &[Kind] = &[
     Kind {
+        glob: "nvhvc-*-windows-x64-setup.exe",
+        system: System::Windows,
+        text: Some("Installer"),
+    },
+    Kind {
         glob: "nvhvc-*-windows-x64.zip",
         system: System::Windows,
         text: Some("Portable zip"),

@@ -70,6 +70,7 @@ jobs:
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: |
+            release/*.exe
             release/*.zip
             release/*.msix
             release/*.cer
