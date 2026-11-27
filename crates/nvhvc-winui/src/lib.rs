@@ -13,9 +13,11 @@ mod app;
 mod model;
 mod palette;
 mod platform;
+mod runtime;
 mod views;
 
 pub use platform::started_outside_terminal;
+pub use runtime::runtime_installed;
 
 /// Opens the app's window and returns when it closes.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {

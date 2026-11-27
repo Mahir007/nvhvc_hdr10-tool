@@ -47,6 +47,10 @@ enum Command {
     /// Open the app.
     #[cfg(any(windows, target_os = "linux"))]
     Gui,
+    /// Exit with 0 if the Windows App Runtime the app needs is installed. The installer uses it.
+    #[cfg(windows)]
+    #[command(hide = true)]
+    CheckRuntime,
     /// Show which external tools were found and where.
     Tools,
     /// Probe a source file and print its HDR10 metadata.
@@ -81,6 +85,19 @@ fn main() -> std::process::ExitCode {
     #[cfg(any(windows, target_os = "linux"))]
     if matches!(cli.command, Command::Gui) {
         return open_app();
+    }
+    #[cfg(windows)]
+    if matches!(cli.command, Command::CheckRuntime) {
+        let installed = nvhvc_winui::runtime_installed();
+        println!(
+            "Windows App Runtime: {}",
+            if installed { "installed" } else { "missing" }
+        );
+        return if installed {
+            std::process::ExitCode::SUCCESS
+        } else {
+            std::process::ExitCode::FAILURE
+        };
     }
     let settings = Settings::load();
     let tools = Toolset::discover(&merge_overrides(&cli, &settings));
@@ -128,6 +145,8 @@ fn dispatch(cli: &Cli, settings: &Settings, tools: &Toolset) -> nvhvc_core::Resu
     match &cli.command {
         #[cfg(any(windows, target_os = "linux"))]
         Command::Gui => unreachable!("main opens the app"),
+        #[cfg(windows)]
+        Command::CheckRuntime => unreachable!("main checks the runtime"),
         Command::Tools => {
             print_tools(tools);
             Ok(())

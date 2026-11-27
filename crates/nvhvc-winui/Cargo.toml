@@ -15,12 +15,14 @@ nvhvc-core.workspace = true
 # everywhere.
 [target.'cfg(windows)'.dependencies]
 windows-reactor = "0.100"
-# Native file dialogs, the system accent colour, the Esc key hook and the console check for how
-# nvhvc.exe was started. windows 0.62 carries its own windows-core; none of its types are passed to reactor.
+# Native file dialogs, the system accent colour, the Esc key hook, the console check for how
+# nvhvc.exe was started, and the runtime check for the installer. windows 0.62 carries its own windows-core; none of its types are passed to reactor.
 windows = { version = "0.62", features = [
     "Foundation",
     "UI_ViewManagement",
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_Threading",
