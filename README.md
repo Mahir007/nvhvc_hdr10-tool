@@ -20,24 +20,11 @@ SmartScreen warns about it: choose More info, then Run anyway.
 The portable `nvhvc-<version>-windows-x64.exe` is the app and the command-line tool in one file:
 start it from Explorer for the app, or run it with `gui` in a terminal. It needs the Windows App
 Runtime too. If that's missing, the app offers Microsoft's download page, or you can run
-`winget install Microsoft.WindowsAppRuntime.2`. Alpha and beta releases also have `nvhvc.pdb`.
-Put it next to the exe, and a crash's backtrace shows function names.
+`winget install Microsoft.WindowsAppRuntime.2`. SmartScreen warns about it as it does about the
+setup. Alpha and beta releases also have `nvhvc.pdb`. Put it next to the exe, and a crash's
+backtrace shows function names.
 
-The MSIX installs the app with a Start menu entry and `nvhvc` on the command line. It's signed
-with a self-signed certificate, `nvhvc-msix.cer` on the releases page. Windows installs the MSIX
-only once you trust that certificate, and trusting it lets any package signed with it install.
-Its thumbprint is `FC5E68DDA373D68ABF22449AEE8E456DD3CCB3C3`, which
-`(Get-PfxCertificate .\nvhvc-msix.cer).Thumbprint` prints. Once, in an admin PowerShell, trust it
-and install the Windows App SDK runtime:
-
-```powershell
-Import-Certificate -FilePath .\nvhvc-msix.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
-winget install Microsoft.WindowsAppRuntime.2
-```
-
-Then open the `.msix` to install it or update to it.
-
-All three use the media tools installed on the system:
+Both use the media tools installed on the system:
 
 ```powershell
 winget install Gyan.FFmpeg MoritzBunkus.MKVToolNix GPAC.GPAC

@@ -20,7 +20,7 @@ project adds:
 - `style` is for formatting only, `build` for manifests, the lockfile, `build.rs` and dependency
   bumps, and `chore` for repo housekeeping such as `.gitattributes`.
 - Scopes: `core`, `cli`, `gtk`, `winui`, `gui` for a change that lands in both GUIs together,
-  `packaging` for the installer, MSIX and Flatpak files, and `contributing` for contributor docs. No scope
+  `packaging` for the installer and Flatpak files, and `contributing` for contributor docs. No scope
   for repo-wide changes.
 - A change that fits more than one type is split into one commit per type. Keep each commit
   building: land a core API before the GUI or CLI commit that uses it.

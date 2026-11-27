@@ -11,7 +11,7 @@ the commit and pull request rules.
 | --- | --- |
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
-| build-windows | The installer, the portable exe and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs each, and checks `--version` and opens the app's window from each. Uninstalls the installer's copy. |
+| build-windows | The installer and the portable exe. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs each, and checks `--version` and opens the app's window from each. Uninstalls the installer's copy. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
@@ -29,17 +29,13 @@ The source's version is `0.0.0-dev`. A build gets its version from `NVHVC_VERSIO
 time, and every front-end reports `nvhvc_core::VERSION`. CI sets it to the tag's version for a
 release, adds `+<short commit>` for a pre-release, and uses `0.0.0-dev+<short commit>` otherwise.
 
-MSIX versions are four numbers. The fourth orders the builds of one version, so an upgrade from a
-pre-release to the release works: `alpha.N` is N, `beta.N` is 100 + N, `rc.N` is 200 + N, and the
-release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
-
 ## Build profiles
 
 `Cargo.toml` sets up two profiles, and CI picks one from the version:
 
 | Profile | Used for | What it does |
 | --- | --- | --- |
-| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The installer and the MSIX carry `nvhvc.pdb`, the downloads list it beside the portable exe, and the Flatpak keeps the debug info in its binaries. |
+| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The installer carries `nvhvc.pdb`, the downloads list it beside the portable exe, and the Flatpak keeps the debug info in its binaries. |
 | `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs `nvhvc.exe`, and CI runs the packed one. |
 
 The fast profile is Cargo's own `dev` rather than a custom one. windows-reactor-setup finds the
@@ -99,8 +95,7 @@ Retake them when a change shows in them.
 
 `packaging/inno/nvhvc.iss` builds the installer with Inno Setup 7, whose version CI pins as
 `INNO_VERSION`. It installs for the current user, in `%LOCALAPPDATA%\Programs\nvhvc`, and never asks
-for admin rights. It carries the `nvhvc.exe` the MSIX does, built with
-`NVHVC_WINUI_RUNTIME=framework`:
+for admin rights. Its `nvhvc.exe` is built with `NVHVC_WINUI_RUNTIME=framework`:
 
 ```powershell
 $env:NVHVC_WINUI_RUNTIME = 'framework'
@@ -118,9 +113,10 @@ Adding `nvhvc` to `PATH` is an optional task. It adds or removes only the app's 
 user's `Path`, and the uninstaller takes it off again.
 
 CI installs it silently with the `PATH` task, checks `--version`, the runtime, `PATH` and the app's
-window, and uninstalls it. That happens before the MSIX check installs a runtime of its own.
+window, and uninstalls it.
 
-`packaging/icons/nvhvc.ico`, for Setup and the shortcuts, is a render of the SVG icon:
+The icon in `packaging/icons` is a placeholder. `nvhvc.ico`, for Setup and the shortcuts, is a
+render of the SVG:
 
 ```sh
 svg=packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
@@ -130,58 +126,11 @@ magick /tmp/icon-{16,20,24,32,40,48,64,256}.png packaging/icons/nvhvc.ico
 
 ### Portable exe
 
-The portable download is the `nvhvc.exe` the installer and the MSIX carry, built with
+The portable download is the `nvhvc.exe` the installer carries, built with
 `NVHVC_WINUI_RUNTIME=framework`, as `nvhvc-<version>-windows-x64.exe`. It uses the Windows App
 Runtime installed on the system; when that's missing, windows-reactor shows Microsoft's dialog
 with a link to the download page. A fast build's `nvhvc.pdb` is a separate download. Backtraces
 find it next to the exe under that name, whatever the exe is called.
-
-### MSIX
-
-The MSIX holds an `nvhvc.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
-Windows App SDK runtime installed on the system instead of copying one beside the exe. The
-package declares that runtime as a dependency.
-
-```powershell
-$env:NVHVC_WINUI_RUNTIME = 'framework'
-cargo build --release -p nvhvc
-packaging\msix\build-msix.ps1 -Version 0.0.0-dev -BinDir target\release -Out nvhvc.msix
-```
-
-Without `-Pfx`, the package is unsigned, and its publisher carries the OID that lets Windows 11
-install it with `Add-AppxPackage -AllowUnsigned`. With `-Pfx` and the password in
-`MSIX_PFX_PASSWORD`, it's signed, and its publisher is the certificate's subject.
-
-CI signs it with a self-signed certificate for `CN=Mahir007`, kept in the `MSIX_PFX` (the
-`.pfx` in base64) and `MSIX_PFX_PASSWORD` secrets. The release ships the certificate as
-`nvhvc-msix.cer`. A fork's CI has no secrets and builds the unsigned package; a release fails
-without them.
-
-The certificate expires on 2031-11-23. The signatures are timestamped, so packages signed before
-then still install. To replace it, make a new one with the same subject, update both secrets
-and the thumbprint in the README. Users then trust the new `.cer`.
-
-```sh
-openssl req -x509 -newkey rsa:3072 -sha256 -days 1826 -nodes -subj "/CN=Mahir007" \
-  -keyout key.pem -out cert.pem -addext "keyUsage=critical,digitalSignature" \
-  -addext "extendedKeyUsage=codeSigning" -addext "basicConstraints=critical,CA:FALSE"
-openssl rand -base64 32 | tr -d '\n' > pw
-openssl pkcs12 -export -inkey key.pem -in cert.pem -out msix.pfx -passout file:pw
-base64 -w0 msix.pfx | gh secret set MSIX_PFX
-gh secret set MSIX_PFX_PASSWORD < pw
-```
-
-`build-msix.ps1` needs `makeappx.exe` from the Windows SDK.
-
-The icon in `packaging/icons` is a placeholder. The MSIX tiles in `packaging/msix/Assets` are
-renders of it:
-
-```sh
-svg=packaging/icons/io.github.Mahir007.NvhvcHdr10Tool.svg
-rsvg-convert -w 44 -h 44 $svg -o packaging/msix/Assets/Square44x44Logo.png
-rsvg-convert -w 150 -h 150 $svg -o packaging/msix/Assets/Square150x150Logo.png
-rsvg-convert -w 50 -h 50 $svg -o packaging/msix/Assets/StoreLogo.png
-```
 
 ## Releases
 
