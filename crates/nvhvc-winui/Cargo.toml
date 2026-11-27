@@ -6,17 +6,17 @@ license.workspace = true
 # windows-reactor 0.100 needs Rust 1.95.
 rust-version = "1.95"
 repository.workspace = true
-description = "WinUI 3 (windows-reactor) GUI for the nvhvc HDR10 HEVC patcher (Windows)."
+description = "WinUI 3 (windows-reactor) app for the nvhvc HDR10 HEVC patcher, opened by nvhvc.exe."
 
 [dependencies]
 nvhvc-core.workspace = true
 
-# WinUI is Windows-only; on other platforms this crate builds a tiny stub so the workspace still
-# compiles everywhere (mirrors nvhvc-gtk on Windows).
+# WinUI is Windows-only; on other platforms this crate is empty, so the workspace still compiles
+# everywhere.
 [target.'cfg(windows)'.dependencies]
 windows-reactor = "0.100"
-# Native file dialogs, the system accent colour, the Esc key hook and the console for
-# --version. windows 0.62 carries its own windows-core; none of its types are passed to reactor.
+# Native file dialogs, the system accent colour, the Esc key hook and the console check for how
+# nvhvc.exe was started. windows 0.62 carries its own windows-core; none of its types are passed to reactor.
 windows = { version = "0.62", features = [
     "Foundation",
     "UI_ViewManagement",
@@ -29,6 +29,3 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
-[build-dependencies]
-windows-reactor-setup = "0.100"

@@ -655,6 +655,8 @@ version = "0.0.0-dev"
 dependencies = [
  "clap",
  "nvhvc-core",
+ "nvhvc-winui",
+ "windows-reactor-setup",
 ]
 
 [[package]]
@@ -685,7 +687,6 @@ dependencies = [
  "nvhvc-core",
  "windows",
  "windows-reactor",
- "windows-reactor-setup",
 ]
 
 [[package]]

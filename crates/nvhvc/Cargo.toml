@@ -3,10 +3,19 @@ name = "nvhvc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
+# windows-reactor 0.100, which the Windows app uses, needs Rust 1.95.
+rust-version = "1.95"
 repository.workspace = true
-description = "Command-line front-end for the nvhvc HDR10 HEVC stream patcher."
+description = "The nvhvc HDR10 HEVC patcher: the command-line tool, which also opens the app."
 
 [dependencies]
 nvhvc-core.workspace = true
 clap.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+nvhvc-winui.workspace = true
+
+# Stages the Windows App SDK runtime and embeds the exe's manifest on Windows. build.rs does
+# nothing on other platforms.
+[build-dependencies]
+windows-reactor-setup = "0.100"
