@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "crates/nvhvc-core",
-    "crates/nvhvc-cli",
+    "crates/nvhvc",
     "crates/nvhvc-gtk",
     "crates/nvhvc-winui",
     "xtask",
