@@ -222,20 +222,36 @@ jobs:
             Copy-Item "$env:RUNNER_TEMP\upx-$env:UPX_VERSION-win64\upx.exe" $dir
           }
           $dir >> $env:GITHUB_PATH
-      # The exes, the runtime files windows-reactor-setup copied beside them, and the licence. A
-      # fast build also has the exes' .pdb files, for backtraces.
+      # The exes, the runtime files named in windows-runtime-files.txt, and the licence. A fast
+      # build also has the exes' .pdb files, for backtraces. The log lists the files
+      # windows-reactor-setup copied that the zip leaves out, to check after updating it.
       - name: Pack the zip
         run: |
           $name = "nvhvc-$env:VERSION-windows-x64"
+          $bin = "target\$env:PROFILE_DIR"
           $stage = New-Item -ItemType Directory -Path "stage\$name"
           New-Item -ItemType Directory -Path dist | Out-Null
-          $skipDirs = 'build', 'deps', 'examples', 'incremental', '.fingerprint'
-          Get-ChildItem target\$env:PROFILE_DIR |
-            Where-Object { -not ($_.PSIsContainer -and $_.Name -in $skipDirs) } |
-            Where-Object { $_.PSIsContainer -or $_.Extension -notin '.d', '.rlib' } |
-            Where-Object { $_.Name -notlike '.cargo*' } |
-            Copy-Item -Destination $stage -Recurse
+          $pdbs = @('nvhvc.pdb', 'nvhvc_winui.pdb' | Where-Object { Test-Path -LiteralPath "$bin\$_" })
+          $runtime = @(Get-Content .github\scripts\windows-runtime-files.txt |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+          $files = @('nvhvc.exe', 'nvhvc-winui.exe') + $pdbs + $runtime
+          foreach ($file in $files) {
+            $to = Join-Path $stage $file
+            New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $bin $file) -Destination $to
+          }
           Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          $root = (Resolve-Path $bin).Path
+          $kept = $files | ForEach-Object { $_.Replace('/', '\') }
+          $left = Get-ChildItem $bin |
+            Where-Object { $_.Name -notin 'build', 'deps', 'examples', 'incremental', '.fingerprint' } |
+            Where-Object { $_.Name -notlike '.cargo*' } |
+            ForEach-Object { if ($_.PSIsContainer) { Get-ChildItem $_.FullName -Recurse -File } else { $_ } } |
+            ForEach-Object { $_.FullName.Substring($root.Length + 1) } |
+            Where-Object { $_ -notmatch '\.(d|rlib)$' -and $_ -notin $kept }
+          "::group::$(@($left).Count) files from $bin left out of the zip"
+          $left
+          '::endgroup::'
           if ($env:PROFILE -eq 'release') {
             upx -q --best --lzma "$stage\nvhvc.exe" "$stage\nvhvc-winui.exe"
             if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
