@@ -12,7 +12,7 @@ the commit and pull request rules.
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
 | build-linux | The command-line tool for Linux, statically linked against musl, in a `.tar.gz`. Extracts it and checks `--version`. |
-| build-windows | The portable zip and the MSIX. Checks `--version` from both, installs the MSIX and opens both apps' windows. |
+| build-windows | The portable zip and the MSIX. Checks that the exes don't need the Visual C++ runtime, checks `--version` from both, installs the MSIX and opens both apps' windows. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
@@ -51,6 +51,10 @@ UPX doesn't pack the Flatpak: its bundle is compressed already, and packed binar
 OSTree's deltas between updates much larger. On Linux with glibc, which covers the tests and the
 Flatpak, Rust links with rust-lld by default. The musl CLI and the Windows builds keep their
 default linkers.
+
+On Windows, both profiles link the C runtime into the exes (`+crt-static` in
+`.cargo/config.toml`), so they run without the Visual C++ Redistributable. A `RUSTFLAGS`
+variable replaces that setting, so CI checks the exes' imports with `check-crt.ps1`.
 
 Locally, `cargo build` builds the fast one and `cargo build --release` the other.
 
