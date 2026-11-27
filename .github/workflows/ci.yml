@@ -64,7 +64,7 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: clippy for Windows
-        run: cargo clippy -p nvhvc-winui --target x86_64-pc-windows-msvc --locked -- -D warnings
+        run: cargo clippy -p nvhvc -p nvhvc-winui --target x86_64-pc-windows-msvc --locked -- -D warnings
       - name: Desktop file and metainfo
         run: |
           desktop-file-validate "packaging/$APP_ID.desktop"
@@ -170,7 +170,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The portable zip, with the Windows App SDK runtime beside the exe, and the MSIX, which uses
+  # The portable zip, with the Windows App SDK runtime beside nvhvc.exe, and the MSIX, which uses
   # the runtime installed on the system. The build runs on the target, so it checks both the way
   # a user installs them.
   build-windows:
@@ -199,10 +199,10 @@ jobs:
       - name: Build the portable apps
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
-        run: cargo build --profile $env:PROFILE --locked -p nvhvc -p nvhvc-winui
+        run: cargo build --profile $env:PROFILE --locked -p nvhvc
       # .cargo/config.toml links the C runtime statically. A RUSTFLAGS variable would replace it.
       - name: Check the exes don't need the Visual C++ runtime
-        run: .github\scripts\check-crt.ps1 -Exe "target\$env:PROFILE_DIR\nvhvc.exe", "target\$env:PROFILE_DIR\nvhvc-winui.exe"
+        run: .github\scripts\check-crt.ps1 -Exe "target\$env:PROFILE_DIR\nvhvc.exe"
       - name: Cache UPX
         if: env.PROFILE == 'release'
         uses: actions/cache@v6
@@ -225,8 +225,8 @@ jobs:
             Copy-Item "$env:RUNNER_TEMP\upx-$env:UPX_VERSION-win64\upx.exe" $dir
           }
           $dir >> $env:GITHUB_PATH
-      # The exes, the runtime files named in windows-runtime-files.txt, and the licence. A fast
-      # build also has the exes' .pdb files, for backtraces. The log lists the files
+      # The exe, the runtime files named in windows-runtime-files.txt, and the licence. A fast
+      # build also has the exe's .pdb file, for backtraces. The log lists the files
       # windows-reactor-setup copied that the zip leaves out, to check after updating it.
       - name: Pack the zip
         run: |
@@ -234,10 +234,10 @@ jobs:
           $bin = "target\$env:PROFILE_DIR"
           $stage = New-Item -ItemType Directory -Path "stage\$name"
           New-Item -ItemType Directory -Path dist | Out-Null
-          $pdbs = @('nvhvc.pdb', 'nvhvc_winui.pdb' | Where-Object { Test-Path -LiteralPath "$bin\$_" })
+          $pdbs = @('nvhvc.pdb' | Where-Object { Test-Path -LiteralPath "$bin\$_" })
           $runtime = @(Get-Content .github\scripts\windows-runtime-files.txt |
             Where-Object { $_ -and -not $_.StartsWith('#') })
-          $files = @('nvhvc.exe', 'nvhvc-winui.exe') + $pdbs + $runtime
+          $files = @('nvhvc.exe') + $pdbs + $runtime
           foreach ($file in $files) {
             $to = Join-Path $stage $file
             New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
@@ -256,7 +256,7 @@ jobs:
           $left
           '::endgroup::'
           if ($env:PROFILE -eq 'release') {
-            upx -q --best --lzma "$stage\nvhvc.exe" "$stage\nvhvc-winui.exe"
+            upx -q --best --lzma "$stage\nvhvc.exe"
             if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
           }
           .github\scripts\pack-zip.ps1 -Source $stage -Out "dist\$name.zip" -Epoch $env:SOURCE_DATE_EPOCH
@@ -265,12 +265,12 @@ jobs:
           NVHVC_VERSION: ${{ env.VERSION }}
           NVHVC_WINUI_RUNTIME: framework
         run: |
-          cargo build --profile $env:PROFILE --locked -p nvhvc-winui
+          cargo build --profile $env:PROFILE --locked -p nvhvc
           $bin = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP msix-bin)
-          Get-ChildItem "target\$env:PROFILE_DIR\*" -Include nvhvc.exe, nvhvc-winui.exe, nvhvc.pdb, nvhvc_winui.pdb |
+          Get-ChildItem "target\$env:PROFILE_DIR\*" -Include nvhvc.exe, nvhvc.pdb |
             Copy-Item -Destination $bin
           if ($env:PROFILE -eq 'release') {
-            upx -q --best --lzma "$bin\nvhvc.exe" "$bin\nvhvc-winui.exe"
+            upx -q --best --lzma "$bin\nvhvc.exe"
             if ($LASTEXITCODE -ne 0) { throw "upx failed with exit code $LASTEXITCODE" }
           }
       # Signed with the self-signed certificate in the secrets. A fork has no secrets, so its
@@ -310,10 +310,7 @@ jobs:
           Pop-Location
           $out = & "$dir\nvhvc.exe" --version
           if ($out -ne "nvhvc $env:VERSION") { throw "nvhvc.exe --version: $out" }
-          # A GUI exe: PowerShell waits for it when its output is captured.
-          $out = & "$dir\nvhvc-winui.exe" --version | Out-String
-          if ($out.Trim() -ne "nvhvc-winui $env:VERSION") { throw "nvhvc-winui.exe --version: $out" }
-          .github\scripts\check-window.ps1 -Exe "$dir\nvhvc-winui.exe"
+          .github\scripts\check-window.ps1 -Exe "$dir\nvhvc.exe"
       # The runner is an admin, which trusting the certificate needs. The runtime framework comes
       # from the Windows App SDK's own package, as winget's installer would put it there.
       - name: Check the MSIX
