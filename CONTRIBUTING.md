@@ -12,7 +12,7 @@ the commit and pull request rules.
 | lint | actionlint, shellcheck, ruff, rustfmt, and clippy for Linux and for the Windows target, and validates the desktop file and metainfo |
 | test-linux, test-windows | `cargo test --workspace` on each system |
 | build-linux | The command-line tool for Linux, statically linked against musl, in a `.tar.gz`. Extracts it and checks `--version`. |
-| build-windows | The portable zip and the MSIX. Checks that the exes don't need the Visual C++ runtime, checks `--version` from both, installs the MSIX and opens both apps' windows. |
+| build-windows | The portable zip and the MSIX. Checks that `nvhvc.exe` doesn't need the Visual C++ runtime, installs the MSIX, and checks `--version` and opens the app's window from both. |
 | build-flatpak | The Flatpak bundle, built in the GNOME SDK |
 | check-flatpak | Installs the bundle on a stock runner, checks `--version` and that the five media tools are in it |
 
@@ -40,8 +40,8 @@ release is 300. `1.2.0-beta.3` becomes `1.2.0.103`, and a dev build `0.0.0.0`.
 
 | Profile | Used for | What it does |
 | --- | --- | --- |
-| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The Windows zip and MSIX carry the exes' `.pdb` files, and the Flatpak keeps the debug info in its binaries. |
-| `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs the Linux CLI and the Windows exes, and CI runs the packed ones. |
+| fast, which is Cargo's `dev` | Dev, alpha and beta builds, and the tests | No optimisation and full debug info. The Windows zip and MSIX carry `nvhvc.pdb`, and the Flatpak keeps the debug info in its binaries. |
+| `release` | Release candidates and releases | `opt-level = 3`, LTO, one codegen unit, stripped, `panic = "abort"`. UPX 5.3.0 packs the Linux CLI and `nvhvc.exe`, and CI runs the packed ones. |
 
 The fast profile is Cargo's own `dev` rather than a custom one. windows-reactor-setup finds the
 folder to copy the Windows App SDK runtime into by the profile's name, and only knows `debug` and
@@ -52,13 +52,21 @@ OSTree's deltas between updates much larger. On Linux with glibc, which covers t
 Flatpak, Rust links with rust-lld by default. The musl CLI and the Windows builds keep their
 default linkers.
 
-On Windows, both profiles link the C runtime into the exes (`+crt-static` in
+On Windows, both profiles link the C runtime into `nvhvc.exe` (`+crt-static` in
 `.cargo/config.toml`), so they run without the Visual C++ Redistributable. A `RUSTFLAGS`
-variable replaces that setting, so CI checks the exes' imports with `check-crt.ps1`.
+variable replaces that setting, so CI checks the exe's imports with `check-crt.ps1`.
 
 Locally, `cargo build` builds the fast one and `cargo build --release` the other.
 
 ## Packaging
+
+### nvhvc.exe
+
+On Windows, `nvhvc.exe` is both the command-line tool and the app. It's a console program, so a
+terminal waits for it and shows its output. `nvhvc gui` opens the app. So does starting it with no
+arguments outside a terminal, from Explorer, the Start menu or a shortcut. `crates/nvhvc/build.rs`
+embeds `nvhvc.manifest`, whose `consoleAllocationPolicy` stops Windows 11 24H2 and later from
+opening a console window for such a start. Older Windows opens one, and the exe closes it at once.
 
 ### Flatpak
 
@@ -88,7 +96,7 @@ Retake them when a change shows in them.
 
 ### Portable zip
 
-The zip holds the two exes, the licence, and the Windows App SDK runtime files listed in
+The zip holds `nvhvc.exe`, the licence, and the Windows App SDK runtime files listed in
 `.github/scripts/windows-runtime-files.txt`. windows-reactor-setup copies the whole runtime beside
 the exe, and local builds keep all of it. The zip leaves out the files the app doesn't need:
 
@@ -107,13 +115,13 @@ every screen and a patch.
 
 ### MSIX
 
-The MSIX holds an `nvhvc-winui.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
+The MSIX holds an `nvhvc.exe` built with `NVHVC_WINUI_RUNTIME=framework`, which uses the
 Windows App SDK runtime installed on the system instead of copying one beside the exe. The
 package declares that runtime as a dependency.
 
 ```powershell
 $env:NVHVC_WINUI_RUNTIME = 'framework'
-cargo build --release -p nvhvc-cli -p nvhvc-winui
+cargo build --release -p nvhvc
 packaging\msix\build-msix.ps1 -Version 0.0.0-dev -BinDir target\release -Out nvhvc.msix
 ```
 
