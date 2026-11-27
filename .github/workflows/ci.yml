@@ -200,6 +200,9 @@ jobs:
         env:
           NVHVC_VERSION: ${{ env.VERSION }}
         run: cargo build --profile $env:PROFILE --locked -p nvhvc-cli -p nvhvc-winui
+      # .cargo/config.toml links the C runtime statically. A RUSTFLAGS variable would replace it.
+      - name: Check the exes don't need the Visual C++ runtime
+        run: .github\scripts\check-crt.ps1 -Exe "target\$env:PROFILE_DIR\nvhvc.exe", "target\$env:PROFILE_DIR\nvhvc-winui.exe"
       - name: Cache UPX
         if: env.PROFILE == 'release'
         uses: actions/cache@v6
