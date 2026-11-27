@@ -5,9 +5,9 @@ VUI colour fields and inserts mastering-display and content-light-level SEI. Cra
 
 - `nvhvc-core`: bitstream editing, tool discovery, probe/extract/remux pipeline, settings, and
   the presentation model both GUIs share (`uimodel`).
-- `nvhvc`: the `nvhvc` binary: the command-line tool, and on Windows also the app, which it opens
-  from `nvhvc-winui`.
-- `nvhvc-gtk`: GTK4 + libadwaita GUI for Linux. Builds as a stub elsewhere.
+- `nvhvc`: the `nvhvc` binary: the command-line tool and the app, which it opens from `nvhvc-gtk`
+  on Linux and `nvhvc-winui` on Windows.
+- `nvhvc-gtk`: GTK4 + libadwaita GUI for Linux, a library. Empty elsewhere.
 - `nvhvc-winui`: WinUI 3 GUI for Windows on windows-reactor (crates.io releases), a library. Empty
   elsewhere.
 
@@ -70,10 +70,10 @@ project adds:
 - The source's version is `0.0.0-dev`. Builds take theirs from `NVHVC_VERSION`, and code that
   acts on the version reads `nvhvc_core::VERSION`, which can be `0.0.0-dev+<sha7>` or
   `X.Y.Z-beta.N+<sha7>`.
-- `nvhvc` and the GTK app print the version with `--version`; CI checks every archive with it.
+- `nvhvc` prints the version with `--version`; CI checks every archive with it.
 - CI builds dev, alpha and beta versions and the tests with the fast profile, which is Cargo's
-  `dev`, and release candidates and releases with `release`. UPX packs the release builds of the CLI and the
-  Windows exes, not the Flatpak.
+  `dev`, and release candidates and releases with `release`. UPX packs the release build of
+  `nvhvc.exe`, not the Flatpak.
 - The Flatpak carries its own ffmpeg, MKVToolNix and GPAC. The Windows builds use the ones on the
   system.
 - The Flatpak build cache is saved on any branch whose manifest has no cache yet, not only on
