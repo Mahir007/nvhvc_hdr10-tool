@@ -74,7 +74,6 @@ jobs:
             release/*.msix
             release/*.cer
             release/*.flatpak
-            release/*.tar.gz
       - name: Publish
         run: |
           prerelease=false

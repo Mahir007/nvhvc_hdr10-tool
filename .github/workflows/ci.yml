@@ -23,7 +23,7 @@ env:
   APP_ID: io.github.Mahir007.NvhvcHdr10Tool
   RUST_VERSION: 1.100.0
   CARGO_TERM_COLOR: always
-  # For nvhvc-gtk. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
+  # For the GTK app. Ubuntu 26.04 has GTK 4.22 and libadwaita 1.9.
   GTK_PACKAGES: libgtk-4-dev libadwaita-1-dev
   # Packs the binaries of a release build.
   UPX_VERSION: 5.3.0
@@ -105,70 +105,6 @@ jobs:
           key: windows-reactor-setup-${{ hashFiles('Cargo.lock') }}
       - name: Test
         run: cargo test --workspace --locked
-
-  # The command-line tool, statically linked against musl so it runs on any Linux. The build
-  # runs on the target, so it checks the archive too.
-  build-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - name: Version
-        env:
-          INPUT: ${{ inputs.version }}
-        run: .github/scripts/version.sh "$INPUT" >> "$GITHUB_ENV"
-      - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-unknown-linux-musl
-          rustup default "$RUST_VERSION"
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        env:
-          NVHVC_VERSION: ${{ env.VERSION }}
-        run: cargo build --profile "$PROFILE" --locked -p nvhvc --target x86_64-unknown-linux-musl
-      - name: Cache UPX
-        if: env.PROFILE == 'release'
-        uses: actions/cache@v6
-        with:
-          path: ~/upx
-          key: upx-${{ env.UPX_VERSION }}-linux
-      - name: Install UPX
-        if: env.PROFILE == 'release'
-        run: |
-          if [ ! -x ~/upx/upx ]; then
-            curl -fsSL -o "$RUNNER_TEMP/upx.tar.xz" \
-              "https://github.com/upx/upx/releases/download/v$UPX_VERSION/upx-$UPX_VERSION-amd64_linux.tar.xz"
-            echo "79cea8a50b6fa102d10c7b79a419cd77dead3cc2d78661de2dc5e5815dc505c1  $RUNNER_TEMP/upx.tar.xz" |
-              sha256sum -c -
-            mkdir -p ~/upx
-            tar -xJf "$RUNNER_TEMP/upx.tar.xz" -C ~/upx --strip-components=1
-          fi
-          echo "$HOME/upx" >> "$GITHUB_PATH"
-      - name: Pack
-        run: |
-          name=nvhvc-$VERSION-linux-x86_64
-          mkdir -p "stage/$name" dist
-          cp "target/x86_64-unknown-linux-musl/$PROFILE_DIR/nvhvc" LICENSE README.md "stage/$name/"
-          if [ "$PROFILE" = release ]; then upx -q --best --lzma "stage/$name/nvhvc"; fi
-          tar -C stage --sort=name --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
-            --mtime="@$SOURCE_DATE_EPOCH" --format=gnu -cf - "$name" | gzip -9n > "dist/$name.tar.gz"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          .github/scripts/summary.sh dist/*.tar.gz >> "$GITHUB_STEP_SUMMARY"
-      - name: Check
-        run: |
-          cd "$RUNNER_TEMP"
-          cp "$GITHUB_WORKSPACE"/dist/* .
-          sha256sum -c ./*.tar.gz.sha256
-          tar -xzf ./*.tar.gz
-          out=$("./nvhvc-$VERSION-linux-x86_64/nvhvc" --version)
-          echo "$out"
-          [ "$out" = "nvhvc $VERSION" ]
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-linux
-          path: dist/
-          retention-days: 1
-          if-no-files-found: error
 
   # The portable zip, with the Windows App SDK runtime beside nvhvc.exe, and the MSIX, which uses
   # the runtime installed on the system. The build runs on the target, so it checks both the way
@@ -459,11 +395,8 @@ jobs:
           # The runner has no session bus, and flatpak needs one for the app's D-Bus proxy.
           out=$(dbus-run-session -- flatpak run "$APP_ID" --version)
           echo "$out"
-          [ "$out" = "nvhvc-gtk $VERSION" ]
-          out=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" --version)
-          echo "$out"
           [ "$out" = "nvhvc $VERSION" ]
           # Every tool the pipeline runs is in the bundle.
-          tools=$(dbus-run-session -- flatpak run --command=nvhvc "$APP_ID" tools)
+          tools=$(dbus-run-session -- flatpak run "$APP_ID" tools)
           echo "$tools"
           [ "$(grep -cE 'found \(PATH\) +/app/bin/' <<< "$tools")" = 5 ]
